@@ -4,9 +4,9 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const bundle=readFileSync(new URL('../dist/backend.js',import.meta.url),'utf8');
 const config={voices:[{id:'Charon'},{id:'Kore'}],fixed:[{speaker:'Narrator',voice:'Charon',style:''}],npcs:[],useStyle:true};
-async function harness(generate, cors) {
+async function harness(generate, cors, provider) {
   let handler;const sent=[];let wake;
-  const connection={id:'llm-a',is_default:true,model:'gemini-flash-text'};
+  const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider};
   vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});wake?.();},generate:{raw:generate},connections:{get:async()=>connection,list:async()=>[connection]},cors},
     console,Map,Set,AbortController,setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView});
   return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
@@ -62,5 +62,23 @@ test('empty planner responses produce an actionable error',async()=>{
 test('backend readiness check replies without making an LLM or TTS request',async()=>{
   const h=await harness(()=>{throw new Error('Should not call planner');},()=>{throw new Error('Should not call TTS');});
   h.send('ping',{});
-  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.0.2');
+  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.0.3');
+});
+
+test('prose-only planner responses expose a useful diagnostic after retry',async()=>{
+  const h=await harness(async()=>({content:'I cannot process this request.'}));
+  h.send('plan',{transcript:'Hello.',config});
+  assert.match((await h.result()).message.error,/Response begins: I cannot process/);
+});
+
+test('known planners request provider JSON mode; other providers retain portable prompting',async()=>{
+  for(const provider of ['google','openai','anthropic']) {
+    let parameters;
+    const h=await harness(async input=>{parameters=input.parameters;return {content:'{"segments":[{"speaker":"Narrator","text":"Hello."}]}'};},null,provider);
+    h.send('plan',{transcript:'Hello.',config});
+    assert.ok((await h.result()).message.result);
+    if(provider==='google')assert.equal(parameters.responseMimeType,'application/json');
+    if(provider==='openai')assert.equal(parameters.response_format.type,'json_object');
+    if(provider==='anthropic')assert.deepEqual(Object.keys(parameters),['max_tokens']);
+  }
 });

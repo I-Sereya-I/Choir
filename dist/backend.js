@@ -35,7 +35,30 @@ function transcriptFromMessage(value) {
 function parsePlanJson(value) {
   const raw = String(value || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   if(!raw)throw new Error('Planner returned no text. Choose a text-generation LLM connection; check its model access and provider response.');
-  return JSON.parse(raw);
+  try { return JSON.parse(raw); } catch {}
+  // Locate complete objects without treating braces inside JSON strings as delimiters.
+  // Never repair truncated JSON or use prose as a speech segment.
+  for (let start=raw.indexOf('{');start>=0;start=raw.indexOf('{',start+1)) {
+    let depth=0,quoted=false,escaped=false;
+    for(let end=start;end<raw.length;end++) {
+      const char=raw[end];
+      if(quoted) {
+        if(escaped)escaped=false;
+        else if(char==='\\')escaped=true;
+        else if(char==='"')quoted=false;
+      } else if(char==='"')quoted=true;
+      else if(char==='{')depth++;
+      else if(char==='}' && --depth===0) {
+        try {
+          const parsed=JSON.parse(raw.slice(start,end+1));
+          if(Array.isArray(parsed?.segments))return parsed;
+        } catch {}
+        break;
+      }
+    }
+  }
+  const preview=raw.replace(/\s+/g,' ').slice(0,240);
+  throw new Error(`Planner returned no complete JSON speech plan. It may have answered in prose, refused, or stopped early. Response begins: ${preview}`);
 }
 
 function validateCastConfig(config) {
@@ -174,7 +197,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.0.2',ready:true}});return;
+      send({result:{version:'1.0.3',ready:true}});return;
     }
     if (message.action === 'plan') {
       if (typeof input.transcript !== 'string' || !input.transcript.trim() || input.transcript.length > 30000) throw new Error('Speech planning supports 1–30,000 characters per message.');
@@ -193,7 +216,9 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         // Raw calls use the saved connection credentials without inheriting a chat preset's
         // short output limit, stop strings, response format or reasoning budget.
         const result = await spindle.generate.raw({type:'raw',userId,model:connection.model,
-          connection_id:connection.id,messages,parameters:{max_tokens:maxTokens},
+          connection_id:connection.id,messages,parameters:{max_tokens:maxTokens,
+            ...(connection.provider==='google'?{responseMimeType:'application/json'}:
+              connection.provider==='openai'?{response_format:{type:'json_object'}}:{})},
           reasoning:{source:'off'},signal:controller.signal});
         if (controller.signal.aborted) return;
         try {

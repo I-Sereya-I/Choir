@@ -66,3 +66,13 @@ test('speech preprocessing keeps narration, strips markup and hidden thinking',(
   assert.equal(transcriptFromMessage('<think>hidden</think>*The room was cold.* **Hello.** [Friend](https://example.com)'),'The room was cold. Hello. Friend');
   assert.deepEqual(parsePlanJson('```json\n{"segments":[]}\n```'),{segments:[]});
 });
+
+test('planner extracts complete JSON from prose and fences with quoted braces',()=>{
+  const plan={segments:[{speaker:'Narrator',text:'I said "{hello}".'}]};
+  assert.deepEqual(parsePlanJson('I prepared this plan:\n```json\n'+JSON.stringify(plan)+'\n```\nDone.'),plan);
+});
+
+test('prose refusals and truncated plans report the response without repairing dialogue',()=>{
+  assert.throws(()=>parsePlanJson('I cannot process this request.'),/Response begins: I cannot/);
+  assert.throws(()=>parsePlanJson('{"segments":[{"text":"Hello."}'),/no complete JSON speech plan/);
+});
