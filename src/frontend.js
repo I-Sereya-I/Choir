@@ -67,6 +67,7 @@ export async function setup(ctx) {
     <details><summary>Advanced provider options</summary><div class="et-grid">
       <label>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
       <label>Max characters per speech request<input data-et="chunk" type="number" min="80" max="2000" value="350"></label>
+      <label>Planner output budget (tokens)<input data-et="plannerTokens" type="number" min="1024" max="32768" step="1024" value="8192"></label>
     </div><label style="margin-top:10px">Additional Gemini voices · one ID | description per line<textarea data-et="extraVoices" placeholder="voice_... | warm storyteller"></textarea></label>
     <p>Other providers reuse your existing Lumiverse connections and credentials. Style support depends on their API. Gemini uses structured style metadata and a separate session key.</p></details>
     <div class="et-row"><button data-et="load">Reload connections and voices</button></div>
@@ -78,6 +79,7 @@ export async function setup(ctx) {
       <label class="et-check"><input data-et="auto" type="checkbox">Auto-play completed replies</label></div>
     <div class="et-row"><button data-et="save">Save cast and settings</button><button data-et="latest">Plan latest reply</button>
       <button data-et="stop">Stop</button><button data-et="pause" disabled>Pause</button></div>
+    <div class="et-status" data-et="statusActions">Open a chat to begin.</div>
     <h3>Speech plan</h3><div data-et="preview"><p>Plan a reply to review its speakers and styles before playback.</p></div>
     <button data-et="play" disabled>Play plan</button>
     <details><summary>Edit plan JSON</summary><p>Keep each segment’s text as an exact consecutive substring. Fixed and existing NPC voices take priority.</p>
@@ -91,22 +93,30 @@ export async function setup(ctx) {
   let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, busy=false;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
-  const defaults = () => ({mode:'gemini',model:'gemini-3.8-flash-tts',planner:'',connection:'',styleParam:'',apiBase:'/api/v1',chunk:350,
+  const defaults = () => ({mode:'gemini',model:'gemini-3.8-flash-tts',planner:'',connection:'',styleParam:'',apiBase:'/api/v1',chunk:350,plannerTokens:8192,
     extraVoices:'',useStyle:true,auto:false,casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'Kore',style:''},
       {speaker:'Character',voice:'Puck',style:''} ]});
-  function status(text,error=false) { if(disposed)return; $('status').textContent=text; $('status').classList.toggle('et-error',error); }
+  function status(text,error=false) {
+    if(disposed)return;
+    for(const name of ['status','statusActions']) {$(name).textContent=text;$(name).classList.toggle('et-error',error);}
+  }
   const abortError = () => new DOMException('Stopped','AbortError');
   const scope = c => c.mode === 'gemini' ? 'gemini' : `native:${c.connection}`;
   const settingsKey = id => `chat:${id}`;
 
-  function rpc(action,input,signal) {
+  function rpc(action,input,signal,timeoutMs=185000) {
     if (signal?.aborted) return Promise.reject(abortError());
     return new Promise((resolve,reject) => {
       const id=crypto.randomUUID();
-      const cancel=()=>{ctx.sendToBackend({namespace:'choir',id,action:'cancel'});done(abortError());};
-      const timer=setTimeout(()=>{cancel();},185000);
+      const cancel=()=>{try{ctx.sendToBackend({namespace:'choir',id,action:'cancel'});}catch{}done(abortError());};
+      const timer=setTimeout(()=>{
+        try{ctx.sendToBackend({namespace:'choir',id,action:'cancel'});}catch{}
+        done(new Error(action==='ping'
+          ? 'Choir backend did not respond. Update and restart Choir in Extensions, then reload the page. Both backend and frontend must be running.'
+          : 'Choir request timed out. Check that its backend is running, grant the Generation permission for planning, and try a faster planner or shorter speech chunks.'));
+      },timeoutMs);
       const done=(error,result)=>{clearTimeout(timer);signal?.removeEventListener('abort',cancel);pending.delete(id);error?reject(error):resolve(result);};
       pending.set(id,done); signal?.addEventListener('abort',cancel,{once:true});
       try {ctx.sendToBackend({namespace:'choir',id,action,input});} catch(error){done(error);}
@@ -155,23 +165,25 @@ export async function setup(ctx) {
       casts:{...config.casts,[scope(config)]:npcRows.filter(v=>v.row.parentElement===$('npcs')).map(v=>v.read())},
       mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
+      plannerTokens:Number($('plannerTokens').value),
       extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked};
   }
   function casting(c=config) {return {fixed:c.fixed,npcs:c.casts[scope(c)] || [],voices,useStyle:c.useStyle};}
   function validateSettings(c) {
     validateCastConfig(casting(c));
     if(!Number.isInteger(c.chunk) || c.chunk<80 || c.chunk>2000)throw new Error('Chunk size must be 80–2000.');
+    if(!Number.isInteger(c.plannerTokens) || c.plannerTokens<1024 || c.plannerTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
     if(c.mode==='native' && !nativeConnections.some(v=>v.id===c.connection))throw new Error('Select an existing Lumiverse TTS connection.');
   }
   function setFields() {
-    for(const name of ['mode','model','planner','connection','styleParam','apiBase','chunk','extraVoices'])$(name).value=config[name];
+    for(const name of ['mode','model','planner','connection','styleParam','apiBase','chunk','plannerTokens','extraVoices'])$(name).value=config[name];
     $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;
     $('gemini').hidden=config.mode!=='gemini';$('native').hidden=config.mode!=='native';
   }
   function setBusy(value) {
     busy=value;
     for (const name of ['save','latest','load','add','reset','mode','connection','apply','auto'])$(name).disabled=value;
-    for (const name of ['model','planner','styleParam','apiBase','chunk','extraVoices','useStyle','key','planJson'])$(name).disabled=value;
+    for (const name of ['model','planner','styleParam','apiBase','chunk','plannerTokens','extraVoices','useStyle','key','planJson'])$(name).disabled=value;
     $('play').disabled=value || !plan;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
@@ -188,7 +200,7 @@ export async function setup(ctx) {
     if(!chatId)throw new Error('Open a chat first.');
     const updated=capture();validateSettings(updated);config=updated;
     await ctx.settings.set(settingsKey(chatId),config);
-    clearPlan();status('Cast and settings saved for this chat.');
+    clearPlan();status('Cast saved. Click Plan latest reply, then Play plan. Auto-play applies to future completed replies.');
   }
   async function loadProviders() {
     const version=loadVersion;
@@ -281,9 +293,12 @@ export async function setup(ctx) {
     const snapshot=structuredClone(casting(config));
     const context=ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
       .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content).slice(0,3000)}`).join('\n').slice(-16000);
-    const ctrl=new AbortController();controller=ctrl;setBusy(true);status('Planning speakers, NPC voices and delivery…');
+    const ctrl=new AbortController();controller=ctrl;setBusy(true);status('Checking Choir backend…');
     try {
-      const result=await rpc('plan',{transcript,config:snapshot,context,connectionId:config.planner},ctrl.signal);
+      await rpc('ping',{},ctrl.signal,8000);
+      if(token!==revision || ctrl.signal.aborted)return;
+      status('Planning speakers, NPC voices and delivery…');
+      const result=await rpc('plan',{transcript,config:snapshot,context,connectionId:config.planner,maxTokens:config.plannerTokens},ctrl.signal);
       if(token!==revision || targetChat!==chatId || disposed)return;
       // Validate independently in the frontend before any audio or cast persistence.
       const validated=validatePlan({segments:result.segments.map(s=>{

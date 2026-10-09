@@ -33,6 +33,7 @@ export function transcriptFromMessage(value) {
 
 export function parsePlanJson(value) {
   const raw = String(value || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  if(!raw)throw new Error('Planner returned no text. Choose a text-generation LLM connection; check its model access and provider response.');
   return JSON.parse(raw);
 }
 

@@ -15,7 +15,7 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? In **Extensions**, update Choir to **1.0.1**, then reload the page. Version 1.0.1 adds the settings entry and displays an explanation if the installed Lumiverse build lacks Choir's required APIs.
+Already installed? In **Extensions**, update Choir to **1.0.2**, restart it, then reload the page. Version 1.0.1 added the settings entry; 1.0.2 gives planning its own output budget, avoids inherited chat preset limits/stop strings, and adds a backend connection check.
 
 ## Install locally
 
@@ -98,6 +98,8 @@ Changing chat, editing/deleting a message, or changing its swipe stops the activ
 - The extension strips presentation markup, code blocks, images and closed thinking blocks before planning. Narration remains spoken.
 - The default chunk size is 350 characters. Larger chunks reduce request count; smaller chunks help with the staging CORS proxy's **30-second request timeout**. This timeout is host-controlled.
 - Planning makes a separate text-model request, with one corrective retry if needed. Playback makes a separate speech request per chunk. Provider quota and billing apply.
+- Planning uses the selected LLM connection's model and saved credentials, with chat preset parameters excluded and reasoning disabled for this request. Its output budget defaults to 8,192 tokens; the corrective retry can increase it up to 32,768. Under advanced options, set **Planner output budget** to suit your model's supported limit. Empty responses and output cutoffs produce explicit errors. The planner must be a text-generation model, separately from Gemini TTS.
+- Before planning, Choir checks that its backend replies within eight seconds. If that fails, update/restart Choir in Extensions and reload the page. Planning errors appear both at the top and next to the playback controls.
 - On HTTP 401/403/429 or a timeout, check the key, model access, quota and connection settings. A provider error is shown without silently changing the cast or speaking unvalidated text.
 - Use WAV or MP3 when a browser cannot decode your native provider's output. Gemini WAV is preserved; legacy raw PCM responses are wrapped in WAV.
 - Advanced **Lumiverse API base** defaults to `/api/v1`. Change it if your frontend reaches Lumiverse at a different API URL; session authentication and the server's CORS settings still apply.
@@ -105,7 +107,7 @@ Changing chat, editing/deleting a message, or changing its swipe stops the activ
 
 ## Validation and development
 
-Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 15 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
+Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 18 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Planner tests verify independent output settings, a retry after truncated JSON, clear empty-response errors, and backend readiness replies. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
 
 **It has not been installed into your running Lumiverse instance or tested with real provider credentials.** Actual synthesis quality, provider availability and live UI integration still need your first-use check.
 

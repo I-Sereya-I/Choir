@@ -6,7 +6,8 @@ const bundle=readFileSync(new URL('../dist/backend.js',import.meta.url),'utf8');
 const config={voices:[{id:'Charon'},{id:'Kore'}],fixed:[{speaker:'Narrator',voice:'Charon',style:''}],npcs:[],useStyle:true};
 async function harness(generate, cors) {
   let handler;const sent=[];let wake;
-  vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});wake?.();},generate:{quiet:generate},cors},
+  const connection={id:'llm-a',is_default:true,model:'gemini-flash-text'};
+  vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});wake?.();},generate:{raw:generate},connections:{get:async()=>connection,list:async()=>[connection]},cors},
     console,Map,Set,AbortController,setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView});
   return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
     result:()=>sent.length?Promise.resolve(sent.at(-1)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
@@ -17,6 +18,7 @@ test('planner uses user identity and routes replies only to the originating brow
   h.send('plan',{transcript:'Hello.',config,context:'data'});
   const result=await h.result();
   assert.equal(request.userId,'user-a');assert.equal(result.user,'user-a');assert.equal(result.options.frontendSessionId,'session-a');
+  assert.equal(request.type,'raw');assert.equal(request.parameters.max_tokens,8192);assert.equal(request.reasoning.source,'off');assert.equal(request.connection_id,'llm-a');
   assert.equal(result.message.result.segments[0].voice,'Charon');
 });
 test('retries a malformed plan once and surfaces failure instead of speaking altered text',async()=>{
@@ -35,7 +37,30 @@ test('Gemini request uses header authentication and speech metadata',async()=>{
 test('cancellation aborts planner and suppresses stale replies',async()=>{
   let resolve;let signal;
   const h=await harness(input=>{signal=input.signal;return new Promise(r=>resolve=r);});
-  h.send('plan',{transcript:'Hello.',config});h.send('cancel',{});
+  h.send('plan',{transcript:'Hello.',config});await new Promise(r=>setTimeout(r,0));h.send('cancel',{});
   assert.ok(signal.aborted);resolve({content:'{"segments":[{"speaker":"Narrator","text":"Hello."}]}'});
   await new Promise(r=>setTimeout(r,10));assert.equal(h.sent.length,0);
+});
+
+test('truncated JSON retries with a larger output budget and accepts only a complete plan',async()=>{
+  const budgets=[];
+  const h=await harness(async input=>{
+    budgets.push(input.parameters.max_tokens);
+    return budgets.length===1 ? {content:'{"segments":[',finish_reason:'length'}
+      : {content:'{"segments":[{"speaker":"Narrator","text":"Hello."}]}',finish_reason:'stop'};
+  });
+  h.send('plan',{transcript:'Hello.',config});
+  const result=await h.result();assert.deepEqual(budgets,[8192,16384]);assert.equal(result.message.result.segments[0].text,'Hello.');
+});
+
+test('empty planner responses produce an actionable error',async()=>{
+  const h=await harness(async()=>({content:'',finish_reason:'stop'}));
+  h.send('plan',{transcript:'Hello.',config});const result=await h.result();
+  assert.match(result.message.error,/Planner returned no text/);
+});
+
+test('backend readiness check replies without making an LLM or TTS request',async()=>{
+  const h=await harness(()=>{throw new Error('Should not call planner');},()=>{throw new Error('Should not call TTS');});
+  h.send('ping',{});
+  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.0.2');
 });

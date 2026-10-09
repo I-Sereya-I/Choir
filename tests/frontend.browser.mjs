@@ -53,7 +53,8 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
       requests.push(message);if(message.action==='cancel')return;
       setTimeout(()=>{
         let result;
-        if(message.action==='plan')result=validatePlan({segments:[
+        if(message.action==='ping')result={version:'1.0.2',ready:true};
+        else if(message.action==='plan')result=validatePlan({segments:[
           {speaker:'Narrator',text:'The hall fell silent.',style:'Calm'},
           {speaker:'Mira',text:'Hello, stranger.',style:'Curious'},
           {speaker:'Guard',voice:message.input.config.voices.at(-1).id,text:'Welcome.',style:'Warm'}]},message.input.transcript,message.input.config);
