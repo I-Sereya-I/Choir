@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "name": "Ensemble TTS",
+  "identifier": "ensemble_tts",
+  "author": "Ensemble TTS contributors",
+  "github": "",
+  "homepage": "",
+  "description": "Narrator, persona, main characters and persistent LLM-cast NPC voices, with Gemini speech metadata.",
+  "permissions": ["generation", "cors_proxy", "ui_panels", "event_tracking"],
+  "entry_backend": "dist/backend.js",
+  "entry_frontend": "dist/frontend.js",
+  "minimum_lumiverse_version": "1.2.5"
+}
