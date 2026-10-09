@@ -15,6 +15,19 @@ export function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+export function normalizeVoiceCatalogue(catalogue) {
+  return catalogue.map(voice=>{
+    const supplied=voice.gender ?? voice.ssmlGender ?? voice.ssml_gender;
+    const values=Array.isArray(supplied)?supplied:[supplied];
+    const normalized=values.map(value=>String(value || '').toLowerCase().trim());
+    let gender=normalized.some(value=>['female','feminine','f'].includes(value))?'female':
+      normalized.some(value=>['male','masculine','m'].includes(value))?'male':
+      normalized.some(value=>['neutral','androgynous','nonbinary','non-binary'].includes(value))?'neutral':undefined;
+    gender ??= GEMINI_VOICES.find(v=>v.id===voice.id || String(voice.id).endsWith(`-Chirp3-HD-${v.id}`))?.gender;
+    return {...voice,...(gender?{gender}:{gender:undefined})};
+  });
+}
+
 export function transcriptFromMessage(value) {
   // Strip presentation markup only; narration remains spoken. Never send code or hidden thinking.
   return String(value || '')

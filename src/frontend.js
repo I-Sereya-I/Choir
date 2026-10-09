@@ -1,4 +1,4 @@
-import { GEMINI_VOICES, normalizeName, transcriptFromMessage, validateCastConfig, validatePlan, parsePlanJson, splitSegment, audioBytes } from './core.js';
+import { GEMINI_VOICES, normalizeName, normalizeVoiceCatalogue, transcriptFromMessage, validateCastConfig, validatePlan, parsePlanJson, splitSegment, audioBytes } from './core.js';
 
 export async function setup(ctx) {
   const tab = ctx.ui.registerDrawerTab({id:'ensemble',title:'Choir',shortName:'Voices',
@@ -19,7 +19,7 @@ export async function setup(ctx) {
     const card=document.createElement('div');card.style.padding='12px';
     const title=document.createElement('h3');title.textContent='Choir';
     const text=document.createElement('p');text.textContent='Configure speech providers and the voices of your narrator, persona, main characters and NPCs.';
-    const open=document.createElement('button');open.textContent='Open Choir settings';
+    const open=document.createElement('button');open.type='button';open.textContent='Open Choir settings';
     open.onclick=()=>{(settingsTab || tab).activate();};
     card.append(title,text,open);settingsMount.replaceChildren(card);
   }
@@ -86,10 +86,11 @@ export async function setup(ctx) {
     <button data-et="play" disabled>Play plan</button>
     <details><summary>Edit plan JSON</summary><p>Keep each segment’s text as an exact consecutive substring. Fixed and existing NPC voices take priority.</p>
       <textarea data-et="planJson" rows="8" spellcheck="false"></textarea><button data-et="apply">Apply edited plan</button></details>
-    <h3>Recent messages</h3><p>Replay saved audio without another provider request. Recordings are stored on this device. Gender preferences guide automatic casting; manually selected voices take priority.</p><div data-et="messages"></div>
+    <h3>Recent messages</h3><p>Replay saved audio without another provider request. Recordings are stored on this device. Gender preferences guide automatic casting; manually selected voices take priority.</p><button data-et="deleteChatAudio">Delete all Choir audio for this chat</button><div data-et="messages"></div>
     <p>Disable Lumiverse’s native TTS auto-play to avoid overlapping audio. Speech planning makes a separate LLM request; playback makes one TTS request per chunk.</p>
   </div>`;
   const $ = name => root.querySelector(`[data-et="${name}"]`);
+  for(const button of root.querySelectorAll('button'))button.type='button';
   const pending = new Map();
   let audioNamespace,audioNamespaceError;
   try {
@@ -105,6 +106,9 @@ export async function setup(ctx) {
       }
     }
     if(operation==='delete')sessionAudio.delete(key);
+    if(operation==='deleteChat')for(const sessionKey of [...sessionAudio.keys()]) {
+      if(JSON.parse(sessionKey)[1]===JSON.parse(key)[1])sessionAudio.delete(sessionKey);
+    }
     if(operation==='get' && sessionAudio.has(key))return sessionAudio.get(key);
     if(operation==='put') {
       const createdAt=value.createdAt ?? Date.now(),retention=value.retention || 'forever';
@@ -133,7 +137,8 @@ export async function setup(ctx) {
           let identity;try{identity=JSON.parse(cursor.key);}catch{}
           if(identity?.[0]===audioNamespace) {
             const record=cursor.value;
-            if(operation==='policy' && identity[1]===JSON.parse(key)[1]) {
+            if(operation==='deleteChat' && identity[1]===JSON.parse(key)[1])cursor.delete();
+            else if(operation==='policy' && identity[1]===JSON.parse(key)[1]) {
               record.createdAt ??= Date.now();
               record.expiresAt=value.retention==='forever'?null:record.createdAt+Number(value.retention)*86400000;
               if(value.retention==='session' || (record.expiresAt!==null && record.expiresAt<=Date.now()))cursor.delete();
@@ -142,7 +147,7 @@ export async function setup(ctx) {
           }
           cursor.continue();return;
         }
-        if(operation==='policy' || operation==='prune')return;
+        if(operation==='policy' || operation==='prune' || operation==='deleteChat')return;
         const request=operation==='put'?store.put(value,key):operation==='delete'?store.delete(key):store.get(key);
         request.onsuccess=()=>{result=request.result;};
       };
@@ -229,7 +234,7 @@ export async function setup(ctx) {
     for (const [label,node] of [['Speaker name',name],['Voice gender filter',gender],['Voice',voice],['Base delivery style',style]]) {
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);row.append(wrap);
     }
-    if(!reserved){const remove=document.createElement('button');remove.textContent='Remove';remove.onclick=()=>{row.remove();};row.append(remove);}
+    if(!reserved){const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();};row.append(remove);}
     container.append(row);
     return {row,read:()=>({speaker:name.value.trim(),voice:voice.value,gender:gender.value,style:style.value.trim()})};
   }
@@ -314,6 +319,7 @@ export async function setup(ctx) {
       voices=data.voices || [];
       if(!voices.length)throw new Error('This connection returned no voices. Configure its voice catalogue in Lumiverse.');
     } else {voices=[];}
+    voices=normalizeVoiceCatalogue(voices);
     if(version!==loadVersion || disposed)return;
     const connection=nativeConnections.find(v=>v.id===config.connection);
     const parameters=nativeProviders.find(v=>v.id===connection?.provider)?.capabilities?.parameters || {};
@@ -462,10 +468,11 @@ export async function setup(ctx) {
         await playBlob(blob,ctrl.signal);
       }
       if(!cached) {
+        if(token!==revision || ctrl.signal.aborted)throw abortError();
         try{await recordingStore('put',key,{content:source.content,signature,segments,blobs,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
-      if(token===revision)status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.');
+      if(token===revision){renderMessages();status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.');}
     } finally {if(token===revision){controller=null;setBusy(false);}}
   }
   async function replayRecording(messageId) {
@@ -493,10 +500,21 @@ export async function setup(ctx) {
       const button=document.createElement('button');button.textContent='Plan';button.onclick=()=>run(()=>prepare(message.id));row.append(name,button);$('messages').append(row);
       const replay=document.createElement('button');replay.textContent='Replay';replay.onclick=()=>run(()=>replayRecording(message.id));row.append(replay);
       const removeAudio=document.createElement('button');removeAudio.textContent='Delete audio';removeAudio.onclick=()=>run(async()=>{
-        stop(false);await recordingStore('delete',recordingKey(chatId,message.id));status('Saved audio deleted for this message.');
+        const targetChat=chatId,key=recordingKey(targetChat,message.id);
+        stop(false);status('Deleting saved audio…');
+        await recordingStore('delete',key);
+        if(await recordingStore('get',key))throw new Error('Audio deletion did not complete. Stop playback and try again.');
+        if(chatId===targetChat){replay.disabled=true;removeAudio.textContent='Audio deleted';status('Saved audio deleted for this message. Play plan will generate new audio.');}
       });row.append(removeAudio);
+      for(const button of row.querySelectorAll('button'))button.type='button';
     }
   }
+  $('deleteChatAudio').onclick=()=>run(async()=>{
+    if(!chatId)throw new Error('Open a chat first.');
+    const targetChat=chatId;stop(false);status('Deleting saved audio for this chat…');
+    await recordingStore('deleteChat',recordingKey(targetChat,''));
+    if(chatId===targetChat){renderMessages();status('All Choir audio deleted for this chat on this device.');}
+  });
   async function run(action) {
     try{await action();}catch(error){if(error.name!=='AbortError')status(error.message,true);}
   }

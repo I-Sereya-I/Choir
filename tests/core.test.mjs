@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, audioBytes, transcriptFromMessage, parsePlanJson} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue} from '../src/core.js';
 
 const config = () => ({voices:[{id:'Charon'},{id:'Kore'},{id:'Puck'},{id:'Fenrir'}],useStyle:true,
   fixed:[{speaker:'Narrator',voice:'Charon',style:'Calm'},{speaker:'Alice',voice:'Kore',style:''}],npcs:[]});
@@ -107,4 +107,11 @@ test('automatic casting respects catalogue gender while manual choices stay fixe
   const plan=validatePlan({segments:[{speaker:'Alice',voice:'Kore',text:'Hello.'}]},'Hello.',c);
   assert.equal(plan.segments[0].voice,'Kore');
   c.fixed[1].voice='Puck';assert.equal(validatePlan({segments:[{speaker:'Alice',voice:'Kore',text:'Hello.'}]},'Hello.',c).segments[0].voice,'Puck');
+});
+
+test('Lumiverse gender aliases and named Google voices retain usable gender labels',()=>{
+  const voices=normalizeVoiceCatalogue([{id:'Kore',gender:'feminine'},{id:'Puck',gender:'masculine'},
+    {id:'custom',gender:['FEMALE']},{id:'neutral',ssmlGender:'NEUTRAL'},{id:'Charon'},
+    {id:'en-US-Chirp3-HD-Zephyr'},{id:'custom-unknown'}]);
+  assert.deepEqual(voices.map(v=>v.gender),['female','male','female','neutral','male','female',undefined]);
 });

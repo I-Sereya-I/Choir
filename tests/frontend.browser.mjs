@@ -28,7 +28,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     if(url.endsWith('/tts/synthesize')){nativeRequests.push(JSON.parse(options.body));return new Response(new Uint8Array([1,2]),{headers:{'Content-Type':'audio/mpeg'}});}
     let value;
     if(url.includes('/providers'))value={providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}}]};
-    else if(url.endsWith('/voices'))value={voices:['alloy','coral','onyx','echo'].map(id=>({id,name:id}))};
+    else if(url.endsWith('/voices'))value={voices:['alloy','coral','onyx','echo'].map((id,index)=>({id,name:id,gender:['female','feminine','masculine','NEUTRAL'][index]}))};
     else value={data:[{id:'native-a',name:'OpenAI',provider:'openai_tts',model:'gpt-4o-mini-tts'}]};
     return new Response(JSON.stringify(value),{headers:{'Content-Type':'application/json'}});
   };
@@ -54,7 +54,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
       requests.push(message);if(message.action==='cancel')return;
       setTimeout(()=>{
         let result;
-        if(message.action==='ping')result={version:'1.0.6',ready:true};
+        if(message.action==='ping')result={version:'1.0.7',ready:true};
         else if(message.action==='plan')result=validatePlan({segments:[
           {speaker:'Narrator',text:'The hall fell silent.',style:'Calm'},
           {speaker:'Mira',voice:(message.input.config.voices.find(v=>v.gender==='female') || message.input.config.voices[1]).id,text:'Hello, stranger.',style:'Curious'},
@@ -105,6 +105,8 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     blockAudio=false;
     $('mode').value='native';$('mode').dispatchEvent(new dom.window.Event('change'));await tick();
     $('connection').value='native-a';$('connection').dispatchEvent(new dom.window.Event('change'));await tick();
+    assert.match($('fixed').querySelector('[data-choir-voice]').textContent,/coral · Female/);
+    assert.match($('fixed').querySelector('[data-choir-voice]').textContent,/onyx · Male/);
     for(const [index,select] of [...$('fixed').querySelectorAll('[data-choir-voice]')].entries())select.value=['alloy','coral','onyx'][index];
     $('styleParam').value='instructions';$('save').click();await tick();
     $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
@@ -134,12 +136,20 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     $('retention').value='forever';$('save').click();await until(()=>$('status').textContent.includes('retention saved'));
     $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
     $('play').click();await until(()=>$('status').textContent.includes('Audio saved'));
+    $('deleteChatAudio').click();await until(()=>$('status').textContent.includes('All Choir audio deleted'));
+    [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
+    await until(()=>$('status').textContent.includes('No saved audio'));
+    const beforeRegeneration=nativeRequests.length;
+    $('play').click();await until(()=>$('status').textContent.includes('Audio saved'));
+    assert.equal(nativeRequests.length,beforeRegeneration+3);
     message.content='Edited reply.';events.get('MESSAGE_EDITED')({messageId:'message-a'});
     assert.ok($('play').disabled);
     [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
     await until(()=>$('status').textContent.includes('message changed'));
     [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Delete audio').click();
     await until(()=>$('status').textContent.includes('deleted'));
+    assert.ok([...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').disabled);
+    events.get('MESSAGE_EDITED')({messageId:'message-a'});
     [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
     await until(()=>$('status').textContent.includes('No saved audio'));
     active='chat-b';listeners.get('chat.active')();await tick();await tick();
