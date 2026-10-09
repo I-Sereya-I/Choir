@@ -9,6 +9,10 @@ An installable Spindle extension for narrated roleplay with multiple voices.
 - Other speech providers use existing Lumiverse TTS connections and their saved credentials.
 - Review the plan, correct the cast, play, pause/resume, stop, or enable automatic playback of completed replies.
 
+## Install from GitHub
+
+In Lumiverse, open **Extensions → Add → Install from source**, paste [https://github.com/patatasbravasch-arch/Lumivoice](https://github.com/patatasbravasch-arch/Lumivoice), and select the `main` branch. Enable **Lumivoice** after installation. For a private repository, your Lumiverse server needs GitHub credentials with repository access.
+
 ## Install locally
 
 This archive includes ready-built `dist/backend.js` and `dist/frontend.js`; no compilation is needed to install it. It does not modify Lumiverse itself.
@@ -42,7 +46,7 @@ Optional Windows copy helper:
 
 It copies the extension only if the destination does not exist. You still perform **Import local** in Lumiverse afterward.
 
-Local import deliberately uses an empty `github` field. To distribute through Lumiverse's GitHub installer, publish this folder to your own repository, set `github` to that repository's HTTPS URL, and commit `dist/` along with the source. No GitHub repository has been published for you.
+The manifest points to the GitHub repository above. Ready-built `dist/` files are committed alongside the source.
 
 ## Configure Gemini 3.8 Flash TTS
 
@@ -111,3 +115,4 @@ npm test
 For the optional DOM integration test, install `jsdom@26.1.0` locally without saving it, then run `npm run test:ui`. Node 24 is the tested development runtime. Sandbox environments that disallow child processes can use `node --test --test-isolation=none` with the test paths instead.
 
 Sources: [Lumiverse staging](https://github.com/prolix-oc/Lumiverse/tree/staging), [Spindle developer documentation](https://docs.lumiverse.chat/), [Google Gemini TTS REST documentation](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation).
+
