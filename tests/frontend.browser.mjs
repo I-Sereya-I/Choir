@@ -53,10 +53,10 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
       requests.push(message);if(message.action==='cancel')return;
       setTimeout(()=>{
         let result;
-        if(message.action==='ping')result={version:'1.0.3',ready:true};
+        if(message.action==='ping')result={version:'1.0.4',ready:true};
         else if(message.action==='plan')result=validatePlan({segments:[
           {speaker:'Narrator',text:'The hall fell silent.',style:'Calm'},
-          {speaker:'Mira',text:'Hello, stranger.',style:'Curious'},
+          {speaker:'Mira',voice:message.input.config.voices[1].id,text:'Hello, stranger.',style:'Curious'},
           {speaker:'Guard',voice:message.input.config.voices.at(-1).id,text:'Welcome.',style:'Warm'}]},message.input.transcript,message.input.config);
         else result={base64:'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=',mimeType:'audio/wav'};
         onBackend?.({namespace:'choir',id:message.id,result});
@@ -78,6 +78,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
     assert.equal($('preview').querySelectorAll('.et-card').length,3);
     assert.equal(store.get('chat:chat-a').casts.gemini[0].speaker,'Guard');
+    assert.equal(store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Mira').voice,'Puck');
     $('key').value='test-key';$('play').click();await until(()=>$('status').textContent.includes('finished'));
     assert.equal(audios.length,3);assert.match($('status').textContent,/finished/);
     assert.ok(!JSON.stringify([...store.values()]).includes('test-key'));

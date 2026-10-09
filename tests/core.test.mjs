@@ -76,3 +76,15 @@ test('prose refusals and truncated plans report the response without repairing d
   assert.throws(()=>parsePlanJson('I cannot process this request.'),/Response begins: I cannot/);
   assert.throws(()=>parsePlanJson('{"segments":[{"text":"Hello."}'),/no complete JSON speech plan/);
 });
+
+test('unassigned fixed speakers are cast once while explicit assignments remain fixed',()=>{
+  const c=config();c.fixed[1].voice='';
+  const plan=validatePlan({segments:[
+    {speaker:'Narrator',voice:'Puck',text:'Alice said,'},
+    {speaker:'Alice',voice:'Fenrir',text:'"Hello."'},
+    {speaker:'Alice',voice:'Kore',text:'"Again."'}
+  ]},'Alice said, "Hello." "Again."',c);
+  assert.deepEqual(plan.segments.map(s=>s.voice),['Charon','Fenrir','Fenrir']);
+  assert.equal(c.fixed[1].voice,'');
+  assert.throws(()=>validatePlan({segments:[{speaker:'Alice',text:'Hello.'}]},'Hello.',c),/LLM-selected voice/);
+});

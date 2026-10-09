@@ -18,7 +18,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.0.3',ready:true}});return;
+      send({result:{version:'1.0.4',ready:true}});return;
     }
     if (message.action === 'plan') {
       if (typeof input.transcript !== 'string' || !input.transcript.trim() || input.transcript.length > 30000) throw new Error('Speech planning supports 1–30,000 characters per message.');

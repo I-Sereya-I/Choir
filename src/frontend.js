@@ -96,8 +96,8 @@ export async function setup(ctx) {
   const defaults = () => ({mode:'gemini',model:'gemini-3.8-flash-tts',planner:'',connection:'',styleParam:'',apiBase:'/api/v1',chunk:350,plannerTokens:8192,
     extraVoices:'',useStyle:true,auto:false,casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
-      {speaker:'Persona',voice:'Kore',style:''},
-      {speaker:'Character',voice:'Puck',style:''} ]});
+      {speaker:'Persona',voice:'',style:''},
+      {speaker:'Character',voice:'',style:''} ]});
   function status(text,error=false) {
     if(disposed)return;
     for(const name of ['status','statusActions']) {$(name).textContent=text;$(name).classList.toggle('et-error',error);}
@@ -142,8 +142,9 @@ export async function setup(ctx) {
     const row=document.createElement('div');row.className='et-card et-grid';
     const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;
     const voice=document.createElement('select');
+    option(voice,'','Let LLM choose');
     for(const item of voices) option(voice,item.id,`${item.name || item.id}${item.description ? ` · ${item.description}`:''}`);
-    if(!voices.some(v=>v.id===actor.voice))option(voice,actor.voice,`${actor.voice || 'Choose a voice'} · unavailable`);
+    if(actor.voice && !voices.some(v=>v.id===actor.voice))option(voice,actor.voice,`${actor.voice} · unavailable`);
     voice.value=actor.voice;
     const style=document.createElement('input');style.value=actor.style || '';style.maxLength=600;
     for (const [label,node] of [['Speaker name',name],['Voice',voice],['Base delivery style',style]]) {
@@ -308,6 +309,9 @@ export async function setup(ctx) {
       })},transcript,snapshot);
       plan=validated;planSource={messageId,content,transcript,chatId:targetChat};
       config.casts[scope(config)]=validated.npcs;
+      for(const actor of config.fixed) {
+        if(!actor.voice)actor.voice=validated.segments.find(s=>normalizeName(s.speaker)===normalizeName(actor.speaker))?.voice || '';
+      }
       await ctx.settings.set(settingsKey(targetChat),config);
       if(token!==revision || disposed)return;
       renderCast();renderPreview();status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.map(s=>s.speaker)).size} speakers.`);
@@ -385,12 +389,12 @@ export async function setup(ctx) {
   });
   $('stop').onclick=()=>stop();$('play').onclick=()=>run(play);
   $('pause').onclick=()=>{if(!currentAudio)return;if(currentAudio.paused){currentAudio.play().catch(e=>status(e.message,true));$('pause').textContent='Pause';}else{currentAudio.pause();$('pause').textContent='Resume';}};
-  $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:voices[0]?.id || '',style:''},$('fixed')));};
+  $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:'',style:''},$('fixed')));};
   $('reset').onclick=()=>{config=capture();config.casts[scope(config)]=[];renderCast();clearPlan();status('NPC cast cleared. Save to keep this change.');};
   $('load').onclick=()=>run(async()=>{config=capture();loadVersion++;await loadProviders();clearPlan();status('Connections and voices reloaded.');});
   for(const name of ['mode','connection'])$(name).onchange=()=>run(async()=>{
     stop(false);clearPlan();config=capture();loadVersion++;setFields();await loadVoices();
-    const unavailable=config.fixed.some(v=>!voices.some(x=>x.id===v.voice));
+    const unavailable=config.fixed.some(v=>v.voice && !voices.some(x=>x.id===v.voice));
     status(unavailable?'Choose valid voices for this provider, then save.':'Provider selected. Save your cast.');
   });
   $('apply').onclick=()=>run(async()=>{
