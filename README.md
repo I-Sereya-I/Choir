@@ -13,6 +13,10 @@ An installable Spindle extension for narrated roleplay with multiple voices.
 
 In Lumiverse, open **Extensions → Add → Install from source**, paste [https://github.com/patatasbravasch-arch/Choir](https://github.com/patatasbravasch-arch/Choir), and select the `main` branch. Enable **Choir** after installation. For a private repository, your Lumiverse server needs GitHub credentials with repository access.
 
+Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
+
+Already installed? In **Extensions**, update Choir to **1.0.1**, then reload the page. Version 1.0.1 adds the settings entry and displays an explanation if the installed Lumiverse build lacks Choir's required APIs.
+
 ## Install locally
 
 This archive includes ready-built `dist/backend.js` and `dist/frontend.js`; no compilation is needed to install it. It does not modify Lumiverse itself.
@@ -36,7 +40,7 @@ This archive includes ready-built `dist/backend.js` and `dist/frontend.js`; no c
    If you use Docker, copy into the mounted data volume. The host folder must correspond to the container's configured data directory.
 3. In Lumiverse, open **Extensions**, open its **Add** menu, and choose **Import local** as an owner/admin.
 4. Enable **Choir** and grant its requested permissions if Lumiverse prompts you. Reload the frontend if its tab is not yet visible.
-5. Open a chat and select **Choir** from the sidebar/command palette or the input-bar action.
+5. Open a chat, then open **Settings → Choir**, or choose **Choir** from the sidebar/command palette or the input-bar action.
 
 Optional Windows copy helper:
 
@@ -101,7 +105,7 @@ Changing chat, editing/deleting a message, or changing its swipe stops the activ
 
 ## Validation and development
 
-Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 14 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
+Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 15 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
 
 **It has not been installed into your running Lumiverse instance or tested with real provider credentials.** Actual synthesis quality, provider availability and live UI integration still need your first-use check.
 

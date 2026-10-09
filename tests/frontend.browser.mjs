@@ -32,13 +32,21 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     return new Response(JSON.stringify(value),{headers:{'Content-Type':'application/json'}});
   };
   const root=dom.window.document.querySelector('main');
+  const settingsRoot=dom.window.document.createElement('section');
+  const settingsMount=dom.window.document.createElement('section');
+  const placementListeners=new Map();
   const ctx={
     settings:{get:async key=>store.get(key),set:async(key,value)=>store.set(key,structuredClone(value))},
     messages:{getRecent:()=>active==='chat-a'?[message]:[],getContent:id=>id===message.id?message.content:null},
     state:{subscribe:(key,fn)=>{listeners.set(key,fn);return()=>listeners.delete(key);}},
     connections:{list:()=>[]},characters:{get:async()=>({name:'Mira'})},getActiveChat:()=>({chatId:active,characterId:'character-a'}),
     dom:{addStyle:()=>()=>{}},
-    ui:{registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:()=>({onClick(){},destroy(){}})},
+    ui:{
+      registerDrawerTab:()=>({root,activate(){placementListeners.get('drawer')?.();},destroy(){root.replaceChildren();},onActivate(fn){placementListeners.set('drawer',fn);return()=>placementListeners.delete('drawer');}}),
+      registerSettingsTab:options=>{assert.equal(options.id,'choir');return {root:settingsRoot,activate(){placementListeners.get('settings')?.();},destroy(){settingsRoot.replaceChildren();},onActivate(fn){placementListeners.set('settings',fn);return()=>placementListeners.delete('settings');}};},
+      mount:name=>{assert.equal(name,'settings_extensions');return settingsMount;},
+      registerInputBarAction:()=>({onClick(){},destroy(){}})
+    },
     events:{on:(key,fn)=>{events.set(key,fn);return()=>events.delete(key);}},
     onBackendMessage:fn=>{onBackend=fn;return()=>onBackend=null;},
     sendToBackend:message=>{
@@ -56,8 +64,14 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   };
   try {
     const cleanup=await setup(ctx);
-    const $=name=>root.querySelector(`[data-et="${name}"]`);
+    const $=name=>root.querySelector(`[data-et="${name}"]`) || settingsRoot.querySelector(`[data-et="${name}"]`);
     assert.equal($('fixed').querySelectorAll('.et-card').length,3);
+    $('key').value='session-key';
+    settingsMount.querySelector('button').click();
+    assert.ok(settingsRoot.querySelector('[data-et="fixed"]'));
+    assert.equal($('key').value,'session-key');
+    placementListeners.get('drawer')();
+    assert.ok(root.querySelector('[data-et="fixed"]'));
     // Drawer roots can be detached when the user is looking at the story.
     root.remove();
     $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
@@ -85,5 +99,18 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     active='chat-b';listeners.get('chat.active')();await tick();await tick();
     assert.match($('npcs').textContent,/No NPCs/);
     cleanup();assert.equal(root.children.length,0);assert.equal(listeners.size,0);assert.equal(events.size,0);
+    assert.equal(settingsRoot.children.length,0);assert.equal(settingsMount.children.length,0);assert.equal(placementListeners.size,0);
   } finally {Object.assign(globalThis,old);dom.window.close();}
+});
+
+test('older hosts show a visible settings diagnostic rather than disappearing',async()=>{
+  const dom=new JSDOM('<body><main></main><section></section></body>');
+  const previous=globalThis.document;globalThis.document=dom.window.document;
+  const root=dom.window.document.querySelector('main');const mount=dom.window.document.querySelector('section');
+  try {
+    const cleanup=await setup({messages:{},ui:{registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),mount:()=>mount}});
+    assert.match(root.textContent,/newer Lumiverse staging/);
+    assert.equal(mount.querySelector('button').textContent,'Open Choir settings');
+    cleanup();assert.equal(root.children.length,0);assert.equal(mount.children.length,0);
+  } finally {globalThis.document=previous;dom.window.close();}
 });

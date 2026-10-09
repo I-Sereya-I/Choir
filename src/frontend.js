@@ -1,11 +1,38 @@
 import { GEMINI_VOICES, normalizeName, transcriptFromMessage, validateCastConfig, validatePlan, parsePlanJson, splitSegment, audioBytes } from './core.js';
 
 export async function setup(ctx) {
-  if (!ctx.settings || !ctx.messages.getRecent || !ctx.messages.getContent || !ctx.state) {
-    throw new Error('Choir requires current Lumiverse staging (message readers, state selectors and settings API).');
-  }
   const tab = ctx.ui.registerDrawerTab({id:'ensemble',title:'Choir',shortName:'Voices',
     description:'Cast and play your story with multiple voices',keywords:['tts','audio','voices','narrator']});
+  const root=document.createElement('div');
+  tab.root.append(root);
+  const settingsTab=ctx.ui.registerSettingsTab?.({id:'choir',title:'Choir',shortName:'Voices',
+    description:'Configure Choir speech providers, narrator, persona and character voices',
+    keywords:['tts','speech','voices','narrator','persona','characters'],position:'bottom'});
+  const placementUnsubs=[];
+  if(settingsTab) {
+    placementUnsubs.push(settingsTab.onActivate(()=>settingsTab.root.replaceChildren(root)));
+    if(tab.onActivate)placementUnsubs.push(tab.onActivate(()=>tab.root.replaceChildren(root)));
+  }
+  // Lumiverse's extension Settings button specifically requires this mount point.
+  const settingsMount=ctx.ui.mount?.('settings_extensions');
+  if(settingsMount) {
+    const card=document.createElement('div');card.style.padding='12px';
+    const title=document.createElement('h3');title.textContent='Choir';
+    const text=document.createElement('p');text.textContent='Configure speech providers and the voices of your narrator, persona, main characters and NPCs.';
+    const open=document.createElement('button');open.textContent='Open Choir settings';
+    open.onclick=()=>{(settingsTab || tab).activate();};
+    card.append(title,text,open);settingsMount.replaceChildren(card);
+  }
+  const cleanupPlacements=()=>{
+    placementUnsubs.splice(0).forEach(fn=>fn());settingsMount?.replaceChildren();
+    root.remove();settingsTab?.destroy();tab.destroy();
+  };
+  if (!ctx.settings || !ctx.messages?.getRecent || !ctx.messages?.getContent || !ctx.state) {
+    const message=document.createElement('p');message.setAttribute('role','alert');
+    message.textContent='Choir needs a newer Lumiverse staging build for its message and settings APIs. Update Lumiverse staging, then reload the page. Its settings entry is available, but playback cannot start on this build.';
+    message.style.padding='18px';root.append(message);
+    return cleanupPlacements;
+  }
   const removeStyle = ctx.dom.addStyle(`
     .ensemble-tts{padding:18px;max-width:850px;margin:auto;font:inherit;line-height:1.5;color:inherit}
     .ensemble-tts h2{font-size:1.3em;margin:0 0 8px}.ensemble-tts h3{font-size:1em;margin:22px 0 8px}
@@ -22,7 +49,6 @@ export async function setup(ctx) {
     .ensemble-tts .et-transcript{font:inherit;white-space:pre-wrap;max-height:180px;overflow:auto}
     .ensemble-tts details{margin:10px 0}.ensemble-tts .et-message{display:flex;gap:10px;align-items:center;justify-content:space-between}
   `);
-  const root = tab.root;
   root.innerHTML = `<div class="ensemble-tts">
     <h2>Choir</h2><p>Your cast, one story. Fixed voices for your leads; LLM casting for everyone else.</p>
     <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
@@ -379,7 +405,7 @@ export async function setup(ctx) {
   const cleanup=()=>{
     if(disposed)return;stop(false);$('key').value='';disposed=true;loadVersion++;
     for(const done of [...pending.values()])done(abortError());
-    unsubs.splice(0).forEach(fn=>fn());removeStyle();tab.destroy();
+    unsubs.splice(0).forEach(fn=>fn());removeStyle();cleanupPlacements();
   };
   await run(switchChat);
   return cleanup;
