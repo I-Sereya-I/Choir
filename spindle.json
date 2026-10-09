@@ -1,8 +1,8 @@
 {
   "version": "1.0.0",
-  "name": "Ensemble TTS",
-  "identifier": "ensemble_tts",
-  "author": "Ensemble TTS contributors",
+  "name": "Lumivoice",
+  "identifier": "lumivoice",
+  "author": "Lumivoice contributors",
   "github": "",
   "homepage": "",
   "description": "Narrator, persona, main characters and persistent LLM-cast NPC voices, with Gemini speech metadata.",

@@ -1,4 +1,4 @@
-# Ensemble TTS for Lumiverse staging
+# Lumivoice for Lumiverse staging
 
 An installable Spindle extension for narrated roleplay with multiple voices.
 
@@ -13,14 +13,14 @@ An installable Spindle extension for narrated roleplay with multiple voices.
 
 This archive includes ready-built `dist/backend.js` and `dist/frontend.js`; no compilation is needed to install it. It does not modify Lumiverse itself.
 
-1. Extract the archive. The extension folder is named `ensemble_tts`.
-2. Copy that entire folder into your Lumiverse **configured data directory** under `extensions/ensemble_tts`. A typical layout is:
+1. Extract the archive. The extension folder is named `lumivoice`.
+2. Copy that entire folder into your Lumiverse **configured data directory** under `extensions/lumivoice`. A typical layout is:
 
    ```text
    Lumiverse/
      data/
        extensions/
-         ensemble_tts/
+         lumivoice/
            spindle.json
            dist/
              backend.js
@@ -31,8 +31,8 @@ This archive includes ready-built `dist/backend.js` and `dist/frontend.js`; no c
 
    If you use Docker, copy into the mounted data volume. The host folder must correspond to the container's configured data directory.
 3. In Lumiverse, open **Extensions**, open its **Add** menu, and choose **Import local** as an owner/admin.
-4. Enable **Ensemble TTS** and grant its requested permissions if Lumiverse prompts you. Reload the frontend if its tab is not yet visible.
-5. Open a chat and select **Ensemble TTS** from the sidebar/command palette or the input-bar action.
+4. Enable **Lumivoice** and grant its requested permissions if Lumiverse prompts you. Reload the frontend if its tab is not yet visible.
+5. Open a chat and select **Lumivoice** from the sidebar/command palette or the input-bar action.
 
 Optional Windows copy helper:
 

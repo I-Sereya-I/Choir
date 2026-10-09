@@ -160,14 +160,14 @@ const running = new Map();
 const identity = (user,session,id) => JSON.stringify([user,session || '',id]);
 
 spindle.onFrontendMessage((message, userId, frontendSessionId) => {
-  if (!message || message.namespace !== 'ensemble_tts' || typeof message.id !== 'string') return;
+  if (!message || message.namespace !== 'lumivoice' || typeof message.id !== 'string') return;
   const key = identity(userId,frontendSessionId,message.id);
   if (message.action === 'cancel') { running.get(key)?.abort(); return; }
   if (running.has(key)) return;
   const controller = new AbortController();
   running.set(key,controller);
   const send = payload => {
-    if (!controller.signal.aborted) spindle.sendToFrontend({namespace:'ensemble_tts',id:message.id,...payload},userId,{frontendSessionId});
+    if (!controller.signal.aborted) spindle.sendToFrontend({namespace:'lumivoice',id:message.id,...payload},userId,{frontendSessionId});
   };
   const timer = setTimeout(() => { send({error:'Request timed out. Try shorter speech chunks or a faster planner.'}); controller.abort(); },180000);
   (async () => {
@@ -206,7 +206,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       if (response.status < 200 || response.status >= 300) throw new Error(`Gemini TTS HTTP ${response.status}. Check key, quota and model access.`);
       send({result:extractGeminiAudio(JSON.parse(response.body))}); return;
     }
-    throw new Error('Unknown Ensemble TTS action.');
-  })().catch(error => send({error: error?.message || 'Ensemble TTS request failed.'}))
+    throw new Error('Unknown Lumivoice action.');
+  })().catch(error => send({error: error?.message || 'Lumivoice request failed.'}))
     .finally(() => {clearTimeout(timer);running.delete(key);});
 });
