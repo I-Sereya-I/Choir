@@ -1,4 +1,4 @@
-# Lumivoice for Lumiverse staging
+# Choir for Lumiverse staging
 
 An installable Spindle extension for narrated roleplay with multiple voices.
 
@@ -11,20 +11,20 @@ An installable Spindle extension for narrated roleplay with multiple voices.
 
 ## Install from GitHub
 
-In Lumiverse, open **Extensions → Add → Install from source**, paste [https://github.com/patatasbravasch-arch/Lumivoice](https://github.com/patatasbravasch-arch/Lumivoice), and select the `main` branch. Enable **Lumivoice** after installation. For a private repository, your Lumiverse server needs GitHub credentials with repository access.
+In Lumiverse, open **Extensions → Add → Install from source**, paste [https://github.com/patatasbravasch-arch/Choir](https://github.com/patatasbravasch-arch/Choir), and select the `main` branch. Enable **Choir** after installation. For a private repository, your Lumiverse server needs GitHub credentials with repository access.
 
 ## Install locally
 
 This archive includes ready-built `dist/backend.js` and `dist/frontend.js`; no compilation is needed to install it. It does not modify Lumiverse itself.
 
-1. Extract the archive. The extension folder is named `lumivoice`.
-2. Copy that entire folder into your Lumiverse **configured data directory** under `extensions/lumivoice`. A typical layout is:
+1. Extract the archive. The extension folder is named `choir`.
+2. Copy that entire folder into your Lumiverse **configured data directory** under `extensions/choir`. A typical layout is:
 
    ```text
    Lumiverse/
      data/
        extensions/
-         lumivoice/
+         choir/
            spindle.json
            dist/
              backend.js
@@ -35,8 +35,8 @@ This archive includes ready-built `dist/backend.js` and `dist/frontend.js`; no c
 
    If you use Docker, copy into the mounted data volume. The host folder must correspond to the container's configured data directory.
 3. In Lumiverse, open **Extensions**, open its **Add** menu, and choose **Import local** as an owner/admin.
-4. Enable **Lumivoice** and grant its requested permissions if Lumiverse prompts you. Reload the frontend if its tab is not yet visible.
-5. Open a chat and select **Lumivoice** from the sidebar/command palette or the input-bar action.
+4. Enable **Choir** and grant its requested permissions if Lumiverse prompts you. Reload the frontend if its tab is not yet visible.
+5. Open a chat and select **Choir** from the sidebar/command palette or the input-bar action.
 
 Optional Windows copy helper:
 

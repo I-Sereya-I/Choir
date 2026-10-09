@@ -8,7 +8,7 @@ async function harness(generate, cors) {
   let handler;const sent=[];let wake;
   vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});wake?.();},generate:{quiet:generate},cors},
     console,Map,Set,AbortController,setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView});
-  return {sent,send:(action,input,id='request')=>handler({namespace:'lumivoice',action,input,id},'user-a','session-a'),
+  return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
     result:()=>sent.length?Promise.resolve(sent.at(-1)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
 }
 test('planner uses user identity and routes replies only to the originating browser session',async()=>{

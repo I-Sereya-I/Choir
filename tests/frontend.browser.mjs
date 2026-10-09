@@ -4,7 +4,7 @@ import {createRequire} from 'node:module';
 import path from 'node:path';
 import {validatePlan} from '../src/core.js';
 import {setup} from '../dist/frontend.js';
-const require=process.env.LUMIVOICE_TEST_MODULES?createRequire(path.join(process.env.LUMIVOICE_TEST_MODULES,'package.json')):createRequire(import.meta.url);
+const require=process.env.CHOIR_TEST_MODULES?createRequire(path.join(process.env.CHOIR_TEST_MODULES,'package.json')):createRequire(import.meta.url);
 const {JSDOM}=require('jsdom');
 const tick=()=>new Promise(r=>setTimeout(r,15));
 const until=async predicate=>{for(let i=0;i<100;i++){if(predicate())return;await tick();}throw new Error('UI did not reach the expected state.');};
@@ -50,7 +50,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
           {speaker:'Mira',text:'Hello, stranger.',style:'Curious'},
           {speaker:'Guard',voice:message.input.config.voices.at(-1).id,text:'Welcome.',style:'Warm'}]},message.input.transcript,message.input.config);
         else result={base64:'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=',mimeType:'audio/wav'};
-        onBackend?.({namespace:'lumivoice',id:message.id,result});
+        onBackend?.({namespace:'choir',id:message.id,result});
       },2);
     }
   };

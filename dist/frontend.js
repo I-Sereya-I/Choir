@@ -157,9 +157,9 @@ Split the supplied transcript into consecutive narration and dialogue turns. Cop
 
 export async function setup(ctx) {
   if (!ctx.settings || !ctx.messages.getRecent || !ctx.messages.getContent || !ctx.state) {
-    throw new Error('Lumivoice requires current Lumiverse staging (message readers, state selectors and settings API).');
+    throw new Error('Choir requires current Lumiverse staging (message readers, state selectors and settings API).');
   }
-  const tab = ctx.ui.registerDrawerTab({id:'ensemble',title:'Lumivoice',shortName:'Voices',
+  const tab = ctx.ui.registerDrawerTab({id:'ensemble',title:'Choir',shortName:'Voices',
     description:'Cast and play your story with multiple voices',keywords:['tts','audio','voices','narrator']});
   const removeStyle = ctx.dom.addStyle(`
     .ensemble-tts{padding:18px;max-width:850px;margin:auto;font:inherit;line-height:1.5;color:inherit}
@@ -179,7 +179,7 @@ export async function setup(ctx) {
   `);
   const root = tab.root;
   root.innerHTML = `<div class="ensemble-tts">
-    <h2>Lumivoice</h2><p>Your cast, one story. Fixed voices for your leads; LLM casting for everyone else.</p>
+    <h2>Choir</h2><p>Your cast, one story. Fixed voices for your leads; LLM casting for everyone else.</p>
     <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
     <h3>Speech provider</h3><div class="et-grid">
       <label>Playback adapter<select data-et="mode"><option value="gemini">Gemini 3.8 · style metadata</option><option value="native">Lumiverse TTS connection</option></select></label>
@@ -234,15 +234,15 @@ export async function setup(ctx) {
     if (signal?.aborted) return Promise.reject(abortError());
     return new Promise((resolve,reject) => {
       const id=crypto.randomUUID();
-      const cancel=()=>{ctx.sendToBackend({namespace:'lumivoice',id,action:'cancel'});done(abortError());};
+      const cancel=()=>{ctx.sendToBackend({namespace:'choir',id,action:'cancel'});done(abortError());};
       const timer=setTimeout(()=>{cancel();},185000);
       const done=(error,result)=>{clearTimeout(timer);signal?.removeEventListener('abort',cancel);pending.delete(id);error?reject(error):resolve(result);};
       pending.set(id,done); signal?.addEventListener('abort',cancel,{once:true});
-      try {ctx.sendToBackend({namespace:'lumivoice',id,action,input});} catch(error){done(error);}
+      try {ctx.sendToBackend({namespace:'choir',id,action,input});} catch(error){done(error);}
     });
   }
   unsubs.push(ctx.onBackendMessage(message=>{
-    if(message?.namespace !== 'lumivoice')return;
+    if(message?.namespace !== 'choir')return;
     pending.get(message.id)?.(message.error?new Error(message.error):null,message.result);
   }));
 
@@ -528,7 +528,7 @@ export async function setup(ctx) {
       renderMessages();
     }));
   }
-  const action=ctx.ui.registerInputBarAction({id:'ensemble',label:'Lumivoice',subtitle:'Cast and play voices',enabled:true});
+  const action=ctx.ui.registerInputBarAction({id:'ensemble',label:'Choir',subtitle:'Cast and play voices',enabled:true});
   action.onClick(()=>tab.activate());
   unsubs.push(()=>action.destroy());
   const cleanup=()=>{

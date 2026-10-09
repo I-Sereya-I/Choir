@@ -1,10 +1,10 @@
 {
   "version": "1.0.0",
-  "name": "Lumivoice",
-  "identifier": "lumivoice",
-  "author": "Lumivoice contributors",
-  "github": "https://github.com/patatasbravasch-arch/Lumivoice",
-  "homepage": "https://github.com/patatasbravasch-arch/Lumivoice",
+  "name": "Choir",
+  "identifier": "choir",
+  "author": "Choir contributors",
+  "github": "https://github.com/patatasbravasch-arch/Choir",
+  "homepage": "https://github.com/patatasbravasch-arch/Choir",
   "description": "Narrator, persona, main characters and persistent LLM-cast NPC voices, with Gemini speech metadata.",
   "permissions": [
     "generation",
