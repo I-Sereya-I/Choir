@@ -2,7 +2,7 @@
 
 An installable Spindle extension for narrated roleplay with multiple voices.
 
-- You choose the narrator, your persona, and one or more main-character voices.
+- Choose narrator/persona/main-character voices yourself, or select **Let LLM choose**. Voice gender preferences (infer, feminine, masculine, neutral) guide automatic selection; voice catalogue support varies and manual voices take priority. Select Let LLM choose again to apply a changed preference to a previously cast voice.
 - A separate LLM pass identifies narration and dialogue, casts NPCs from the available voice catalogue, and suggests delivery styles.
 - NPC voices persist per chat and speech provider. Fixed and previously assigned voices override any contradictory model suggestion.
 - Gemini 3.8 uses `speech_metadata.style`, separate from the spoken transcript.
@@ -15,7 +15,7 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? In **Extensions**, update Choir to **1.0.4**, restart it, then reload the page. Version 1.0.4 adds **Let LLM choose** to main-cast voice selectors and saves the chosen voices after planning. Select that option again to request recasting. Existing saved voices remain assigned. It also clarifies dialogue attribution and NPC naming. Choir requests JSON output for Google/OpenAI planners, accepts complete plans surrounded by prose, and shows a response excerpt when planning fails. It retains the settings entry, independent planner output budget and backend connection check.
+Already installed? In **Extensions**, update Choir to **1.0.5**, restart it, then reload the page. Version 1.0.5 adds per-speaker voice gender preferences and saves completed audio on this device for Replay after reload. Use Delete audio beside a recent message to remove its recording. Version 1.0.4 added **Let LLM choose** to main-cast voice selectors and saves the chosen voices after planning. Select that option again to request recasting. Existing saved voices remain assigned. It also clarifies dialogue attribution and NPC naming. Choir requests JSON output for Google/OpenAI planners, accepts complete plans surrounded by prose, and shows a response excerpt when planning fails. It retains the settings entry, independent planner output budget and backend connection check.
 
 ## Install locally
 
@@ -103,11 +103,11 @@ Changing chat, editing/deleting a message, or changing its swipe stops the activ
 - On HTTP 401/403/429 or a timeout, check the key, model access, quota and connection settings. A provider error is shown without silently changing the cast or speaking unvalidated text.
 - Use WAV or MP3 when a browser cannot decode your native provider's output. Gemini WAV is preserved; legacy raw PCM responses are wrapped in WAV.
 - Advanced **Lumiverse API base** defaults to `/api/v1`. Change it if your frontend reaches Lumiverse at a different API URL; session authentication and the server's CORS settings still apply.
-- Cast settings persist per user/chat. Speech plans and audio remain in memory; this version does not attach recordings to messages or cache audio across reloads.
+- Cast settings persist per user/chat. Completed recordings persist in browser IndexedDB on this device, scoped to your extension settings and chat/message. Use Replay beside recent messages after reload, without an API key or new synthesis. Edited/swiped messages cannot replay the old recording. Clearing browser site data removes recordings; they do not sync to other devices or appear in native Lumiverse TTS controls. Only one recording per message is retained; a new completed generation replaces it. If browser storage is unavailable/full, playback continues and reports that audio was not saved. Use Delete audio to remove a recording.
 
 ## Validation and development
 
-Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 23 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Planner tests verify independent output settings, a retry after truncated JSON, clear empty-response errors, and backend readiness replies. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
+Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 24 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Planner tests verify independent output settings, a retry after truncated JSON, clear empty-response errors, and backend readiness replies. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
 
 **It has not been installed into your running Lumiverse instance or tested with real provider credentials.** Actual synthesis quality, provider availability and live UI integration still need your first-use check.
 
@@ -118,7 +118,7 @@ node scripts/build.mjs
 npm test
 ```
 
-For the optional DOM integration test, install `jsdom@26.1.0` locally without saving it, then run `npm run test:ui`. Node 24 is the tested development runtime. Sandbox environments that disallow child processes can use `node --test --test-isolation=none` with the test paths instead.
+For the optional DOM integration test, install `jsdom@26.1.0` and `fake-indexeddb` locally without saving it, then run `npm run test:ui`. Node 24 is the tested development runtime. Sandbox environments that disallow child processes can use `node --test --test-isolation=none` with the test paths instead.
 
 Sources: [Lumiverse staging](https://github.com/prolix-oc/Lumiverse/tree/staging), [Spindle developer documentation](https://docs.lumiverse.chat/), [Google Gemini TTS REST documentation](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation).
 

@@ -11,7 +11,8 @@ const until=async predicate=>{for(let i=0;i<100;i++){if(predicate())return;await
 
 test('frontend plans, persists NPCs, plays sequentially, stops, switches chat and disposes',async()=>{
   const dom=new JSDOM('<body><main></main></body>',{url:'https://lumiverse.test'});
-  const old={document:globalThis.document,Audio:globalThis.Audio,fetch:globalThis.fetch};
+  const old={document:globalThis.document,Audio:globalThis.Audio,fetch:globalThis.fetch,indexedDB:globalThis.indexedDB};
+  globalThis.indexedDB=new (require('fake-indexeddb').IDBFactory)();
   globalThis.document=dom.window.document;
   let onBackend,active='chat-a';const listeners=new Map(),events=new Map(),store=new Map(),requests=[],audios=[];
   const message={id:'message-a',chat_id:'chat-a',name:'Mira',is_user:false,content:'The hall fell silent. Hello, stranger. Welcome.',extra:{}};
@@ -53,7 +54,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
       requests.push(message);if(message.action==='cancel')return;
       setTimeout(()=>{
         let result;
-        if(message.action==='ping')result={version:'1.0.4',ready:true};
+        if(message.action==='ping')result={version:'1.0.5',ready:true};
         else if(message.action==='plan')result=validatePlan({segments:[
           {speaker:'Narrator',text:'The hall fell silent.',style:'Calm'},
           {speaker:'Mira',voice:message.input.config.voices[1].id,text:'Hello, stranger.',style:'Curious'},
@@ -64,9 +65,10 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     }
   };
   try {
-    const cleanup=await setup(ctx);
+    let cleanup=await setup(ctx);
     const $=name=>root.querySelector(`[data-et="${name}"]`) || settingsRoot.querySelector(`[data-et="${name}"]`);
     assert.equal($('fixed').querySelectorAll('.et-card').length,3);
+    $('fixed').querySelectorAll('[data-choir-gender]')[2].value='female';
     $('key').value='session-key';
     settingsMount.querySelector('button').click();
     assert.ok(settingsRoot.querySelector('[data-et="fixed"]'));
@@ -79,8 +81,19 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.equal($('preview').querySelectorAll('.et-card').length,3);
     assert.equal(store.get('chat:chat-a').casts.gemini[0].speaker,'Guard');
     assert.equal(store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Mira').voice,'Puck');
+    assert.equal(store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Mira').gender,'female');
+    assert.equal(requests.find(request=>request.action==='plan').input.config.fixed[2].gender,'female');
     $('key').value='test-key';$('play').click();await until(()=>$('status').textContent.includes('finished'));
     assert.equal(audios.length,3);assert.match($('status').textContent,/finished/);
+    assert.match($('status').textContent,/Audio saved/);
+    const generated=requests.filter(v=>v.action==='gemini').length;
+    $('key').value='';$('play').click();await until(()=>$('status').textContent.includes('finished'));
+    assert.equal(requests.filter(v=>v.action==='gemini').length,generated);
+    cleanup();cleanup=await setup(ctx);
+    const replay=[...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay');
+    replay.click();await until(()=>$('status').textContent==='Replay finished.');
+    assert.equal(requests.filter(v=>v.action==='gemini').length,generated);
+    $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
     assert.ok(!JSON.stringify([...store.values()]).includes('test-key'));
     blockAudio=true;$('play').click();await tick();const previous=requests.filter(v=>v.action==='gemini').length;
     $('stop').click();await tick();assert.equal(requests.filter(v=>v.action==='gemini').length,previous);
@@ -88,7 +101,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     blockAudio=false;
     $('mode').value='native';$('mode').dispatchEvent(new dom.window.Event('change'));await tick();
     $('connection').value='native-a';$('connection').dispatchEvent(new dom.window.Event('change'));await tick();
-    for(const [index,select] of [...$('fixed').querySelectorAll('select')].entries())select.value=['alloy','coral','onyx'][index];
+    for(const [index,select] of [...$('fixed').querySelectorAll('[data-choir-voice]')].entries())select.value=['alloy','coral','onyx'][index];
     $('styleParam').value='instructions';$('save').click();await tick();
     $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
     $('play').click();await until(()=>$('status').textContent.includes('finished'));
@@ -98,6 +111,12 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.equal(nativeRequests[2].voice,'echo');
     message.content='Edited reply.';events.get('MESSAGE_EDITED')({messageId:'message-a'});
     assert.ok($('play').disabled);
+    [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
+    await until(()=>$('status').textContent.includes('message changed'));
+    [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Delete audio').click();
+    await until(()=>$('status').textContent.includes('deleted'));
+    [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
+    await until(()=>$('status').textContent.includes('No saved audio'));
     active='chat-b';listeners.get('chat.active')();await tick();await tick();
     assert.match($('npcs').textContent,/No NPCs/);
     cleanup();assert.equal(root.children.length,0);assert.equal(listeners.size,0);assert.equal(events.size,0);

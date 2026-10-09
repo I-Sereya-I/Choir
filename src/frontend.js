@@ -73,7 +73,7 @@ export async function setup(ctx) {
     <div class="et-row"><button data-et="load">Reload connections and voices</button></div>
     <h3>Fixed cast for this chat</h3><p>Name your persona and characters exactly as they appear in the story. Narrator is reserved. You can add multiple main characters.</p>
     <div data-et="fixed"></div><button data-et="add">Add main character</button>
-    <h3>NPC cast</h3><p>The planner selects new NPC voices and reuses their assignments throughout this chat. You can correct assignments below.</p>
+    <h3>NPC cast</h3><p>The planner selects new NPC voices and reuses their assignments throughout this chat. Gender preferences guide automatic voice selection. To recast an assigned voice with a new preference, select Let LLM choose, save, then plan again. Manual voices take priority.</p>
     <div data-et="npcs"></div><button data-et="reset">Reset NPC cast for this provider</button>
     <div class="et-row"><label class="et-check"><input data-et="useStyle" type="checkbox" checked>Use delivery styles</label>
       <label class="et-check"><input data-et="auto" type="checkbox">Auto-play completed replies</label></div>
@@ -84,11 +84,34 @@ export async function setup(ctx) {
     <button data-et="play" disabled>Play plan</button>
     <details><summary>Edit plan JSON</summary><p>Keep each segment’s text as an exact consecutive substring. Fixed and existing NPC voices take priority.</p>
       <textarea data-et="planJson" rows="8" spellcheck="false"></textarea><button data-et="apply">Apply edited plan</button></details>
-    <h3>Recent messages</h3><div data-et="messages"></div>
+    <h3>Recent messages</h3><p>Replay saved audio without another provider request. Recordings are stored on this device. Gender preferences guide automatic casting; manually selected voices take priority.</p><div data-et="messages"></div>
     <p>Disable Lumiverse’s native TTS auto-play to avoid overlapping audio. Speech planning makes a separate LLM request; playback makes one TTS request per chunk.</p>
   </div>`;
   const $ = name => root.querySelector(`[data-et="${name}"]`);
   const pending = new Map();
+  let audioNamespace=await ctx.settings.get('audioCacheNamespace');
+  if(!audioNamespace){audioNamespace=crypto.randomUUID();await ctx.settings.set('audioCacheNamespace',audioNamespace);}
+  let audioDatabase;
+  async function recordingStore(operation,key,value) {
+    if(!globalThis.indexedDB)throw new Error('Device audio storage is unavailable in this browser.');
+    if(!audioDatabase)audioDatabase=new Promise((resolve,reject)=>{
+      const request=indexedDB.open('choir-recordings',1);
+      request.onupgradeneeded=()=>request.result.createObjectStore('recordings');
+      request.onsuccess=()=>resolve(request.result);
+      request.onerror=()=>reject(request.error);
+      request.onblocked=()=>reject(new Error('Close other Lumiverse tabs to enable recording storage.'));
+    });
+    const db=await audioDatabase;
+    return new Promise((resolve,reject)=>{
+      const transaction=db.transaction('recordings',operation==='get'?'readonly':'readwrite');
+      const store=transaction.objectStore('recordings');
+      const request=operation==='put'?store.put(value,key):operation==='delete'?store.delete(key):store.get(key);
+      transaction.oncomplete=()=>resolve(request.result);
+      transaction.onerror=()=>reject(transaction.error || request.error);
+      transaction.onabort=()=>reject(transaction.error || new Error('Recording storage failed.'));
+    });
+  }
+  const recordingKey=(chat,message)=>JSON.stringify([audioNamespace,chat,message]);
   const unsubs = [];
   let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, busy=false;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
@@ -142,17 +165,22 @@ export async function setup(ctx) {
     const row=document.createElement('div');row.className='et-card et-grid';
     const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;
     const voice=document.createElement('select');
+    voice.dataset.choirVoice='';
     option(voice,'','Let LLM choose');
     for(const item of voices) option(voice,item.id,`${item.name || item.id}${item.description ? ` · ${item.description}`:''}`);
     if(actor.voice && !voices.some(v=>v.id===actor.voice))option(voice,actor.voice,`${actor.voice} · unavailable`);
     voice.value=actor.voice;
+    const gender=document.createElement('select');
+    gender.dataset.choirGender='';
+    for(const [value,label] of [['auto','Let LLM infer'],['female','Feminine'],['male','Masculine'],['neutral','Neutral / androgynous']])option(gender,value,label);
+    gender.value=actor.gender || 'auto';
     const style=document.createElement('input');style.value=actor.style || '';style.maxLength=600;
-    for (const [label,node] of [['Speaker name',name],['Voice',voice],['Base delivery style',style]]) {
+    for (const [label,node] of [['Speaker name',name],['Voice',voice],['Voice gender preference',gender],['Base delivery style',style]]) {
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);row.append(wrap);
     }
     if(!reserved){const remove=document.createElement('button');remove.textContent='Remove';remove.onclick=()=>{row.remove();};row.append(remove);}
     container.append(row);
-    return {row,read:()=>({speaker:name.value.trim(),voice:voice.value,style:style.value.trim()})};
+    return {row,read:()=>({speaker:name.value.trim(),voice:voice.value,gender:gender.value,style:style.value.trim()})};
   }
   function renderCast() {
     $('fixed').replaceChildren();$('npcs').replaceChildren();
@@ -344,15 +372,24 @@ export async function setup(ctx) {
     }
     stop(false);const token=revision;const ctrl=new AbortController();controller=ctrl;
     const snapshot=structuredClone(config), segments=plan.segments.flatMap(s=>splitSegment(s,snapshot.chunk));
+    const source={...planSource}, key=recordingKey(source.chatId,source.messageId);
+    const signature=JSON.stringify([snapshot.mode,snapshot.model,snapshot.connection,snapshot.styleParam,segments]);
+    let cached,storageError='';
+    try{cached=await recordingStore('get',key);}catch(error){storageError=error.message;}
+    if(token!==revision || ctrl.signal.aborted)throw abortError();
+    if(cached?.content!==source.content || cached?.signature!==signature)cached=null;
     const apiKey=$('key').value.trim();
-    if(snapshot.mode==='gemini' && !apiKey){controller=null;throw new Error('Enter your Gemini API key. It is held only in this page session.');}
+    if(!cached && snapshot.mode==='gemini' && !apiKey){controller=null;throw new Error('Enter your Gemini API key. It is held only in this page session.');}
     setBusy(true);
+    const blobs=[];
     try {
       for(const [index,segment] of segments.entries()) {
         if(ctrl.signal.aborted)throw abortError();
         status(`Synthesizing ${index+1}/${segments.length}: ${segment.speaker} · ${segment.voice}`);
-        let blob;
-        if(snapshot.mode==='gemini') {
+        let blob=cached?.blobs[index];
+        if(blob) {
+          status(`Replaying ${index+1}/${segments.length}: ${segment.speaker}`);
+        } else if(snapshot.mode==='gemini') {
           const result=await rpc('gemini',{segment,model:snapshot.model,apiKey},ctrl.signal);
           const audio=audioBytes(result.base64,result.mimeType);blob=new Blob([audio.data],{type:audio.mimeType});
         } else {
@@ -364,10 +401,31 @@ export async function setup(ctx) {
           blob=await response.blob();
         }
         if(token!==revision || ctrl.signal.aborted)throw abortError();
+        blobs.push(blob);
         status(`Playing ${index+1}/${segments.length}: ${segment.speaker}`);
         await playBlob(blob,ctrl.signal);
       }
-      if(token===revision)status('Playback finished.');
+      if(!cached) {
+        try{await recordingStore('put',key,{content:source.content,signature,segments,blobs});}
+        catch(error){storageError=error.message;}
+      }
+      if(token===revision)status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:'Playback finished. Audio saved on this device; Replay is available beside the message.');
+    } finally {if(token===revision){controller=null;setBusy(false);}}
+  }
+  async function replayRecording(messageId) {
+    stop(false);const token=revision,targetChat=chatId;
+    const ctrl=new AbortController();controller=ctrl;setBusy(true);
+    try {
+      const recording=await recordingStore('get',recordingKey(targetChat,messageId));
+      if(token!==revision || ctrl.signal.aborted)throw abortError();
+      if(!recording)throw new Error('No saved audio for this message on this device. Plan and play it first.');
+      if(ctx.messages.getContent(messageId)!==recording.content)throw new Error('The message changed since recording. Plan and play the current reply.');
+      for(const [index,blob] of recording.blobs.entries()) {
+        if(token!==revision || ctrl.signal.aborted)throw abortError();
+        status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
+        await playBlob(blob,ctrl.signal);
+      }
+      if(token===revision)status('Replay finished.');
     } finally {if(token===revision){controller=null;setBusy(false);}}
   }
   function renderMessages() {
@@ -377,6 +435,10 @@ export async function setup(ctx) {
       const row=document.createElement('div');row.className='et-card et-message';
       const name=document.createElement('span');name.textContent=`${message.name || (message.is_user?'You':'Character')} · ${transcriptFromMessage(message.content).slice(0,70)}`;
       const button=document.createElement('button');button.textContent='Plan';button.onclick=()=>run(()=>prepare(message.id));row.append(name,button);$('messages').append(row);
+      const replay=document.createElement('button');replay.textContent='Replay';replay.onclick=()=>run(()=>replayRecording(message.id));row.append(replay);
+      const removeAudio=document.createElement('button');removeAudio.textContent='Delete audio';removeAudio.onclick=()=>run(async()=>{
+        stop(false);await recordingStore('delete',recordingKey(chatId,message.id));status('Saved audio deleted for this message.');
+      });row.append(removeAudio);
     }
   }
   async function run(action) {
@@ -425,6 +487,7 @@ export async function setup(ctx) {
     if(disposed)return;stop(false);$('key').value='';disposed=true;loadVersion++;
     for(const done of [...pending.values()])done(abortError());
     unsubs.splice(0).forEach(fn=>fn());removeStyle();cleanupPlacements();
+    audioDatabase?.then(db=>db.close()).catch(()=>{});
   };
   await run(switchChat);
   return cleanup;

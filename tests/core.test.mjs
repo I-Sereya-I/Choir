@@ -88,3 +88,14 @@ test('unassigned fixed speakers are cast once while explicit assignments remain 
   assert.equal(c.fixed[1].voice,'');
   assert.throws(()=>validatePlan({segments:[{speaker:'Alice',text:'Hello.'}]},'Hello.',c),/LLM-selected voice/);
 });
+
+test('gender preferences survive NPC casting and do not override assigned voices',()=>{
+  const c=config();c.fixed[1].gender='male';
+  const plan=validatePlan({segments:[{speaker:'Alice',voice:'Fenrir',text:'Hello.'},
+    {speaker:'Guard',voice:'Puck',gender:'neutral',text:'Welcome.'}]},'Hello. Welcome.',c);
+  assert.equal(plan.segments[0].voice,'Kore');
+  assert.equal(plan.segments[0].gender,'male');
+  assert.equal(plan.npcs[0].gender,'neutral');
+  assert.equal(plan.segments[1].gender,'neutral');
+  c.fixed[1].gender='invalid';assert.throws(()=>validateCastConfig(c),/gender preference/);
+});
