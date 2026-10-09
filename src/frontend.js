@@ -77,6 +77,8 @@ export async function setup(ctx) {
     <div data-et="npcs"></div><button data-et="reset">Reset NPC cast for this provider</button>
     <div class="et-row"><label class="et-check"><input data-et="useStyle" type="checkbox" checked>Use delivery styles</label>
       <label class="et-check"><input data-et="auto" type="checkbox">Auto-play completed replies</label></div>
+    <label>Keep audio for this chat<select data-et="retention"><option value="session">This session only</option><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option><option value="forever">Until I delete it</option></select></label>
+    <p>Save to apply retention to existing recordings too, measured from when they were recorded. Expired audio is removed when Choir opens or accesses recordings. Session audio disappears when Choir restarts or the page reloads.</p>
     <div class="et-row"><button data-et="save">Save cast and settings</button><button data-et="latest">Plan latest reply</button>
       <button data-et="stop">Stop</button><button data-et="pause" disabled>Pause</button></div>
     <div class="et-status" data-et="statusActions">Open a chat to begin.</div>
@@ -89,10 +91,28 @@ export async function setup(ctx) {
   </div>`;
   const $ = name => root.querySelector(`[data-et="${name}"]`);
   const pending = new Map();
-  let audioNamespace=await ctx.settings.get('audioCacheNamespace');
-  if(!audioNamespace){audioNamespace=crypto.randomUUID();await ctx.settings.set('audioCacheNamespace',audioNamespace);}
+  let audioNamespace,audioNamespaceError;
+  try {
+    audioNamespace=await ctx.settings.get('audio:namespace');
+    if(!audioNamespace){audioNamespace=crypto.randomUUID();await ctx.settings.set('audio:namespace',audioNamespace);}
+  } catch(error){audioNamespaceError=error;}
   let audioDatabase;
+  const sessionAudio=new Map();
   async function recordingStore(operation,key,value) {
+    if(operation==='policy' && value.retention!=='session') {
+      for(const [sessionKey,record] of [...sessionAudio]) {
+        if(JSON.parse(sessionKey)[1]===JSON.parse(key)[1])await recordingStore('put',sessionKey,{...record,retention:value.retention});
+      }
+    }
+    if(operation==='delete')sessionAudio.delete(key);
+    if(operation==='get' && sessionAudio.has(key))return sessionAudio.get(key);
+    if(operation==='put') {
+      const createdAt=value.createdAt ?? Date.now(),retention=value.retention || 'forever';
+      value={...value,createdAt,expiresAt:retention==='forever' || retention==='session'?null:createdAt+Number(retention)*86400000};
+      if(retention==='session'){sessionAudio.set(key,value);return;}
+      sessionAudio.delete(key);
+    }
+    if(audioNamespaceError)throw new Error(`Audio storage settings could not be loaded: ${audioNamespaceError.message}`);
     if(!globalThis.indexedDB)throw new Error('Device audio storage is unavailable in this browser.');
     if(!audioDatabase)audioDatabase=new Promise((resolve,reject)=>{
       const request=indexedDB.open('choir-recordings',1);
@@ -103,11 +123,31 @@ export async function setup(ctx) {
     });
     const db=await audioDatabase;
     return new Promise((resolve,reject)=>{
-      const transaction=db.transaction('recordings',operation==='get'?'readonly':'readwrite');
+      const transaction=db.transaction('recordings','readwrite');
       const store=transaction.objectStore('recordings');
-      const request=operation==='put'?store.put(value,key):operation==='delete'?store.delete(key):store.get(key);
-      transaction.oncomplete=()=>resolve(request.result);
-      transaction.onerror=()=>reject(transaction.error || request.error);
+      let result;
+      const cursorRequest=store.openCursor();
+      cursorRequest.onsuccess=()=>{
+        const cursor=cursorRequest.result;
+        if(cursor) {
+          let identity;try{identity=JSON.parse(cursor.key);}catch{}
+          if(identity?.[0]===audioNamespace) {
+            const record=cursor.value;
+            if(operation==='policy' && identity[1]===JSON.parse(key)[1]) {
+              record.createdAt ??= Date.now();
+              record.expiresAt=value.retention==='forever'?null:record.createdAt+Number(value.retention)*86400000;
+              if(value.retention==='session' || (record.expiresAt!==null && record.expiresAt<=Date.now()))cursor.delete();
+              else cursor.update(record);
+            } else if(record.expiresAt!=null && record.expiresAt<=Date.now())cursor.delete();
+          }
+          cursor.continue();return;
+        }
+        if(operation==='policy' || operation==='prune')return;
+        const request=operation==='put'?store.put(value,key):operation==='delete'?store.delete(key):store.get(key);
+        request.onsuccess=()=>{result=request.result;};
+      };
+      transaction.oncomplete=()=>resolve(result);
+      transaction.onerror=()=>reject(transaction.error);
       transaction.onabort=()=>reject(transaction.error || new Error('Recording storage failed.'));
     });
   }
@@ -117,7 +157,7 @@ export async function setup(ctx) {
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
   const defaults = () => ({mode:'gemini',model:'gemini-3.8-flash-tts',planner:'',connection:'',styleParam:'',apiBase:'/api/v1',chunk:350,plannerTokens:8192,
-    extraVoices:'',useStyle:true,auto:false,casts:{},fixed:[
+    extraVoices:'',useStyle:true,auto:false,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
       {speaker:'Character',voice:'',style:''} ]});
@@ -167,15 +207,26 @@ export async function setup(ctx) {
     const voice=document.createElement('select');
     voice.dataset.choirVoice='';
     option(voice,'','Let LLM choose');
-    for(const item of voices) option(voice,item.id,`${item.name || item.id}${item.description ? ` · ${item.description}`:''}`);
+    for(const item of voices) option(voice,item.id,`${item.name || item.id} · ${item.gender==='female'?'Female':item.gender==='male'?'Male':item.gender==='neutral'?'Neutral':'Gender unknown'}${item.description ? ` · ${item.description}`:''}`);
     if(actor.voice && !voices.some(v=>v.id===actor.voice))option(voice,actor.voice,`${actor.voice} · unavailable`);
     voice.value=actor.voice;
     const gender=document.createElement('select');
     gender.dataset.choirGender='';
-    for(const [value,label] of [['auto','Let LLM infer'],['female','Feminine'],['male','Masculine'],['neutral','Neutral / androgynous']])option(gender,value,label);
+    for(const [value,label] of [['auto','All voices / let LLM infer'],['female','Female voices'],['male','Male voices'],['neutral','Neutral voices']])option(gender,value,label);
     gender.value=actor.gender || 'auto';
+    const filterVoices=()=>{
+      const selected=voice.value;voice.replaceChildren();option(voice,'','Let LLM choose');
+      for(const item of voices) {
+        if(gender.value!=='auto' && item.gender!==gender.value && item.id!==selected)continue;
+        const mismatch=gender.value!=='auto' && item.gender!==gender.value;
+        option(voice,item.id,`${item.name || item.id} · ${item.gender==='female'?'Female':item.gender==='male'?'Male':item.gender==='neutral'?'Neutral':'Gender unknown'}${item.description ? ` · ${item.description}`:''}${mismatch?' · selected voice differs from filter':''}`);
+      }
+      if(selected && !voices.some(v=>v.id===selected))option(voice,selected,`${selected} · unavailable`);
+      voice.value=selected;
+    };
+    gender.onchange=filterVoices;filterVoices();
     const style=document.createElement('input');style.value=actor.style || '';style.maxLength=600;
-    for (const [label,node] of [['Speaker name',name],['Voice',voice],['Voice gender preference',gender],['Base delivery style',style]]) {
+    for (const [label,node] of [['Speaker name',name],['Voice gender filter',gender],['Voice',voice],['Base delivery style',style]]) {
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);row.append(wrap);
     }
     if(!reserved){const remove=document.createElement('button');remove.textContent='Remove';remove.onclick=()=>{row.remove();};row.append(remove);}
@@ -194,25 +245,26 @@ export async function setup(ctx) {
       casts:{...config.casts,[scope(config)]:npcRows.filter(v=>v.row.parentElement===$('npcs')).map(v=>v.read())},
       mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
-      plannerTokens:Number($('plannerTokens').value),
+      plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,
       extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked};
   }
   function casting(c=config) {return {fixed:c.fixed,npcs:c.casts[scope(c)] || [],voices,useStyle:c.useStyle};}
   function validateSettings(c) {
+    if(!['session','1','7','30','forever'].includes(c.retention))throw new Error('Choose a valid audio retention period.');
     validateCastConfig(casting(c));
     if(!Number.isInteger(c.chunk) || c.chunk<80 || c.chunk>2000)throw new Error('Chunk size must be 80–2000.');
     if(!Number.isInteger(c.plannerTokens) || c.plannerTokens<1024 || c.plannerTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
     if(c.mode==='native' && !nativeConnections.some(v=>v.id===c.connection))throw new Error('Select an existing Lumiverse TTS connection.');
   }
   function setFields() {
-    for(const name of ['mode','model','planner','connection','styleParam','apiBase','chunk','plannerTokens','extraVoices'])$(name).value=config[name];
+    for(const name of ['mode','model','planner','connection','styleParam','apiBase','chunk','plannerTokens','extraVoices','retention'])$(name).value=config[name];
     $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;
     $('gemini').hidden=config.mode!=='gemini';$('native').hidden=config.mode!=='native';
   }
   function setBusy(value) {
     busy=value;
     for (const name of ['save','latest','load','add','reset','mode','connection','apply','auto'])$(name).disabled=value;
-    for (const name of ['model','planner','styleParam','apiBase','chunk','plannerTokens','extraVoices','useStyle','key','planJson'])$(name).disabled=value;
+    for (const name of ['model','planner','styleParam','apiBase','chunk','plannerTokens','extraVoices','useStyle','key','planJson','retention'])$(name).disabled=value;
     $('play').disabled=value || !plan;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
@@ -229,7 +281,9 @@ export async function setup(ctx) {
     if(!chatId)throw new Error('Open a chat first.');
     const updated=capture();validateSettings(updated);config=updated;
     await ctx.settings.set(settingsKey(chatId),config);
-    clearPlan();status('Cast saved. Click Plan latest reply, then Play plan. Auto-play applies to future completed replies.');
+    let retentionError;
+    try{await recordingStore('policy',recordingKey(chatId,''),{retention:config.retention});}catch(error){retentionError=error.message;}
+    clearPlan();status(retentionError?`Settings saved. Audio retention could not be applied: ${retentionError}`:'Cast and audio retention saved. Click Plan latest reply, then Play plan. Auto-play applies to future completed replies.');
   }
   async function loadProviders() {
     const version=loadVersion;
@@ -276,6 +330,8 @@ export async function setup(ctx) {
     let saved=id?await ctx.settings.get(settingsKey(id)):null;
     if(disposed || version!==loadVersion)return;
     config={...defaults(),...(saved || {})};
+    await recordingStore('prune').catch(()=>{});
+    if(disposed || version!==loadVersion)return;
     if(!saved) {
       const personaId=ctx.state.get?.('persona.activeId');
       if(personaId) {
@@ -406,10 +462,10 @@ export async function setup(ctx) {
         await playBlob(blob,ctrl.signal);
       }
       if(!cached) {
-        try{await recordingStore('put',key,{content:source.content,signature,segments,blobs});}
+        try{await recordingStore('put',key,{content:source.content,signature,segments,blobs,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
-      if(token===revision)status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:'Playback finished. Audio saved on this device; Replay is available beside the message.');
+      if(token===revision)status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.');
     } finally {if(token===revision){controller=null;setBusy(false);}}
   }
   async function replayRecording(messageId) {
@@ -488,6 +544,7 @@ export async function setup(ctx) {
     for(const done of [...pending.values()])done(abortError());
     unsubs.splice(0).forEach(fn=>fn());removeStyle();cleanupPlacements();
     audioDatabase?.then(db=>db.close()).catch(()=>{});
+    sessionAudio.clear();
   };
   await run(switchChat);
   return cleanup;

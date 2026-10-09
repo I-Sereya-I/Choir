@@ -8,7 +8,8 @@ export const GEMINI_VOICES = [
   ['Alnilam','Firm'], ['Schedar','Even'], ['Gacrux','Mature'],
   ['Pulcherrima','Forward'], ['Achird','Friendly'], ['Zubenelgenubi','Casual'],
   ['Vindemiatrix','Gentle'], ['Sadachbia','Lively'], ['Sadaltager','Knowledgeable'], ['Sulafat','Warm']
-].map(([id,description]) => ({id,name:id,description}));
+].map(([id,description]) => ({id,name:id,description,
+  gender:['Zephyr','Kore','Leda','Aoede','Callirrhoe','Autonoe','Despina','Erinome','Laomedeia','Achernar','Gacrux','Pulcherrima','Vindemiatrix','Sulafat'].includes(id)?'female':'male'}));
 
 export function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -91,6 +92,10 @@ export function validatePlan(raw, transcript, config) {
   if (!raw || !Array.isArray(raw.segments) || !raw.segments.length || raw.segments.length > 250) throw new Error('Expected 1–250 speech segments.');
   const voices = new Set(config.voices.map(v => v.id));
   const cast = new Map([...config.fixed, ...config.npcs].map(v => [normalizeName(v.speaker), {...v}]));
+  const checkAutomaticGender=(voice,gender)=>{
+    const choice=config.voices.find(v=>v.id===voice);
+    if(gender && gender!=='auto' && choice?.gender && choice.gender!==gender)throw new Error(`Automatic casting must select a ${gender} voice, but selected ${voice} (${choice.gender}).`);
+  };
   let cursor = 0;
   const segments = raw.segments.map((segment, index) => {
     if (!segment || typeof segment.text !== 'string' || !segment.text.trim()) throw new Error(`Segment ${index+1} has no transcript.`);
@@ -106,10 +111,12 @@ export function validatePlan(raw, transcript, config) {
       if (cast.size >= 550) throw new Error('Too many NPCs. Reset the NPC cast.');
       actor = {speaker:segment.speaker.trim(), voice:segment.voice, style:'',
         gender:['female','male','neutral'].includes(segment.gender)?segment.gender:'auto'};
+      checkAutomaticGender(actor.voice,actor.gender);
       cast.set(key, actor);
     }
     if (!actor.voice) {
       if (!voices.has(segment.voice)) throw new Error(`Speaker ${actor.speaker} needs an LLM-selected voice from the catalogue.`);
+      checkAutomaticGender(segment.voice,actor.gender);
       actor.voice=segment.voice;
     }
     // Assigned voices always win; blank fixed voices are cast once by the planner.

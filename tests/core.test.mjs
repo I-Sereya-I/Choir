@@ -99,3 +99,12 @@ test('gender preferences survive NPC casting and do not override assigned voices
   assert.equal(plan.segments[1].gender,'neutral');
   c.fixed[1].gender='invalid';assert.throws(()=>validateCastConfig(c),/gender preference/);
 });
+
+test('automatic casting respects catalogue gender while manual choices stay fixed',()=>{
+  const c=config();c.voices=[{id:'Kore',gender:'female'},{id:'Puck',gender:'male'},{id:'Charon',gender:'male'}];
+  c.fixed[1].voice='';c.fixed[1].gender='female';
+  assert.throws(()=>validatePlan({segments:[{speaker:'Alice',voice:'Puck',text:'Hello.'}]},'Hello.',c),/must select a female voice/);
+  const plan=validatePlan({segments:[{speaker:'Alice',voice:'Kore',text:'Hello.'}]},'Hello.',c);
+  assert.equal(plan.segments[0].voice,'Kore');
+  c.fixed[1].voice='Puck';assert.equal(validatePlan({segments:[{speaker:'Alice',voice:'Kore',text:'Hello.'}]},'Hello.',c).segments[0].voice,'Puck');
+});
