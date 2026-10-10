@@ -37,8 +37,14 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   const settingsMount=dom.window.document.createElement('section');
   const placementListeners=new Map();
   const messageActions=dom.window.document.createElement('div');
+  const minimalFooter=dom.window.document.createElement('div');
   const ctx={
-    registerDomDecorator:options=>{assert.equal(options.mount,'message_actions');return options.render(messageActions,{scope:'message:message-a:actions'});},
+    registerDomDecorator:options=>{
+      assert.equal(options.mount,'message_footer');
+      const bubbleCleanup=options.render(messageActions,{scope:'message:message-a:bubble:footer'});
+      const minimalCleanup=options.render(minimalFooter,{scope:'message:message-a:minimal:footer'});
+      return ()=>{bubbleCleanup();minimalCleanup();};
+    },
     settings:{get:async key=>{assert.match(key,/^[a-z][a-z0-9_]*:[A-Za-z0-9._-]+$/);return store.get(key);},set:async(key,value)=>{assert.match(key,/^[a-z][a-z0-9_]*:[A-Za-z0-9._-]+$/);store.set(key,structuredClone(value));}},
     messages:{getRecent:()=>active==='chat-a'?[message]:[],getContent:id=>id===message.id?message.content:null},
     state:{subscribe:(key,fn)=>{listeners.set(key,fn);return()=>listeners.delete(key);}},
@@ -56,7 +62,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
       requests.push(message);if(message.action==='cancel')return;
       setTimeout(()=>{
         let result;
-        if(message.action==='ping')result={version:'1.0.9',ready:true};
+        if(message.action==='ping')result={version:'1.0.10',ready:true};
         else if(message.action==='plan')result=validatePlan({segments:[
           {speaker:'Narrator',text:'The hall fell silent.',style:'Calm'},
           {speaker:'Mira',voice:(message.input.config.voices.find(v=>v.gender==='female') || message.input.config.voices[1]).id,text:'Hello, stranger.',style:'Curious'},
@@ -68,6 +74,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   };
   try {
     let cleanup=await setup(ctx);
+    assert.equal(minimalFooter.querySelector('button').textContent,'▶ Play Choir');
     const $=name=>root.querySelector(`[data-et="${name}"]`) || settingsRoot.querySelector(`[data-et="${name}"]`);
     assert.equal($('fixed').querySelectorAll('.et-card').length,3);
     $('fixed').querySelectorAll('[data-choir-gender]')[2].value='female';
@@ -86,6 +93,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     messageActions.querySelector('button').click();await until(()=>$('status').textContent.includes('Playback finished'));
     assert.equal(audios.length,3);audios.length=0;
     assert.match(messageActions.textContent,/Playback finished/);
+    assert.match(minimalFooter.textContent,/Playback finished/);
     assert.equal($('preview').querySelectorAll('.et-card').length,3);
     assert.equal(store.get('chat:chat-a').casts.gemini[0].speaker,'Guard');
     assert.equal(store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Mira').voice,'Zephyr');

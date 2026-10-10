@@ -7,7 +7,7 @@ An installable Spindle extension for narrated roleplay with multiple voices.
 - NPC voices persist per chat and speech provider. Fixed and previously assigned voices override any contradictory model suggestion.
 - Gemini 3.8 uses `speech_metadata.style`, separate from the spoken transcript.
 - Other speech providers use existing Lumiverse TTS connections and their saved credentials.
-- Play directly from **▶ Choir** on a message, or review/edit a plan, pause/resume, stop, and enable automatic playback from settings.
+- Play directly from **▶ Play Choir** on a message, or review/edit a plan, pause/resume, stop, and enable automatic playback from settings.
 
 ## Install from GitHub
 
@@ -15,7 +15,7 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? In **Extensions**, update Choir to **1.0.9**, restart it, then reload the page. Version 1.0.9 adds a **TTS connection** selector for every fixed speaker and saved NPC. Use chat default inherits the default provider at the top; explicit choices stay fixed. Changing a speaker connection clears its voice so you can select from that connection or let the LLM choose. Save and plan again. New NPCs use the chat default until you choose an override. Delete a saved recording before using the message button if you want to regenerate it with the new cast; Replay always preserves the recorded audio.
+Already installed? In **Extensions**, update Choir to **1.0.10**, restart it, then reload the page. This version places a visible **▶ Play Choir** button in the message footer shared by bubble and minimal layouts. The previous action mount existed only in the bubble layout. Click to replay saved audio or plan and play; click again while active to stop. Per-speaker TTS connections, voice gender filtering and recording retention remain available in Settings → Choir.
 
 ## Install locally
 

@@ -18,7 +18,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.0.9',ready:true}});return;
+      send({result:{version:'1.0.10',ready:true}});return;
     }
     if (message.action === 'plan') {
       if (typeof input.transcript !== 'string' || !input.transcript.trim()) throw new Error('Choose a message with text to plan.');

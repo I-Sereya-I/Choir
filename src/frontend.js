@@ -554,14 +554,16 @@ export async function setup(ctx) {
   const decorateMessage=(target,context={})=>{
     const messageId=ctx.dom.getMessageId?.(context.node || target) || context.scope?.split(':')[1];
     if(!messageId)return;
-    const button=document.createElement('button');button.type='button';button.textContent='▶ Choir';button.title='Play or stop Choir audio';
+    const controls=document.createElement('div');controls.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px';
+    const button=document.createElement('button');button.type='button';button.textContent='▶ Play Choir';button.title='Play or stop Choir audio';button.setAttribute('aria-label','Play or stop Choir audio for this message');
+    button.style.cssText='cursor:pointer;border:1px solid currentColor;border-radius:6px;padding:4px 8px;background:transparent;color:inherit;font:inherit';
     const progress=document.createElement('span');progress.setAttribute('role','status');progress.style.fontSize='0.8em';
     let statuses=messageStatuses.get(messageId);if(!statuses){statuses=new Set();messageStatuses.set(messageId,statuses);}statuses.add(progress);
-    button.onclick=()=>run(()=>playMessage(messageId));target.append(button,progress);
-    return ()=>{button.remove();progress.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
+    button.onclick=()=>run(()=>playMessage(messageId));controls.append(button,progress);target.append(controls);
+    return ()=>{controls.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
   };
   if(ctx.registerDomDecorator) {
-    const handle=ctx.registerDomDecorator({mount:'message_actions',render:decorateMessage,target:'message_actions',decorate:decorateMessage});
+    const handle=ctx.registerDomDecorator({mount:'message_footer',render:decorateMessage,target:'message_footer',decorate:decorateMessage});
     unsubs.push(typeof handle==='function'?handle:()=>handle?.destroy());
   } else if(ctx.registerMessageAction) {
     const handle=ctx.registerMessageAction({id:'choir-play',label:'Play Choir',onClick:id=>run(()=>playMessage(id))});
