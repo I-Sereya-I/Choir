@@ -158,6 +158,7 @@ export async function setup(ctx) {
   }
   const recordingKey=(chat,message)=>JSON.stringify([audioNamespace,chat,message]);
   const unsubs = [];
+  const messageStatuses=new Map();let messagePlaybackId=null;
   let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, busy=false;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
@@ -169,6 +170,7 @@ export async function setup(ctx) {
   function status(text,error=false) {
     if(disposed)return;
     for(const name of ['status','statusActions']) {$(name).textContent=text;$(name).classList.toggle('et-error',error);}
+    for(const node of messageStatuses.get(messagePlaybackId) || [])node.textContent=text;
   }
   const abortError = () => new DOMException('Stopped','AbortError');
   const scope = c => c.mode === 'gemini' ? 'gemini' : `native:${c.connection}`;
@@ -437,6 +439,7 @@ export async function setup(ctx) {
     const source={...planSource}, key=recordingKey(source.chatId,source.messageId);
     const signature=JSON.stringify([snapshot.mode,snapshot.model,snapshot.connection,snapshot.styleParam,segments]);
     let cached,storageError='';
+    status('Checking saved audio…');
     try{cached=await recordingStore('get',key);}catch(error){storageError=error.message;}
     if(token!==revision || ctrl.signal.aborted)throw abortError();
     if(cached?.content!==source.content || cached?.signature!==signature)cached=null;
@@ -478,6 +481,7 @@ export async function setup(ctx) {
   async function replayRecording(messageId) {
     stop(false);const token=revision,targetChat=chatId;
     const ctrl=new AbortController();controller=ctrl;setBusy(true);
+    status('Loading saved audio…');
     try {
       const recording=await recordingStore('get',recordingKey(targetChat,messageId));
       if(token!==revision || ctrl.signal.aborted)throw abortError();
@@ -490,6 +494,31 @@ export async function setup(ctx) {
       }
       if(token===revision)status('Replay finished.');
     } finally {if(token===revision){controller=null;setBusy(false);}}
+  }
+  async function playMessage(messageId) {
+    if(controller && messagePlaybackId===messageId){stop();return;}
+    messagePlaybackId=messageId;
+    status('Checking saved audio…');
+    const content=ctx.messages.getContent(messageId);
+    let recording;try{recording=await recordingStore('get',recordingKey(chatId,messageId));}catch{}
+    if(recording?.content===content){await replayRecording(messageId);return;}
+    await prepare(messageId,true);
+  }
+  const decorateMessage=(target,context={})=>{
+    const messageId=ctx.dom.getMessageId?.(context.node || target) || context.scope?.split(':')[1];
+    if(!messageId)return;
+    const button=document.createElement('button');button.type='button';button.textContent='▶ Choir';button.title='Play or stop Choir audio';
+    const progress=document.createElement('span');progress.setAttribute('role','status');progress.style.fontSize='0.8em';
+    let statuses=messageStatuses.get(messageId);if(!statuses){statuses=new Set();messageStatuses.set(messageId,statuses);}statuses.add(progress);
+    button.onclick=()=>run(()=>playMessage(messageId));target.append(button,progress);
+    return ()=>{button.remove();progress.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
+  };
+  if(ctx.registerDomDecorator) {
+    const handle=ctx.registerDomDecorator({mount:'message_actions',render:decorateMessage,target:'message_actions',decorate:decorateMessage});
+    unsubs.push(typeof handle==='function'?handle:()=>handle?.destroy());
+  } else if(ctx.registerMessageAction) {
+    const handle=ctx.registerMessageAction({id:'choir-play',label:'Play Choir',onClick:id=>run(()=>playMessage(id))});
+    unsubs.push(()=>handle.destroy());
   }
   function renderMessages() {
     $('messages').replaceChildren();

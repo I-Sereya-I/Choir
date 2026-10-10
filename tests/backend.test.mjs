@@ -14,7 +14,7 @@ async function harness(generate, cors, provider) {
 }
 test('planner uses user identity and routes replies only to the originating browser session',async()=>{
   let request;
-  const h=await harness(async input=>{request=input;return {content:JSON.stringify({segments:[{speaker:'Narrator',text:'Hello.'}]})};});
+  const h=await harness(async input=>{request=input;return {content:JSON.stringify({segments:[{speaker:'Narrator',unit_ids:[0]}]})};});
   h.send('plan',{transcript:'Hello.',config,context:'data'});
   const result=await h.result();
   assert.equal(request.userId,'user-a');assert.equal(result.user,'user-a');assert.equal(result.options.frontendSessionId,'session-a');
@@ -38,7 +38,7 @@ test('cancellation aborts planner and suppresses stale replies',async()=>{
   let resolve;let signal;
   const h=await harness(input=>{signal=input.signal;return new Promise(r=>resolve=r);});
   h.send('plan',{transcript:'Hello.',config});await new Promise(r=>setTimeout(r,0));h.send('cancel',{});
-  assert.ok(signal.aborted);resolve({content:'{"segments":[{"speaker":"Narrator","text":"Hello."}]}'});
+  assert.ok(signal.aborted);resolve({content:'{"segments":[{"speaker":"Narrator","unit_ids":[0]}]}'});
   await new Promise(r=>setTimeout(r,10));assert.equal(h.sent.length,0);
 });
 
@@ -47,7 +47,7 @@ test('truncated JSON retries with a larger output budget and accepts only a comp
   const h=await harness(async input=>{
     budgets.push(input.parameters.max_tokens);
     return budgets.length===1 ? {content:'{"segments":[',finish_reason:'length'}
-      : {content:'{"segments":[{"speaker":"Narrator","text":"Hello."}]}',finish_reason:'stop'};
+      : {content:'{"segments":[{"speaker":"Narrator","unit_ids":[0]}]}',finish_reason:'stop'};
   });
   h.send('plan',{transcript:'Hello.',config});
   const result=await h.result();assert.deepEqual(budgets,[8192,16384]);assert.equal(result.message.result.segments[0].text,'Hello.');
@@ -62,7 +62,7 @@ test('empty planner responses produce an actionable error',async()=>{
 test('backend readiness check replies without making an LLM or TTS request',async()=>{
   const h=await harness(()=>{throw new Error('Should not call planner');},()=>{throw new Error('Should not call TTS');});
   h.send('ping',{});
-  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.0.7');
+  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.0.8');
 });
 
 test('prose-only planner responses expose a useful diagnostic after retry',async()=>{
@@ -74,7 +74,7 @@ test('prose-only planner responses expose a useful diagnostic after retry',async
 test('known planners request provider JSON mode; other providers retain portable prompting',async()=>{
   for(const provider of ['google','openai','anthropic']) {
     let parameters;
-    const h=await harness(async input=>{parameters=input.parameters;return {content:'{"segments":[{"speaker":"Narrator","text":"Hello."}]}'};},null,provider);
+    const h=await harness(async input=>{parameters=input.parameters;return {content:'{"segments":[{"speaker":"Narrator","unit_ids":[0]}]}'};},null,provider);
     h.send('plan',{transcript:'Hello.',config});
     assert.ok((await h.result()).message.result);
     if(provider==='google')assert.equal(parameters.responseMimeType,'application/json');

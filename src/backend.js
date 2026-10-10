@@ -1,4 +1,4 @@
-import { validateCastConfig, validatePlan, parsePlanJson, plannerPrompt, geminiRequest, extractGeminiAudio } from './core.js';
+import { validateCastConfig, validatePlan, parsePlanJson, resolvePlanReferences, plannerPrompt, geminiRequest, extractGeminiAudio } from './core.js';
 
 // Spindle supplies this global before importing the backend bundle.
 const running = new Map();
@@ -18,10 +18,10 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.0.7',ready:true}});return;
+      send({result:{version:'1.0.8',ready:true}});return;
     }
     if (message.action === 'plan') {
-      if (typeof input.transcript !== 'string' || !input.transcript.trim() || input.transcript.length > 30000) throw new Error('Speech planning supports 1–30,000 characters per message.');
+      if (typeof input.transcript !== 'string' || !input.transcript.trim()) throw new Error('Choose a message with text to plan.');
       validateCastConfig(input.config);
       const context = typeof input.context === 'string' ? input.context.slice(-16000) : '';
       const messages = plannerPrompt(input.transcript,input.config,context);
@@ -43,14 +43,14 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
           reasoning:{source:'off'},signal:controller.signal});
         if (controller.signal.aborted) return;
         try {
-          const plan = validatePlan(parsePlanJson(result.content),input.transcript,input.config);
+          const plan = validatePlan(resolvePlanReferences(parsePlanJson(result.content),input.transcript,input.config),input.transcript,input.config);
           send({result:plan}); return;
         } catch (error) {
           const truncated=/length|max_tokens|max_output_tokens/i.test(result.finish_reason || '');
           failure = truncated ? new Error('The planner response was cut off by its output limit. Increase the planner output budget or plan a shorter reply.') : error;
           maxTokens=Math.min(32768,maxTokens*2);
           messages.push({role:'assistant',content:String(result.content || '').slice(0,50000)},
-            {role:'user',content:`Your plan failed validation: ${failure.message}. Return a corrected complete JSON plan. Copy exact consecutive substrings of the original transcript.`});
+            {role:'user',content:`Your plan failed validation: ${failure.message}. Return a corrected complete JSON plan using unit_ids. Include every source unit ID exactly once in order. Do not copy or rewrite transcript text.`});
         }
       }
       throw new Error(`Planner failed twice: ${failure.message}`);

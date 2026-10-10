@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences} from '../src/core.js';
 
 const config = () => ({voices:[{id:'Charon'},{id:'Kore'},{id:'Puck'},{id:'Fenrir'}],useStyle:true,
   fixed:[{speaker:'Narrator',voice:'Charon',style:'Calm'},{speaker:'Alice',voice:'Kore',style:''}],npcs:[]});
@@ -114,4 +114,29 @@ test('Lumiverse gender aliases and named Google voices retain usable gender labe
     {id:'custom',gender:['FEMALE']},{id:'neutral',ssmlGender:'NEUTRAL'},{id:'Charon'},
     {id:'en-US-Chirp3-HD-Zephyr'},{id:'custom-unknown'}]);
   assert.deepEqual(voices.map(v=>v.gender),['female','male','female','neutral','male','female',undefined]);
+});
+
+test('source references preserve exact text and force unquoted character actions to Narrator',()=>{
+  const transcript='Alice stood.\n\n"Hello." She waved. “Goodbye.”';
+  const units=speechSourceUnits(transcript);
+  assert.deepEqual(units.map(unit=>unit.kind),['narration','dialogue','narration','dialogue']);
+  const raw={segments:units.map(unit=>({speaker:'Alice',voice:'Kore',unit_ids:[unit.id],text:'Rewritten by model.'}))};
+  const plan=validatePlan(resolvePlanReferences(raw,transcript,config()),transcript,config());
+  assert.deepEqual(plan.segments.map(segment=>segment.speaker),['Narrator','Alice','Narrator','Alice']);
+  assert.deepEqual(plan.segments.map(segment=>segment.text),units.map(unit=>unit.text));
+  assert.deepEqual(plan.segments.map(segment=>segment.voice),['Charon','Kore','Charon','Kore']);
+});
+
+test('source references reject skipped, duplicated and reordered IDs and preserve merged whitespace',()=>{
+  const text='First.\n\nSecond. Third.';
+  for(const ids of [[0,2],[0,0,1,2],[1,0,2],[0,1]])assert.throws(()=>resolvePlanReferences({segments:[{speaker:'Narrator',unit_ids:ids}]},text,config()));
+  const plan=validatePlan(resolvePlanReferences({segments:[{speaker:'Narrator',unit_ids:[0,1,2]}]},text,config()),text,config());
+  assert.equal(plan.segments[0].text,text);
+});
+
+test('more than 250 speech turns can be planned without an artificial segment cap',()=>{
+  const text=Array.from({length:140},()=> 'She waved. "Hello."').join('\n');
+  const units=speechSourceUnits(text);
+  const raw={segments:units.map(unit=>({speaker:'Alice',voice:'Kore',unit_ids:[unit.id]}))};
+  assert.equal(validatePlan(resolvePlanReferences(raw,text,config()),text,config()).segments.length,280);
 });

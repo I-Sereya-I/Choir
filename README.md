@@ -3,11 +3,11 @@
 An installable Spindle extension for narrated roleplay with multiple voices.
 
 - Choose narrator/persona/main-character voices yourself, or select **Let LLM choose**. Gemini voice selectors display Male/Female labels and can filter the catalogue by gender. The filter also guides automatic casting; manual voices take priority. Custom/provider voices without metadata are marked Gender unknown. Select Let LLM choose again to apply a changed preference to a previously cast voice.
-- A separate LLM pass identifies narration and dialogue, casts NPCs from the available voice catalogue, and suggests delivery styles.
+- Choir separates narration from double-quoted dialogue locally. An LLM assigns character identities, NPC voices and delivery styles to numbered source pieces; Choir reconstructs the original words without model rewrites.
 - NPC voices persist per chat and speech provider. Fixed and previously assigned voices override any contradictory model suggestion.
 - Gemini 3.8 uses `speech_metadata.style`, separate from the spoken transcript.
 - Other speech providers use existing Lumiverse TTS connections and their saved credentials.
-- Review the plan, correct the cast, play, pause/resume, stop, or enable automatic playback of completed replies.
+- Play directly from **▶ Choir** on a message, or review/edit a plan, pause/resume, stop, and enable automatic playback from settings.
 
 ## Install from GitHub
 
@@ -15,7 +15,7 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? In **Extensions**, update Choir to **1.0.7**, restart it, then reload the page. This version normalizes Lumiverse gender values such as feminine/masculine, retains known Gemini genders when a catalogue omits them, and verifies audio deletion. Delete audio changes its button to Audio deleted and disables Replay for that row. Delete all Choir audio for this chat removes recordings beyond the recent-message list too. Play plan generates new audio after deletion. Version 1.0.6 introduced the startup settings-key fix, voice gender filtering and audio retention (session only, 1/7/30 days, or until deleted).
+Already installed? In **Extensions**, update Choir to **1.0.8**, restart it, then reload the page. Version 1.0.8 adds a **▶ Choir** button in each message action area: click to replay saved audio or automatically plan and play; click again while active to stop. Progress and errors appear beside the message. Planning now assigns speakers to numbered original text pieces instead of copying the reply. Text outside straight/curly double quotes always uses Narrator; character voices apply only inside quotes. The old 250-segment and 30,000-character planner caps have been removed. Provider output budgets and per-request speech chunking still apply.
 
 ## Install locally
 
@@ -107,7 +107,7 @@ Changing chat, editing/deleting a message, or changing its swipe stops the activ
 
 ## Validation and development
 
-Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 26 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Planner tests verify independent output settings, a retry after truncated JSON, clear empty-response errors, and backend readiness replies. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
+Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 29 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Planner tests verify independent output settings, a retry after truncated JSON, clear empty-response errors, and backend readiness replies. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
 
 **It has not been installed into your running Lumiverse instance or tested with real provider credentials.** Actual synthesis quality, provider availability and live UI integration still need your first-use check.
 

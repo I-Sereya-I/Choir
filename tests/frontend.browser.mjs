@@ -36,7 +36,9 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   const settingsRoot=dom.window.document.createElement('section');
   const settingsMount=dom.window.document.createElement('section');
   const placementListeners=new Map();
+  const messageActions=dom.window.document.createElement('div');
   const ctx={
+    registerDomDecorator:options=>{assert.equal(options.mount,'message_actions');return options.render(messageActions,{scope:'message:message-a:actions'});},
     settings:{get:async key=>{assert.match(key,/^[a-z][a-z0-9_]*:[A-Za-z0-9._-]+$/);return store.get(key);},set:async(key,value)=>{assert.match(key,/^[a-z][a-z0-9_]*:[A-Za-z0-9._-]+$/);store.set(key,structuredClone(value));}},
     messages:{getRecent:()=>active==='chat-a'?[message]:[],getContent:id=>id===message.id?message.content:null},
     state:{subscribe:(key,fn)=>{listeners.set(key,fn);return()=>listeners.delete(key);}},
@@ -54,7 +56,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
       requests.push(message);if(message.action==='cancel')return;
       setTimeout(()=>{
         let result;
-        if(message.action==='ping')result={version:'1.0.7',ready:true};
+        if(message.action==='ping')result={version:'1.0.8',ready:true};
         else if(message.action==='plan')result=validatePlan({segments:[
           {speaker:'Narrator',text:'The hall fell silent.',style:'Calm'},
           {speaker:'Mira',voice:(message.input.config.voices.find(v=>v.gender==='female') || message.input.config.voices[1]).id,text:'Hello, stranger.',style:'Curious'},
@@ -81,7 +83,9 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.ok(root.querySelector('[data-et="fixed"]'));
     // Drawer roots can be detached when the user is looking at the story.
     root.remove();
-    $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
+    messageActions.querySelector('button').click();await until(()=>$('status').textContent.includes('Playback finished'));
+    assert.equal(audios.length,3);audios.length=0;
+    assert.match(messageActions.textContent,/Playback finished/);
     assert.equal($('preview').querySelectorAll('.et-card').length,3);
     assert.equal(store.get('chat:chat-a').casts.gemini[0].speaker,'Guard');
     assert.equal(store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Mira').voice,'Zephyr');
