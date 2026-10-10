@@ -53,7 +53,7 @@ export async function setup(ctx) {
     <h2>Choir</h2><p>Your cast, one story. Fixed voices for your leads; LLM casting for everyone else.</p>
     <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
     <h3>Speech provider</h3><div class="et-grid">
-      <label>Playback adapter<select data-et="mode"><option value="gemini">Gemini 3.8 · style metadata</option><option value="native">Lumiverse TTS connection</option></select></label>
+      <label>Default TTS for this chat<select data-et="mode"><option value="gemini">Gemini 3.8 · style metadata</option><option value="native">Lumiverse TTS connection</option></select></label>
       <label>Planner LLM connection<select data-et="planner"><option value="">Default LLM connection</option></select></label>
     </div>
     <div data-et="gemini" class="et-grid" style="margin-top:12px">
@@ -71,7 +71,7 @@ export async function setup(ctx) {
     </div><label style="margin-top:10px">Additional Gemini voices · one ID | description per line<textarea data-et="extraVoices" placeholder="voice_... | warm storyteller"></textarea></label>
     <p>Other providers reuse your existing Lumiverse connections and credentials. Style support depends on their API. Gemini uses structured style metadata and a separate session key.</p></details>
     <div class="et-row"><button data-et="load">Reload connections and voices</button></div>
-    <h3>Fixed cast for this chat</h3><p>Name your persona and characters exactly as they appear in the story. Narrator is reserved. You can add multiple main characters.</p>
+    <h3>Fixed cast for this chat</h3><p>Name your persona and characters exactly as they appear in the story. Each speaker can use its own TTS connection and voice. Use chat default inherits the default above. Narrator is reserved.</p>
     <div data-et="fixed"></div><button data-et="add">Add main character</button>
     <h3>NPC cast</h3><p>The planner selects new NPC voices and reuses their assignments throughout this chat. Gender preferences guide automatic voice selection. To recast an assigned voice with a new preference, select Let LLM choose, save, then plan again. Manual voices take priority.</p>
     <div data-et="npcs"></div><button data-et="reset">Reset NPC cast for this provider</button>
@@ -161,6 +161,7 @@ export async function setup(ctx) {
   const messageStatuses=new Map();let messagePlaybackId=null;
   let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, busy=false;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
+  const voiceCatalogues=new Map();
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
   const defaults = () => ({mode:'gemini',model:'gemini-3.8-flash-tts',planner:'',connection:'',styleParam:'',apiBase:'/api/v1',chunk:350,plannerTokens:8192,
     extraVoices:'',useStyle:true,auto:false,retention:'forever',casts:{},fixed:[
@@ -174,6 +175,17 @@ export async function setup(ctx) {
   }
   const abortError = () => new DOMException('Stopped','AbortError');
   const scope = c => c.mode === 'gemini' ? 'gemini' : `native:${c.connection}`;
+  async function ensureCatalogue(route) {
+    if(voiceCatalogues.has(route))return voiceCatalogues.get(route);
+    if(route==='gemini')return GEMINI_VOICES;
+    const connectionId=route.startsWith('native:')?route.slice(7):'';
+    if(!nativeConnections.some(c=>c.id===connectionId))throw new Error('Select an available TTS connection for this speaker.');
+    const data=await api(`/tts-connections/${encodeURIComponent(connectionId)}/voices`).then(response=>response.json());
+    if(data.error && !data.voices?.length)throw new Error(data.error);
+    const catalogue=normalizeVoiceCatalogue(data.voices || []);
+    if(!catalogue.length)throw new Error('This TTS connection returned no voices. Configure its voice catalogue in Lumiverse.');
+    voiceCatalogues.set(route,catalogue);return catalogue;
+  }
   const settingsKey = id => `chat:${id}`;
 
   function rpc(action,input,signal,timeoutMs=185000) {
@@ -212,10 +224,16 @@ export async function setup(ctx) {
     const row=document.createElement('div');row.className='et-card et-grid';
     const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;
     const voice=document.createElement('select');
+    const route=document.createElement('select');route.dataset.choirRoute='';
+    option(route,'','Use chat default');option(route,'gemini','Gemini style metadata');
+    for(const connection of nativeConnections)option(route,`native:${connection.id}`,`${connection.name} · ${connection.provider}`);
+    if(actor.route && ![...route.options].some(option=>option.value===actor.route))option(route,actor.route,`${actor.route} · unavailable`);
+    route.value=actor.route || '';
+    let rowVoices=voiceCatalogues.get(route.value || scope(config)) || [];
     voice.dataset.choirVoice='';
     option(voice,'','Let LLM choose');
-    for(const item of voices) option(voice,item.id,`${item.name || item.id} · ${item.gender==='female'?'Female':item.gender==='male'?'Male':item.gender==='neutral'?'Neutral':'Gender unknown'}${item.description ? ` · ${item.description}`:''}`);
-    if(actor.voice && !voices.some(v=>v.id===actor.voice))option(voice,actor.voice,`${actor.voice} · unavailable`);
+    for(const item of rowVoices) option(voice,item.id,`${item.name || item.id} · ${item.gender==='female'?'Female':item.gender==='male'?'Male':item.gender==='neutral'?'Neutral':'Gender unknown'}${item.description ? ` · ${item.description}`:''}`);
+    if(actor.voice && !rowVoices.some(v=>v.id===actor.voice))option(voice,actor.voice,`${actor.voice} · unavailable`);
     voice.value=actor.voice;
     const gender=document.createElement('select');
     gender.dataset.choirGender='';
@@ -223,22 +241,31 @@ export async function setup(ctx) {
     gender.value=actor.gender || 'auto';
     const filterVoices=()=>{
       const selected=voice.value;voice.replaceChildren();option(voice,'','Let LLM choose');
-      for(const item of voices) {
+      for(const item of rowVoices) {
         if(gender.value!=='auto' && item.gender!==gender.value && item.id!==selected)continue;
         const mismatch=gender.value!=='auto' && item.gender!==gender.value;
         option(voice,item.id,`${item.name || item.id} · ${item.gender==='female'?'Female':item.gender==='male'?'Male':item.gender==='neutral'?'Neutral':'Gender unknown'}${item.description ? ` · ${item.description}`:''}${mismatch?' · selected voice differs from filter':''}`);
       }
-      if(selected && !voices.some(v=>v.id===selected))option(voice,selected,`${selected} · unavailable`);
+      if(selected && !rowVoices.some(v=>v.id===selected))option(voice,selected,`${selected} · unavailable`);
       voice.value=selected;
     };
     gender.onchange=filterVoices;filterVoices();
+    route.onchange=()=>run(async()=>{
+      const selected=route.value;voice.value='';voice.disabled=true;
+      try {
+        const catalogue=await ensureCatalogue(selected || scope(config));
+        if(route.value!==selected || disposed)return;
+        rowVoices=catalogue;filterVoices();clearPlan();status('Speaker TTS connection selected. Choose a voice or Let LLM choose, then save.');
+        $('gemini').hidden=config.mode!=='gemini' && ![...castRows,...npcRows].some(row=>row.read().route==='gemini');
+      } finally {if(!disposed && route.value===selected)voice.disabled=busy;}
+    });
     const style=document.createElement('input');style.value=actor.style || '';style.maxLength=600;
-    for (const [label,node] of [['Speaker name',name],['Voice gender filter',gender],['Voice',voice],['Base delivery style',style]]) {
+    for (const [label,node] of [['Speaker name',name],['TTS connection',route],['Voice gender filter',gender],['Voice',voice],['Base delivery style',style]]) {
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);row.append(wrap);
     }
     if(!reserved){const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();};row.append(remove);}
     container.append(row);
-    return {row,read:()=>({speaker:name.value.trim(),voice:voice.value,gender:gender.value,style:style.value.trim()})};
+    return {row,read:()=>({speaker:name.value.trim(),voice:voice.value,route:route.value,gender:gender.value,style:style.value.trim()})};
   }
   function renderCast() {
     $('fixed').replaceChildren();$('npcs').replaceChildren();
@@ -255,7 +282,12 @@ export async function setup(ctx) {
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,
       extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked};
   }
-  function casting(c=config) {return {fixed:c.fixed,npcs:c.casts[scope(c)] || [],voices,useStyle:c.useStyle};}
+  function casting(c=config) {
+    const actors=[...c.fixed,...(c.casts[scope(c)] || [])];
+    const routes=new Set([scope(c),...actors.map(actor=>actor.route || scope(c))]);
+    return {fixed:c.fixed,npcs:c.casts[scope(c)] || [],defaultRoute:scope(c),
+      voices:[...routes].flatMap(route=>(voiceCatalogues.get(route) || []).map(voice=>({...voice,route}))),useStyle:c.useStyle};
+  }
   function validateSettings(c) {
     if(!['session','1','7','30','forever'].includes(c.retention))throw new Error('Choose a valid audio retention period.');
     validateCastConfig(casting(c));
@@ -266,7 +298,7 @@ export async function setup(ctx) {
   function setFields() {
     for(const name of ['mode','model','planner','connection','styleParam','apiBase','chunk','plannerTokens','extraVoices','retention'])$(name).value=config[name];
     $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;
-    $('gemini').hidden=config.mode!=='gemini';$('native').hidden=config.mode!=='native';
+    $('gemini').hidden=config.mode!=='gemini' && ![...config.fixed,...(config.casts[scope(config)] || [])].some(actor=>actor.route==='gemini');$('native').hidden=config.mode!=='native';
   }
   function setBusy(value) {
     busy=value;
@@ -310,6 +342,7 @@ export async function setup(ctx) {
     if(config.mode==='native' && results[0].status==='rejected')throw results[0].reason;
   }
   async function loadVoices(version=loadVersion) {
+    voiceCatalogues.clear();
     if(config.mode==='gemini') {
       const extra=String(config.extraVoices || '').split('\n').filter(s=>s.trim()).map(line=>{
         const [id,...description]=line.split('|');return {id:id.trim(),name:id.trim(),description:description.join('|').trim()};
@@ -322,6 +355,11 @@ export async function setup(ctx) {
       if(!voices.length)throw new Error('This connection returned no voices. Configure its voice catalogue in Lumiverse.');
     } else {voices=[];}
     voices=normalizeVoiceCatalogue(voices);
+    voiceCatalogues.set(scope(config),voices);
+    if(!voiceCatalogues.has('gemini'))voiceCatalogues.set('gemini',normalizeVoiceCatalogue(GEMINI_VOICES));
+    const selectedRoutes=new Set([...config.fixed,...(config.casts[scope(config)] || [])].map(actor=>actor.route).filter(Boolean));
+    const catalogues=await Promise.allSettled([...selectedRoutes].map(route=>ensureCatalogue(route)));
+    for(const result of catalogues)if(result.status==='rejected')status(result.reason.message,true);
     if(version!==loadVersion || disposed)return;
     const connection=nativeConnections.find(v=>v.id===config.connection);
     const parameters=nativeProviders.find(v=>v.id===connection?.provider)?.capabilities?.parameters || {};
@@ -362,7 +400,9 @@ export async function setup(ctx) {
     $('preview').replaceChildren();
     for(const [index,segment] of plan.segments.entries()) {
       const card=document.createElement('div');card.className='et-card';
-      const label=document.createElement('strong');label.textContent=`${index+1}. ${segment.speaker} · ${segment.voice}`;
+      const label=document.createElement('strong');
+      const connectionLabel=segment.route==='gemini'?'Gemini':nativeConnections.find(c=>`native:${c.id}`===segment.route)?.name;
+      label.textContent=`${index+1}. ${segment.speaker} · ${segment.voice}${connectionLabel?` · ${connectionLabel}`:''}`;
       const delivery=document.createElement('p');delivery.textContent=segment.style || 'Default delivery';
       const text=document.createElement('div');text.className='et-transcript';text.textContent=segment.text;
       card.append(label,delivery,text);$('preview').append(card);
@@ -437,14 +477,15 @@ export async function setup(ctx) {
     stop(false);const token=revision;const ctrl=new AbortController();controller=ctrl;
     const snapshot=structuredClone(config), segments=plan.segments.flatMap(s=>splitSegment(s,snapshot.chunk));
     const source={...planSource}, key=recordingKey(source.chatId,source.messageId);
-    const signature=JSON.stringify([snapshot.mode,snapshot.model,snapshot.connection,snapshot.styleParam,segments]);
+    const signature=JSON.stringify([snapshot.mode,snapshot.model,snapshot.connection,snapshot.styleParam,segments,
+      segments.map(segment=>nativeConnections.find(c=>`native:${c.id}`===(segment.route || scope(snapshot)))?.model)]);
     let cached,storageError='';
     status('Checking saved audio…');
     try{cached=await recordingStore('get',key);}catch(error){storageError=error.message;}
     if(token!==revision || ctrl.signal.aborted)throw abortError();
     if(cached?.content!==source.content || cached?.signature!==signature)cached=null;
     const apiKey=$('key').value.trim();
-    if(!cached && snapshot.mode==='gemini' && !apiKey){controller=null;throw new Error('Enter your Gemini API key. It is held only in this page session.');}
+    if(!cached && segments.some(segment=>(segment.route || scope(snapshot))==='gemini') && !apiKey){controller=null;throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');}
     setBusy(true);
     const blobs=[];
     try {
@@ -454,15 +495,21 @@ export async function setup(ctx) {
         let blob=cached?.blobs[index];
         if(blob) {
           status(`Replaying ${index+1}/${segments.length}: ${segment.speaker}`);
-        } else if(snapshot.mode==='gemini') {
+        } else if((segment.route || scope(snapshot))==='gemini') {
           const result=await rpc('gemini',{segment,model:snapshot.model,apiKey},ctrl.signal);
           const audio=audioBytes(result.base64,result.mimeType);blob=new Blob([audio.data],{type:audio.mimeType});
         } else {
-          const connection=nativeConnections.find(c=>c.id===snapshot.connection);
+          const route=segment.route || scope(snapshot);
+          const connection=nativeConnections.find(c=>`native:${c.id}`===route);
+          if(!connection)throw new Error(`TTS connection for ${segment.speaker} is no longer available. Choose another connection and plan again.`);
           const parameters={};
-          if(snapshot.useStyle && snapshot.styleParam && segment.style)parameters[snapshot.styleParam]=segment.style;
+          const supported=nativeProviders.find(provider=>provider.id===connection.provider)?.capabilities?.parameters || {};
+          const styleParam=route===scope(snapshot)
+            ? (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:undefined)
+            : (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:['instructions','instruct','prompt'].find(parameter=>supported[parameter]));
+          if(snapshot.useStyle && styleParam && segment.style)parameters[styleParam]=segment.style;
           const response=await api('/tts/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({connectionId:snapshot.connection,model:connection.model,voice:segment.voice,text:segment.text,parameters}),signal:ctrl.signal});
+            body:JSON.stringify({connectionId:connection.id,model:connection.model,voice:segment.voice,text:segment.text,parameters}),signal:ctrl.signal});
           blob=await response.blob();
         }
         if(token!==revision || ctrl.signal.aborted)throw abortError();

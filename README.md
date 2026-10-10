@@ -15,7 +15,7 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? In **Extensions**, update Choir to **1.0.8**, restart it, then reload the page. Version 1.0.8 adds a **▶ Choir** button in each message action area: click to replay saved audio or automatically plan and play; click again while active to stop. Progress and errors appear beside the message. Planning now assigns speakers to numbered original text pieces instead of copying the reply. Text outside straight/curly double quotes always uses Narrator; character voices apply only inside quotes. The old 250-segment and 30,000-character planner caps have been removed. Provider output budgets and per-request speech chunking still apply.
+Already installed? In **Extensions**, update Choir to **1.0.9**, restart it, then reload the page. Version 1.0.9 adds a **TTS connection** selector for every fixed speaker and saved NPC. Use chat default inherits the default provider at the top; explicit choices stay fixed. Changing a speaker connection clears its voice so you can select from that connection or let the LLM choose. Save and plan again. New NPCs use the chat default until you choose an override. Delete a saved recording before using the message button if you want to regenerate it with the new cast; Replay always preserves the recorded audio.
 
 ## Install locally
 
@@ -107,7 +107,7 @@ Changing chat, editing/deleting a message, or changing its swipe stops the activ
 
 ## Validation and development
 
-Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 29 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Planner tests verify independent output settings, a retry after truncated JSON, clear empty-response errors, and backend readiness replies. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
+Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 31 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Planner tests verify independent output settings, a retry after truncated JSON, clear empty-response errors, and backend readiness replies. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
 
 **It has not been installed into your running Lumiverse instance or tested with real provider credentials.** Actual synthesis quality, provider availability and live UI integration still need your first-use check.
 
@@ -124,3 +124,7 @@ Sources: [Lumiverse staging](https://github.com/prolix-oc/Lumiverse/tree/staging
 
 
 Named Google voice gender labels follow [Google’s published named voice table](https://docs.cloud.google.com/text-to-speech/docs/chirp3-hd). The names match the [Gemini studio catalogue](https://ai.google.dev/gemini-api/docs/speech-generation). The filter shows an already selected voice even if it differs from the filter, with a warning in its label; select a matching voice or Let LLM choose to recast. Existing recordings retain the voice originally used: delete the audio and plan/play again to record a changed cast.
+
+## Mixed TTS providers
+
+For example, keep the chat default on Gemini, select a saved ElevenLabs/OpenAI/etc. TTS connection on Bakugo’s row, and choose its voice. Choir loads only catalogues needed by the active cast; changing a row connection loads that connection’s voices. Voice gender filters use that catalogue. Provider choices and voices persist together, and every spoken turn is synthesized through its speaker’s connection in order. Native connections reuse Lumiverse credentials; the dedicated Gemini adapter still needs its session API key if any speaker uses it. The key fields are visible even when the chat default is another provider. Delivery style is sent through a supported instructions/instruct/prompt parameter for native overrides when Use delivery styles is enabled; some providers cannot accept styles. Fixed and saved NPC routes override contradictory planner suggestions. Existing NPC cast groups remain scoped by the chat default provider, as before.

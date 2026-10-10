@@ -140,3 +140,21 @@ test('more than 250 speech turns can be planned without an artificial segment ca
   const raw={segments:units.map(unit=>({speaker:'Alice',voice:'Kore',unit_ids:[unit.id]}))};
   assert.equal(validatePlan(resolvePlanReferences(raw,text,config()),text,config()).segments.length,280);
 });
+
+test('speaker connections remain fixed even when providers share a voice ID',()=>{
+  const c={defaultRoute:'gemini',voices:[{id:'same',route:'gemini',gender:'male'},{id:'same',route:'native:other',gender:'female'}],
+    fixed:[{speaker:'Narrator',voice:'same',route:'gemini',style:''},{speaker:'Alice',voice:'',route:'native:other',gender:'female',style:''}],npcs:[]};
+  const plan=validatePlan({segments:[{speaker:'Narrator',voice:'same',route:'native:other',text:'Alice said,'},
+    {speaker:'Alice',voice:'same',route:'gemini',text:'"Hello."'}]},'Alice said, "Hello."',c);
+  assert.deepEqual(plan.segments.map(segment=>segment.route),['gemini','native:other']);
+  assert.equal(plan.segments[1].voice,'same');
+  c.fixed[1].voice='missing';assert.throws(()=>validateCastConfig(c),/selected TTS connection/);
+});
+
+test('new NPCs use the default connection and saved NPC overrides remain stable',()=>{
+  const c={defaultRoute:'gemini',voices:[{id:'Kore',route:'gemini'},{id:'custom',route:'native:other'}],
+    fixed:[{speaker:'Narrator',voice:'Kore',style:''}],npcs:[]};
+  assert.throws(()=>validatePlan({segments:[{speaker:'Guard',voice:'custom',route:'native:other',text:'Hello.'}]},'Hello.',c),/selected TTS connection/);
+  c.npcs=[{speaker:'Guard',voice:'custom',route:'native:other',style:''}];
+  assert.equal(validatePlan({segments:[{speaker:'Guard',voice:'Kore',route:'gemini',text:'Hello.'}]},'Hello.',c).segments[0].route,'native:other');
+});

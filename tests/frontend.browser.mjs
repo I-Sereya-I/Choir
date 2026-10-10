@@ -56,11 +56,11 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
       requests.push(message);if(message.action==='cancel')return;
       setTimeout(()=>{
         let result;
-        if(message.action==='ping')result={version:'1.0.8',ready:true};
+        if(message.action==='ping')result={version:'1.0.9',ready:true};
         else if(message.action==='plan')result=validatePlan({segments:[
           {speaker:'Narrator',text:'The hall fell silent.',style:'Calm'},
           {speaker:'Mira',voice:(message.input.config.voices.find(v=>v.gender==='female') || message.input.config.voices[1]).id,text:'Hello, stranger.',style:'Curious'},
-          {speaker:'Guard',voice:message.input.config.voices.at(-1).id,text:'Welcome.',style:'Warm'}]},message.input.transcript,message.input.config);
+          {speaker:'Guard',voice:message.input.config.voices.filter(voice=>voice.route===message.input.config.defaultRoute).at(-1).id,text:'Welcome.',style:'Warm'}]},message.input.transcript,message.input.config);
         else result={base64:'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=',mimeType:'audio/wav'};
         onBackend?.({namespace:'choir',id:message.id,result});
       },2);
@@ -107,6 +107,24 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     $('stop').click();await tick();assert.equal(requests.filter(v=>v.action==='gemini').length,previous);
     assert.ok(audios.at(-1).paused);
     blockAudio=false;
+    const speakerRoute=$('fixed').querySelectorAll('[data-choir-route]')[2];
+    speakerRoute.value='native:native-a';speakerRoute.dispatchEvent(new dom.window.Event('change'));
+    await until(()=>$('fixed').querySelectorAll('[data-choir-voice]')[2].textContent.includes('coral'));
+    $('fixed').querySelectorAll('[data-choir-voice]')[2].value='coral';
+    $('save').click();await until(()=>$('status').textContent.includes('retention saved'));
+    $('key').value='mixed-key';
+    $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
+    const beforeMixed=requests.filter(request=>request.action==='gemini').length;
+    $('play').click();await until(()=>$('status').textContent.includes('Audio saved'));
+    assert.equal(nativeRequests.length,1);assert.equal(nativeRequests[0].voice,'coral');
+    assert.equal(nativeRequests[0].parameters.instructions,'Curious');
+    assert.equal(requests.filter(request=>request.action==='gemini').length,beforeMixed+2);
+    assert.equal(store.get('chat:chat-a').fixed[2].route,'native:native-a');
+    $('key').value='';
+    $('play').click();await until(()=>$('status').textContent.includes('Audio saved'));
+    assert.equal(nativeRequests.length,1);
+    assert.equal(requests.filter(request=>request.action==='gemini').length,beforeMixed+2);
+    nativeRequests.length=0;
     $('mode').value='native';$('mode').dispatchEvent(new dom.window.Event('change'));await tick();
     $('connection').value='native-a';$('connection').dispatchEvent(new dom.window.Event('change'));await tick();
     assert.match($('fixed').querySelector('[data-choir-voice]').textContent,/coral · Female/);
