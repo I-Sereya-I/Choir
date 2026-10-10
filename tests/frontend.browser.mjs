@@ -69,7 +69,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
           onBackend?.({namespace:'choir',id:message.id,error:'Planner timed out while waiting for response.'});return;
         }
         let result;
-        if(message.action==='ping')result={version:'1.0.15',ready:true};
+        if(message.action==='ping')result={version:'1.0.16',ready:true};
         else if(message.action==='testPlanner')result={model:'gpt-text-test',provider:'openai',response:'READY'};
         else if(message.action==='plan' && (message.input.transcript.trim().startsWith('Long narration') || message.input.transcript.trim().startsWith('"Welcome."')))result=validatePlan({segments:speechSourceUnits(message.input.transcript).map(unit=>({
           speaker:unit.kind==='dialogue'?'Traveler':'Narrator',text:unit.text,
@@ -77,7 +77,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
         }))},message.input.transcript,message.input.config);
         else if(message.action==='plan')result=validatePlan({segments:[
           {speaker:'Narrator',text:'The hall fell silent.',style:'Calm'},
-          {speaker:'Mira',voice:(message.input.config.voices.find(v=>v.gender==='female') || message.input.config.voices[1]).id,text:'Hello, stranger.',style:'Curious'},
+          {speaker:'Mira',voice:(message.input.config.voices.find(v=>v.gender==='female') || message.input.config.voices[1]).id,text:message.input.transcript.match(/Hello, [^.]+\./)[0],style:'Curious'},
           {speaker:'Guard',voice:message.input.config.voices.filter(voice=>voice.route===message.input.config.defaultRoute).at(-1).id,text:'Welcome.',style:'Warm'}]},message.input.transcript,message.input.config);
         else result={base64:'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=',mimeType:'audio/wav'};
         if(message.action==='plan')onBackend?.({namespace:'choir',id:message.id,progress:{stage:'Waiting for planner response',model:'gpt-text-test'}});
@@ -189,6 +189,12 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     const beforeRegeneration=nativeRequests.length;
     $('play').click();await until(()=>$('status').textContent.includes('Audio saved'));
     assert.equal(nativeRequests.length,beforeRegeneration+3);
+    message.content='The hall fell silent. Hello, {{user}}. Welcome.';
+    events.get('MESSAGE_EDITED')({messageId:'message-a'});
+    $('fixed').querySelectorAll('.et-card')[1].querySelector('input').value='Sona';
+    $('latest').click();await until(()=>$('status').textContent.startsWith('Ready:'));
+    assert.ok(requests.filter(request=>request.action==='plan').at(-1).input.transcript.includes('Hello, Sona.'));
+    assert.ok(!requests.filter(request=>request.action==='plan').at(-1).input.transcript.includes('{{user}}'));
     message.content='Edited reply.';events.get('MESSAGE_EDITED')({messageId:'message-a'});
     assert.ok($('play').disabled);
     [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();

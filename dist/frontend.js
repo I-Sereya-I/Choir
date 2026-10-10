@@ -730,19 +730,35 @@ export async function setup(ctx) {
     })},null,2);
     $('play').disabled=busy;
   }
+  const replacePersonaMacro=(text,name)=>text.replace(/\{\{\s*user\s*\}\}/gi,()=>name);
+  async function personaName() {
+    const personaId=ctx.state.get?.('persona.activeId');
+    if(personaId) {
+      const persona=await api(`/personas/${encodeURIComponent(personaId)}`).then(response=>response.json()).catch(()=>null);
+      if(persona?.name?.trim())return persona.name.trim();
+    }
+    const name=config.fixed[1]?.speaker?.trim();
+    if(name && name!=='Persona')return name;
+    throw new Error('Set your persona name in Choir’s fixed cast to resolve {{user}}.');
+  }
   async function prepare(messageId,autoPlay=false,contentOverride) {
     if(!chatId)throw new Error('Open a chat first.');
     stop(false);clearPlan();config=capture();validateSettings(config);
     const token=revision, targetChat=chatId;
     const content=contentOverride ?? ctx.messages.getContent(messageId);
     if(content==null)throw new Error('Message is no longer available.');
-    const transcript=transcriptFromMessage(content);
+    let transcript=transcriptFromMessage(content);
     if(!transcript)throw new Error('This message contains no speakable text.');
     const snapshot=structuredClone(casting(config));
-    const context=ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
+    let context=ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
       .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content).slice(0,1000)}`).join('\n').slice(-4000);
     const ctrl=new AbortController();controller=ctrl;setBusy(true);status('Checking Choir backend…');
     try {
+      if(/\{\{\s*user\s*\}\}/i.test(transcript+context)) {
+        const name=await personaName();
+        if(ctrl.signal.aborted || token!==revision)return;
+        transcript=replacePersonaMacro(transcript,name);context=replacePersonaMacro(context,name);
+      }
       await rpc('ping',{},ctrl.signal,8000);
       if(token!==revision || ctrl.signal.aborted)return;
       const stripBase=segments=>segments.map(s=>{
@@ -871,7 +887,7 @@ export async function setup(ctx) {
       }
       if(!cached) {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        try{await recordingStore('put',key,{content:source.content,signature,segments,blobs,retention:snapshot.retention});storageError='';}
+        try{await recordingStore('put',key,{content:source.content,transcript:source.transcript,signature,segments,blobs,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
       if(token===revision){renderMessages();status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.');}
@@ -886,6 +902,7 @@ export async function setup(ctx) {
       if(token!==revision || ctrl.signal.aborted)throw abortError();
       if(!recording)throw new Error('No saved audio for this message on this device. Plan and play it first.');
       if(ctx.messages.getContent(messageId)!==recording.content)throw new Error('The message changed since recording. Plan and play the current reply.');
+      if(/\{\{\s*user\s*\}\}/i.test(recording.content) && recording.transcript!==replacePersonaMacro(transcriptFromMessage(recording.content),await personaName()))throw new Error('This recording uses an older persona name. Plan and play the message again.');
       for(const [index,blob] of recording.blobs.entries()) {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
@@ -900,7 +917,7 @@ export async function setup(ctx) {
     status('Checking saved audio…');
     const content=ctx.messages.getContent(messageId);
     let recording;try{recording=await recordingStore('get',recordingKey(chatId,messageId));}catch{}
-    if(recording?.content===content){await replayRecording(messageId);return;}
+    if(recording?.content===content && (!/\{\{\s*user\s*\}\}/i.test(content) || recording.transcript===replacePersonaMacro(transcriptFromMessage(content),await personaName()))){await replayRecording(messageId);return;}
     await prepare(messageId,true);
   }
   const decorateMessage=(target,context={})=>{

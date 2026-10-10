@@ -15,7 +15,7 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? Update Choir to **1.0.15**, restart it, then reload. Enable **Batch Gemini turns** to combine adjacent turns from up to two speakers in one request using speaker/style metadata. Provider changes, a third speaker, or the character limit start a new batch. Choose **Concurrent TTS requests** (1–4, default 1) to generate ahead while playback stays in order. Set **Max characters per speech request** to around **1800** for roughly two-minute parts; duration depends on delivery, and existing saved character limits are preserved. Native providers combine adjacent turns only when speaker, voice, route and style match. Cached recordings remain replayable.
+Already installed? Update Choir to **1.0.16**, restart it, then reload. Greetings containing **{{user}}** now use the active persona name before planning and synthesis. If the active persona cannot be loaded, Choir uses the persona name in its fixed cast. Saved message text stays unchanged. Recordings made with unresolved or different persona names need fresh planning/playback; the message Play button regenerates them automatically.
 
 ## Install locally
 
