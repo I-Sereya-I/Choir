@@ -22,7 +22,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.0.17',ready:true}});return;
+      send({result:{version:'1.0.18',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       progress({stage:'Resolving saved LLM connection'});

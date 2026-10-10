@@ -69,7 +69,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
           onBackend?.({namespace:'choir',id:message.id,error:'Planner timed out while waiting for response.'});return;
         }
         let result;
-        if(message.action==='ping')result={version:'1.0.17',ready:true};
+        if(message.action==='ping')result={version:'1.0.18',ready:true};
         else if(message.action==='testPlanner')result={model:'gpt-text-test',provider:'openai',response:'READY'};
         else if(message.action==='plan' && (message.input.transcript.trim().startsWith('Long narration') || message.input.transcript.trim().startsWith('"Welcome."')))result=validatePlan({segments:speechSourceUnits(message.input.transcript).map(unit=>({
           speaker:unit.kind==='dialogue'?'Traveler':'Narrator',text:unit.text,
@@ -106,7 +106,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.ok(root.querySelector('[data-et="fixed"]'));
     // Drawer roots can be detached when the user is looking at the story.
     root.remove();
-    messageActions.querySelector('button').click();await until(()=>$('status').textContent.includes('Playback finished'));
+    $('key').value = 'test-key'; messageActions.querySelector('button').click();await until(()=>$('status').textContent.includes('Playback finished'));
     assert.equal(audios.length,2);audios.length=0;
     assert.match(messageActions.textContent,/Playback finished/);
     assert.match(minimalFooter.textContent,/Playback finished/);
@@ -235,3 +235,90 @@ test('older hosts show a visible settings diagnostic rather than disappearing',a
     cleanup();assert.equal(root.children.length,0);assert.equal(mount.children.length,0);
   } finally {globalThis.document=previous;dom.window.close();}
 });
+
+
+test('pipelined playback begins playing section 1 while subsequent sections are still being planned', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  let onBackend;
+  const store = new Map(), requests = [], audios = [];
+  const message = {
+    id: 'message-multi',
+    chat_id: 'chat-multi',
+    name: 'Mira',
+    is_user: false,
+    content: Array.from({length: 12}, (_, i) => `Sentence ${i}. "Quote ${i}."\n`).join(''),
+    extra: {}
+  };
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; audios.push(this); }
+    play() { this.paused = false; setTimeout(() => this.onended?.(), 10); return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = FakeAudio;
+  globalThis.fetch = async (url) => {
+    if (url.endsWith('/tts/synthesize')) return new Response(new Uint8Array([1, 2]), {headers: {'Content-Type': 'audio/mpeg'}});
+    if (url.includes('/providers')) return new Response(JSON.stringify({providers: []}), {headers: {'Content-Type': 'application/json'}});
+    if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}, {id: 'Zephyr', name: 'Zephyr', gender: 'female'}]}), {headers: {'Content-Type': 'application/json'}});
+    return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
+  };
+  const messageActions = dom.window.document.createElement('div');
+  const root = dom.window.document.createElement('div');
+  const ctx = {
+    registerDomDecorator: options => options.render(messageActions, {scope: 'message:message-multi:bubble:footer'}),
+    settings: {
+      get: async key => store.get(key) || null,
+      set: async (key, value) => { store.set(key, structuredClone(value)); }
+    },
+    messages: {
+      getRecent: () => [message],
+      getContent: id => id === message.id ? message.content : null
+    },
+    state: {subscribe: () => () => {}},
+    connections: {list: () => []},
+    characters: {get: async () => ({name: 'Mira'})},
+    getActiveChat: () => ({chatId: 'chat-multi', characterId: 'character-a'}),
+    dom: {addStyle: () => () => {}},
+    ui: {
+      registerDrawerTab: () => ({root, activate() {}, destroy() {}}),
+      mount: () => dom.window.document.createElement('div'), registerInputBarAction: () => ({onClick() {}, destroy() {}})
+    },
+    events: {on: () => () => {}},
+    onBackendMessage: fn => { onBackend = fn; return () => null; },
+    sendToBackend: message => {
+      requests.push(message);
+      setTimeout(() => {
+        if (message.action === 'ping') onBackend?.({namespace: 'choir', id: message.id, result: {version: '1.0.18', ready: true}});
+        else if (message.action === 'plan') {
+          const units = speechSourceUnits(message.input.transcript);
+          onBackend?.({namespace: 'choir', id: message.id, result: {segments: units.map(u => ({
+            speaker: u.kind === 'dialogue' ? 'Mira' : 'Narrator',
+            text: u.text,
+            voice: u.kind === 'dialogue' ? 'Zephyr' : 'Charon'
+          }))}});
+        }
+        else if (message.action === 'gemini') onBackend?.({namespace: 'choir', id: message.id, result: {base64: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=', mimeType: 'audio/wav'}});
+      }, 5);
+    }
+  };
+  try {
+    const cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+    $('key').value = 'test-key';
+    messageActions.querySelector('button').click();
+    await until(() => audios.length > 0);
+    const planRequestsWhilePlaying = requests.filter(r => r.action === 'plan').length;
+    assert.ok(planRequestsWhilePlaying >= 1 && planRequestsWhilePlaying <= 3);
+    await until(() => $('status').textContent.includes('Playback finished'));
+    const totalPlanRequests = requests.filter(r => r.action === 'plan').length;
+    assert.equal(totalPlanRequests, 3);
+    assert.ok(audios.length >= 8);
+    cleanup();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});
+

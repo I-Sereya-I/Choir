@@ -744,7 +744,7 @@ export async function setup(ctx) {
     $('planJson').value=JSON.stringify({segments:plan.segments.map(s=>{
       const actor=[...config.fixed,...(config.casts[scope(config)] || [])].find(v=>normalizeName(v.speaker)===normalizeName(s.speaker));
       const prefix=actor?.style ? `${actor.style}. ` : '';
-      return {...s,style:prefix && s.style.startsWith(prefix)?s.style.slice(prefix.length):s.style===actor?.style?'':s.style};
+      const style=s.style || ''; return {...s,style:prefix && style.startsWith(prefix)?style.slice(prefix.length):style===actor?.style?'':style};
     })},null,2);
     $('play').disabled=busy;
   }
@@ -778,6 +778,7 @@ export async function setup(ctx) {
     let context=ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
       .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content).slice(0,1000)}`).join('\n').slice(-4000);
     const ctrl=new AbortController();controller=ctrl;setBusy(true);status('Checking Choir backend…');
+    let streaming=false;
     try {
       if(/\{\{\s*user\s*\}\}/i.test(transcript+context)) {
         const name=await personaName();
@@ -789,9 +790,15 @@ export async function setup(ctx) {
       const stripBase=segments=>segments.map(s=>{
         const actor=[...snapshot.fixed,...snapshot.npcs].find(v=>normalizeName(v.speaker)===normalizeName(s.speaker));
         const prefix=actor?.style?`${actor.style}. `:'';
-        return {...s,style:prefix && s.style.startsWith(prefix)?s.style.slice(prefix.length):s.style===actor?.style?'':s.style};
+        const style=s.style || ''; return {...s,style:prefix && style.startsWith(prefix)?style.slice(prefix.length):style===actor?.style?'':style};
       });
       const sections=planningSections(transcript),combined=[];let previous='';
+      streaming=autoPlay && sections.length>1;
+      let player=null;
+      if(streaming) {
+        const apiKey=$('key').value.trim();
+        player=createStreamingPlayer(config,{chatId:targetChat,messageId,content,transcript},null,apiKey,ctrl,token);
+      }
       for(let index=0;index<sections.length;index++) {
         const section=sections[index];
         status(`Planning section ${index+1}/${sections.length}: speakers and voices…`);
@@ -817,7 +824,12 @@ export async function setup(ctx) {
         snapshot.npcs=checked.npcs;
         for(const actor of snapshot.fixed)if(!actor.voice)actor.voice=checked.segments.find(s=>normalizeName(s.speaker)===normalizeName(actor.speaker))?.voice || '';
         combined.push(...stripBase(checked.segments));previous=section;
+        if(streaming) {
+          const sectionBatches=speechBatches(stripBase(checked.segments),snapshot.chunk,scope(snapshot),snapshot.batchGemini);
+          player.push(sectionBatches);
+        }
       }
+      if(streaming)player.finish();
       // Validate the complete original reply before audio or cast persistence.
       const validated=validatePlan({segments:combined},transcript,snapshot);
       plan=validated;planSource={messageId,content,transcript,chatId:targetChat};
@@ -827,9 +839,20 @@ export async function setup(ctx) {
       }
       await ctx.settings.set(settingsKey(targetChat),config);
       if(token!==revision || disposed)return;
-      renderCast();renderPreview();status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.map(s=>s.speaker)).size} speakers.`);
+      renderCast();renderPreview();
+      if(!streaming)status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.map(s=>s.speaker)).size} speakers.`);
+      if(streaming) {
+        const {blobs,segments:playedBatches}=await player.playbackPromise;
+        const key=recordingKey(targetChat,messageId);
+        const signature=JSON.stringify([snapshot.mode,snapshot.model,snapshot.connection,snapshot.styleParam,playedBatches,
+          playedBatches.map(segment=>nativeConnections.find(c=>`native:${c.id}`===(segment.route || scope(snapshot)))?.model)]);
+        let storageError='';
+        try{await recordingStore('put',key,{content,transcript,signature,segments:playedBatches,blobs,retention:snapshot.retention});}
+        catch(error){storageError=error.message;}
+        if(token===revision){renderMessages();status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.');}
+      }
     } finally {if(token===revision){controller=null;setBusy(false);}}
-    if(autoPlay && token===revision)await play();
+    if(autoPlay && !streaming && token===revision)await play();
   }
   async function playBlob(blob,signal) {
     if(signal.aborted)throw abortError();
@@ -850,6 +873,114 @@ export async function setup(ctx) {
       $('pause').disabled=true;$('pause').textContent='Pause';
     }
   }
+  function createStreamingPlayer(snapshot,source,cached,apiKey,ctrl,token) {
+    const segments=[];
+    const ready=new Map();
+    const resolvers=new Map();
+    let nextToSynthesize=0;
+    let activeWorkers=0;
+    let isDoneAdding=false;
+    let wakePlayback=null;
+    const blobs=[];
+    let totalExpected=0;
+
+    ctrl.signal.addEventListener('abort',()=>wakePlayback?.(),{once:true});
+
+    function ensureSlot(index) {
+      if(!ready.has(index)) {
+        let res;
+        const p=new Promise(r=>res=r);
+        ready.set(index,p);
+        resolvers.set(index,res);
+      }
+    }
+
+    function pump() {
+      const concurrency=Math.max(1,Number(snapshot.concurrency)||1);
+      while(!ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length) {
+        const idx=nextToSynthesize++;
+        ensureSlot(idx);
+        activeWorkers++;
+        (async()=>{
+          try {
+            const seg=segments[idx];
+            if(ctrl.signal.aborted)throw abortError();
+            status(`Synthesizing ${idx+1}/${totalExpected || segments.length}: ${seg.speaker} · ${seg.voice}`);
+            let blob=cached?.blobs?.[idx];
+            if(blob) {
+              status(`Replaying ${idx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
+            } else if((seg.route || scope(snapshot))==='gemini') {
+              if(!apiKey)throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');
+              const result=await rpc('gemini',{segment:seg,model:snapshot.model,apiKey},ctrl.signal);
+              const audio=audioBytes(result.base64,result.mimeType);
+              blob=new Blob([audio.data],{type:audio.mimeType});
+            } else {
+              const route=seg.route || scope(snapshot);
+              const connection=nativeConnections.find(c=>`native:${c.id}`===route);
+              if(!connection)throw new Error(`TTS connection for ${seg.speaker} is no longer available. Choose another connection and plan again.`);
+              const parameters={};
+              const supported=nativeProviders.find(provider=>provider.id===connection.provider)?.capabilities?.parameters || {};
+              const styleParam=route===scope(snapshot)
+                ? (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:undefined)
+                : (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:['instructions','instruct','prompt'].find(p=>supported[p]));
+              if(snapshot.useStyle && styleParam && seg.style)parameters[styleParam]=seg.style;
+              const response=await api('/tts/synthesize',{
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({connectionId:connection.id,model:connection.model,voice:seg.voice,text:seg.text,parameters}),
+                signal:ctrl.signal
+              });
+              blob=await response.blob();
+            }
+            if(token!==revision || ctrl.signal.aborted)throw abortError();
+            resolvers.get(idx)({blob});
+          } catch(error) {
+            resolvers.get(idx)({error});
+          } finally {
+            activeWorkers--;
+            pump();
+          }
+        })();
+      }
+    }
+
+    function push(newSegments,total) {
+      if(total)totalExpected=total;
+      for(const s of newSegments)segments.push(s);
+      pump();
+      wakePlayback?.();
+    }
+
+    function finish() {
+      isDoneAdding=true;
+      wakePlayback?.();
+    }
+
+    const playbackPromise=(async()=>{
+      let playIdx=0;
+      while(!ctrl.signal.aborted) {
+        if(playIdx>=segments.length) {
+          if(isDoneAdding)break;
+          await new Promise(resolve=>{wakePlayback=resolve;});
+          wakePlayback=null;
+          continue;
+        }
+        ensureSlot(playIdx);
+        const outcome=await ready.get(playIdx);
+        if(outcome.error)throw outcome.error;
+        if(token!==revision || ctrl.signal.aborted)throw abortError();
+        const blob=outcome.blob;
+        blobs.push(blob);
+        const seg=segments[playIdx];
+        status(`Playing ${playIdx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
+        await playBlob(blob,ctrl.signal);
+        playIdx++;
+      }
+      return {blobs,segments};
+    })();
+
+    return {push,finish,playbackPromise};
+  }
   async function play() {
     if(!plan || !planSource)throw new Error('Plan a message first.');
     if(chatId!==planSource.chatId || ctx.messages.getContent(planSource.messageId)!==planSource.content) {
@@ -869,47 +1000,11 @@ export async function setup(ctx) {
     const apiKey=$('key').value.trim();
     if(!cached && segments.some(segment=>(segment.route || scope(snapshot))==='gemini') && !apiKey){controller=null;throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');}
     setBusy(true);
-    const blobs=[];
     try {
-      const synthesize=async(index)=>{
-        const segment=segments[index];
-        if(ctrl.signal.aborted)throw abortError();
-        status(`Synthesizing ${index+1}/${segments.length}: ${segment.speaker} · ${segment.voice}`);
-        let blob=cached?.blobs[index];
-        if(blob) {
-          status(`Replaying ${index+1}/${segments.length}: ${segment.speaker}`);
-        } else if((segment.route || scope(snapshot))==='gemini') {
-          const result=await rpc('gemini',{segment,model:snapshot.model,apiKey},ctrl.signal);
-          const audio=audioBytes(result.base64,result.mimeType);blob=new Blob([audio.data],{type:audio.mimeType});
-        } else {
-          const route=segment.route || scope(snapshot);
-          const connection=nativeConnections.find(c=>`native:${c.id}`===route);
-          if(!connection)throw new Error(`TTS connection for ${segment.speaker} is no longer available. Choose another connection and plan again.`);
-          const parameters={};
-          const supported=nativeProviders.find(provider=>provider.id===connection.provider)?.capabilities?.parameters || {};
-          const styleParam=route===scope(snapshot)
-            ? (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:undefined)
-            : (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:['instructions','instruct','prompt'].find(parameter=>supported[parameter]));
-          if(snapshot.useStyle && styleParam && segment.style)parameters[styleParam]=segment.style;
-          const response=await api('/tts/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({connectionId:connection.id,model:connection.model,voice:segment.voice,text:segment.text,parameters}),signal:ctrl.signal});
-          blob=await response.blob();
-        }
-        if(token!==revision || ctrl.signal.aborted)throw abortError();
-        return blob;
-      };
-      const ready=new Map();
-      const launch=index=>{if(index<segments.length)ready.set(index,synthesize(index).then(blob=>({blob}),error=>({error})));};
-      for(let index=0;index<Math.min(snapshot.concurrency,segments.length);index++)launch(index);
-      for(const [index,segment] of segments.entries()) {
-        const outcome=await ready.get(index);ready.delete(index);
-        if(outcome.error)throw outcome.error;
-        if(token!==revision || ctrl.signal.aborted)throw abortError();
-        const blob=outcome.blob;blobs.push(blob);
-        status(`Playing ${index+1}/${segments.length}: ${segment.speaker}`);
-        await playBlob(blob,ctrl.signal);
-        launch(index+snapshot.concurrency);
-      }
+      const player=createStreamingPlayer(snapshot,source,cached,apiKey,ctrl,token);
+      player.push(segments,segments.length);
+      player.finish();
+      const {blobs}=await player.playbackPromise;
       if(!cached) {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         try{await recordingStore('put',key,{content:source.content,transcript:source.transcript,signature,segments,blobs,retention:snapshot.retention});storageError='';}
