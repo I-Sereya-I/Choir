@@ -232,11 +232,40 @@ function splitSegment(segment, maxChars = 350) {
 
 function geminiRequest(segment, model) {
   if (!/^gemini-3\.8-.*tts$/.test(model)) throw new Error('The metadata adapter requires a Gemini 3.8 TTS model.');
+  if(segment.turns) {
+    const turns=segment.turns;
+    if(!Array.isArray(turns) || !turns.length || turns.length>200 || turns.reduce((n,s)=>n+s.text.length,0)>2000)throw new Error('Invalid Gemini speech batch.');
+    const speakers=new Map();
+    for(const turn of turns) {
+      if(!turn.speaker || !turn.voice || !turn.text?.trim())throw new Error('Invalid Gemini batch turn.');
+      if(speakers.has(turn.speaker) && speakers.get(turn.speaker)!==turn.voice)throw new Error('Conflicting batch speaker voices.');
+      speakers.set(turn.speaker,turn.voice);
+    }
+    if(speakers.size>2)throw new Error('Gemini batches support at most two speakers.');
+    return {contents:[{role:'user',parts:turns.map(turn=>({text:turn.text,speech_metadata:{speaker:turn.speaker,...(turn.style?{style:turn.style}:{})}}))}],
+      generationConfig:{responseModalities:['AUDIO'],speechConfig:speakers.size===1?{voiceConfig:{voice:turns[0].voice}}:{multiSpeakerVoiceConfig:{speakerVoiceConfigs:[...speakers].map(([speaker,voice])=>({speaker,voiceConfig:{prebuiltVoiceConfig:{voiceName:voice}}}))}}}};
+  }
   return {
     contents:[{role:'user',parts:[{text:segment.text,
       ...(segment.style ? {speech_metadata:{style:segment.style}} : {})}]}],
     generationConfig:{responseModalities:['AUDIO'],speechConfig:{voiceConfig:{voice:segment.voice}}}
   };
+}
+
+function speechBatches(segments,maxChars,defaultRoute,batchGemini=true) {
+  const batches=[];
+  for(const segment of segments.flatMap(s=>splitSegment(s,maxChars))) {
+    const route=segment.route || defaultRoute,previous=batches.at(-1);
+    if(batchGemini && route==='gemini') {
+      const turns=previous?.turns;
+      const names=new Set(turns?.map(turn=>turn.speaker) || []);names.add(segment.speaker);
+      if(turns && previous.route===route && names.size<=2 && turns.length<200 && previous.text.length+segment.text.length+1<=maxChars) {
+        turns.push(segment);previous.text+='\n'+segment.text;previous.speaker=[...names].join(' / ');
+      } else batches.push({...segment,route,turns:[segment]});
+    } else if(previous && !previous.turns && previous.route===route && previous.voice===segment.voice && previous.speaker===segment.speaker && previous.style===segment.style && previous.text.length+segment.text.length+1<=maxChars)previous.text+='\n'+segment.text;
+    else batches.push({...segment,route});
+  }
+  return batches;
 }
 
 function extractGeminiAudio(response) {
@@ -343,7 +372,9 @@ export async function setup(ctx) {
     </div>
     <details><summary>Advanced provider options</summary><div class="et-grid">
       <label>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
-      <label>Max characters per speech request<input data-et="chunk" type="number" min="80" max="2000" value="350"></label>
+      <label>Max characters per speech request<input data-et="chunk" type="number" min="80" max="2000" value="1800"></label>
+      <label><input data-et="batchGemini" type="checkbox" checked> Batch Gemini turns (up to two speakers)</label>
+      <label>Concurrent TTS requests<select data-et="concurrency"><option value="1">1 — sequential</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
       <label>Planner output budget (tokens)<input data-et="plannerTokens" type="number" min="1024" max="32768" step="1024" value="8192"></label>
     </div><label style="margin-top:10px">Additional Gemini voices · one ID | description per line<textarea data-et="extraVoices" placeholder="voice_... | warm storyteller"></textarea></label>
     <p>Other providers reuse your existing Lumiverse connections and credentials. Style support depends on their API. Gemini uses structured style metadata and a separate session key.</p></details>
@@ -364,7 +395,7 @@ export async function setup(ctx) {
     <details><summary>Edit plan JSON</summary><p>Keep each segment’s text as an exact consecutive substring. Fixed and existing NPC voices take priority.</p>
       <textarea data-et="planJson" rows="8" spellcheck="false"></textarea><button data-et="apply">Apply edited plan</button></details>
     <h3>Recent messages</h3><p>Replay saved audio without another provider request. Recordings are stored on this device. Gender preferences guide automatic casting; manually selected voices take priority.</p><button data-et="deleteChatAudio">Delete all Choir audio for this chat</button><div data-et="messages"></div>
-    <p>Disable Lumiverse’s native TTS auto-play to avoid overlapping audio. Speech planning makes a separate LLM request; playback makes one TTS request per chunk.</p>
+    <p>Speech requests are grouped where supported. Playback stays in order with concurrent generation. Around 1,800 characters targets roughly two minutes; delivery speed varies. Disable native TTS auto-play to avoid overlapping audio.</p>
   </div>`;
   const $ = name => root.querySelector(`[data-et="${name}"]`);
   for(const button of root.querySelectorAll('button'))button.type='button';
@@ -440,7 +471,7 @@ export async function setup(ctx) {
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
   const voiceCatalogues=new Map();
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
-  const defaults = () => ({mode:'gemini',model:'gemini-3.8-flash-tts',planner:'',connection:'',styleParam:'',apiBase:'/api/v1',chunk:350,plannerTokens:8192,
+  const defaults = () => ({mode:'gemini',model:'gemini-3.8-flash-tts',planner:'',connection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:true,concurrency:1,plannerTokens:8192,
     extraVoices:'',useStyle:true,auto:false,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
@@ -559,7 +590,7 @@ export async function setup(ctx) {
       casts:{...config.casts,[scope(config)]:npcRows.filter(v=>v.row.parentElement===$('npcs')).map(v=>v.read())},
       mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
-      plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,
+      plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:$('batchGemini').checked,concurrency:Number($('concurrency').value),
       extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked};
   }
   function casting(c=config) {
@@ -572,12 +603,13 @@ export async function setup(ctx) {
     if(!['session','1','7','30','forever'].includes(c.retention))throw new Error('Choose a valid audio retention period.');
     validateCastConfig(casting(c));
     if(!Number.isInteger(c.chunk) || c.chunk<80 || c.chunk>2000)throw new Error('Chunk size must be 80–2000.');
+    if(!Number.isInteger(c.concurrency) || c.concurrency<1 || c.concurrency>4)throw new Error('Choose 1–4 concurrent TTS requests.');
     if(!Number.isInteger(c.plannerTokens) || c.plannerTokens<1024 || c.plannerTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
     if(c.mode==='native' && !nativeConnections.some(v=>v.id===c.connection))throw new Error('Select an existing Lumiverse TTS connection.');
   }
   function setFields() {
     for(const name of ['mode','model','planner','connection','styleParam','apiBase','chunk','plannerTokens','extraVoices','retention'])$(name).value=config[name];
-    $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;
+    $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;$('batchGemini').checked=config.batchGemini;$('concurrency').value=config.concurrency;
     $('gemini').hidden=config.mode!=='gemini' && ![...config.fixed,...(config.casts[scope(config)] || [])].some(actor=>actor.route==='gemini');$('native').hidden=config.mode!=='native';
   }
   function setBusy(value) {
@@ -585,6 +617,7 @@ export async function setup(ctx) {
     for (const name of ['save','latest','load','testPlanner','add','reset','mode','connection','apply','auto'])$(name).disabled=value;
     for (const name of ['model','planner','styleParam','apiBase','chunk','plannerTokens','extraVoices','useStyle','key','planJson','retention'])$(name).disabled=value;
     $('play').disabled=value || !plan;
+    $('batchGemini').disabled=value;$('concurrency').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
   }
@@ -782,7 +815,8 @@ export async function setup(ctx) {
       clearPlan();throw new Error('Message or swipe changed. Generate a fresh plan.');
     }
     stop(false);const token=revision;const ctrl=new AbortController();controller=ctrl;
-    const snapshot=structuredClone(config), segments=plan.segments.flatMap(s=>splitSegment(s,snapshot.chunk));
+    const snapshot=structuredClone(capture()), segments=speechBatches(plan.segments,snapshot.chunk,scope(snapshot),snapshot.batchGemini);
+    validateSettings(snapshot);
     const source={...planSource}, key=recordingKey(source.chatId,source.messageId);
     const signature=JSON.stringify([snapshot.mode,snapshot.model,snapshot.connection,snapshot.styleParam,segments,
       segments.map(segment=>nativeConnections.find(c=>`native:${c.id}`===(segment.route || scope(snapshot)))?.model)]);
@@ -796,7 +830,8 @@ export async function setup(ctx) {
     setBusy(true);
     const blobs=[];
     try {
-      for(const [index,segment] of segments.entries()) {
+      const synthesize=async(index)=>{
+        const segment=segments[index];
         if(ctrl.signal.aborted)throw abortError();
         status(`Synthesizing ${index+1}/${segments.length}: ${segment.speaker} · ${segment.voice}`);
         let blob=cached?.blobs[index];
@@ -820,9 +855,19 @@ export async function setup(ctx) {
           blob=await response.blob();
         }
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        blobs.push(blob);
+        return blob;
+      };
+      const ready=new Map();
+      const launch=index=>{if(index<segments.length)ready.set(index,synthesize(index).then(blob=>({blob}),error=>({error})));};
+      for(let index=0;index<Math.min(snapshot.concurrency,segments.length);index++)launch(index);
+      for(const [index,segment] of segments.entries()) {
+        const outcome=await ready.get(index);ready.delete(index);
+        if(outcome.error)throw outcome.error;
+        if(token!==revision || ctrl.signal.aborted)throw abortError();
+        const blob=outcome.blob;blobs.push(blob);
         status(`Playing ${index+1}/${segments.length}: ${segment.speaker}`);
         await playBlob(blob,ctrl.signal);
+        launch(index+snapshot.concurrency);
       }
       if(!cached) {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
@@ -830,7 +875,7 @@ export async function setup(ctx) {
         catch(error){storageError=error.message;}
       }
       if(token===revision){renderMessages();status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.');}
-    } finally {if(token===revision){controller=null;setBusy(false);}}
+    } finally {ctrl.abort();if(token===revision){controller=null;setBusy(false);}}
   }
   async function replayRecording(messageId) {
     stop(false);const token=revision,targetChat=chatId;

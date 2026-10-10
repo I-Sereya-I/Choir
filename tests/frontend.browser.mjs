@@ -24,8 +24,9 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     pause(){this.paused=true;}
   }
   globalThis.Audio=FakeAudio;
+  let activeTTS=0,peakTTS=0;
   globalThis.fetch=async(url,options={})=>{
-    if(url.endsWith('/tts/synthesize')){nativeRequests.push(JSON.parse(options.body));return new Response(new Uint8Array([1,2]),{headers:{'Content-Type':'audio/mpeg'}});}
+    if(url.endsWith('/tts/synthesize')){nativeRequests.push(JSON.parse(options.body));activeTTS++;peakTTS=Math.max(peakTTS,activeTTS);await new Promise(resolve=>setTimeout(resolve,20));activeTTS--;return new Response(new Uint8Array([1,2]),{headers:{'Content-Type':'audio/mpeg'}});}
     let value;
     if(url.includes('/providers'))value={providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}}]};
     else if(url.endsWith('/voices'))value={voices:['alloy','coral','onyx','echo'].map((id,index)=>({id,name:id,gender:['female','feminine','masculine','NEUTRAL'][index]}))};
@@ -68,7 +69,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
           onBackend?.({namespace:'choir',id:message.id,error:'Planner timed out while waiting for response.'});return;
         }
         let result;
-        if(message.action==='ping')result={version:'1.0.14',ready:true};
+        if(message.action==='ping')result={version:'1.0.15',ready:true};
         else if(message.action==='testPlanner')result={model:'gpt-text-test',provider:'openai',response:'READY'};
         else if(message.action==='plan' && (message.input.transcript.trim().startsWith('Long narration') || message.input.transcript.trim().startsWith('"Welcome."')))result=validatePlan({segments:speechSourceUnits(message.input.transcript).map(unit=>({
           speaker:unit.kind==='dialogue'?'Traveler':'Narrator',text:unit.text,
@@ -106,7 +107,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     // Drawer roots can be detached when the user is looking at the story.
     root.remove();
     messageActions.querySelector('button').click();await until(()=>$('status').textContent.includes('Playback finished'));
-    assert.equal(audios.length,3);audios.length=0;
+    assert.equal(audios.length,2);audios.length=0;
     assert.match(messageActions.textContent,/Playback finished/);
     assert.match(minimalFooter.textContent,/Playback finished/);
     assert.equal($('preview').querySelectorAll('.et-card').length,3);
@@ -115,7 +116,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.equal(store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Mira').gender,'female');
     assert.equal(requests.find(request=>request.action==='plan').input.config.fixed[2].gender,'female');
     $('key').value='test-key';$('play').click();await until(()=>$('status').textContent.includes('finished'));
-    assert.equal(audios.length,3);assert.match($('status').textContent,/finished/);
+    assert.equal(audios.length,2);assert.match($('status').textContent,/finished/);
     assert.match($('status').textContent,/Audio saved/);
     const generated=requests.filter(v=>v.action==='gemini').length;
     $('key').value='';$('play').click();await until(()=>$('status').textContent.includes('finished'));
@@ -153,10 +154,11 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.match($('fixed').querySelector('[data-choir-voice]').textContent,/coral · Female/);
     assert.match($('fixed').querySelector('[data-choir-voice]').textContent,/onyx · Male/);
     for(const [index,select] of [...$('fixed').querySelectorAll('[data-choir-voice]')].entries())select.value=['alloy','coral','onyx'][index];
-    $('styleParam').value='instructions';$('save').click();await tick();
+    $('styleParam').value='instructions';$('concurrency').value='2';$('save').click();await tick();
     $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
     $('play').click();await until(()=>$('status').textContent.includes('finished'));
     assert.equal(nativeRequests.length,3);
+    assert.equal(peakTTS,2);assert.equal(store.get('chat:chat-a').concurrency,2);
     assert.equal(nativeRequests[0].voice,'alloy');assert.equal(nativeRequests[0].connectionId,'native-a');
     assert.equal(nativeRequests[0].parameters.instructions,'Clear, measured narration. Calm');
     assert.equal(nativeRequests[2].voice,'echo');

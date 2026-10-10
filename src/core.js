@@ -231,11 +231,40 @@ export function splitSegment(segment, maxChars = 350) {
 
 export function geminiRequest(segment, model) {
   if (!/^gemini-3\.8-.*tts$/.test(model)) throw new Error('The metadata adapter requires a Gemini 3.8 TTS model.');
+  if(segment.turns) {
+    const turns=segment.turns;
+    if(!Array.isArray(turns) || !turns.length || turns.length>200 || turns.reduce((n,s)=>n+s.text.length,0)>2000)throw new Error('Invalid Gemini speech batch.');
+    const speakers=new Map();
+    for(const turn of turns) {
+      if(!turn.speaker || !turn.voice || !turn.text?.trim())throw new Error('Invalid Gemini batch turn.');
+      if(speakers.has(turn.speaker) && speakers.get(turn.speaker)!==turn.voice)throw new Error('Conflicting batch speaker voices.');
+      speakers.set(turn.speaker,turn.voice);
+    }
+    if(speakers.size>2)throw new Error('Gemini batches support at most two speakers.');
+    return {contents:[{role:'user',parts:turns.map(turn=>({text:turn.text,speech_metadata:{speaker:turn.speaker,...(turn.style?{style:turn.style}:{})}}))}],
+      generationConfig:{responseModalities:['AUDIO'],speechConfig:speakers.size===1?{voiceConfig:{voice:turns[0].voice}}:{multiSpeakerVoiceConfig:{speakerVoiceConfigs:[...speakers].map(([speaker,voice])=>({speaker,voiceConfig:{prebuiltVoiceConfig:{voiceName:voice}}}))}}}};
+  }
   return {
     contents:[{role:'user',parts:[{text:segment.text,
       ...(segment.style ? {speech_metadata:{style:segment.style}} : {})}]}],
     generationConfig:{responseModalities:['AUDIO'],speechConfig:{voiceConfig:{voice:segment.voice}}}
   };
+}
+
+export function speechBatches(segments,maxChars,defaultRoute,batchGemini=true) {
+  const batches=[];
+  for(const segment of segments.flatMap(s=>splitSegment(s,maxChars))) {
+    const route=segment.route || defaultRoute,previous=batches.at(-1);
+    if(batchGemini && route==='gemini') {
+      const turns=previous?.turns;
+      const names=new Set(turns?.map(turn=>turn.speaker) || []);names.add(segment.speaker);
+      if(turns && previous.route===route && names.size<=2 && turns.length<200 && previous.text.length+segment.text.length+1<=maxChars) {
+        turns.push(segment);previous.text+='\n'+segment.text;previous.speaker=[...names].join(' / ');
+      } else batches.push({...segment,route,turns:[segment]});
+    } else if(previous && !previous.turns && previous.route===route && previous.voice===segment.voice && previous.speaker===segment.speaker && previous.style===segment.style && previous.text.length+segment.text.length+1<=maxChars)previous.text+='\n'+segment.text;
+    else batches.push({...segment,route});
+  }
+  return batches;
 }
 
 export function extractGeminiAudio(response) {

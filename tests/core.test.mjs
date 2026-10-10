@@ -1,6 +1,20 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt} from '../src/core.js';
+
+test('Gemini batches preserve turn metadata and split on third speaker or provider change',()=>{
+  const turns=['Narrator','Alice','Narrator','Bob','Alice'].map((speaker,i)=>({speaker,voice:speaker==='Narrator'?'Charon':speaker==='Alice'?'Kore':'Puck',text:'Turn '+i,style:'Soft',route:'gemini'}));
+  const batches=speechBatches(turns,1800,'gemini');
+  assert.equal(batches.length,2);
+  assert.deepEqual(batches.flatMap(batch=>batch.turns).map(turn=>turn.text),turns.map(turn=>turn.text));
+  const body=geminiRequest(batches[0],'gemini-3.8-flash-tts');
+  assert.equal(body.generationConfig.speechConfig.multiSpeakerVoiceConfig.speakerVoiceConfigs.length,2);
+  assert.equal(body.contents[0].parts[1].speech_metadata.speaker,'Alice');
+  assert.equal(body.contents[0].parts[1].speech_metadata.style,'Soft');
+  assert.equal(speechBatches(turns,1800,'gemini',false).length,5);
+  turns[1].route='native:other';
+  assert.equal(speechBatches(turns,1800,'gemini')[0].turns.length,1);
+});
 
 const config = () => ({voices:[{id:'Charon'},{id:'Kore'},{id:'Puck'},{id:'Fenrir'}],useStyle:true,
   fixed:[{speaker:'Narrator',voice:'Charon',style:'Calm'},{speaker:'Alice',voice:'Kore',style:''}],npcs:[]});
