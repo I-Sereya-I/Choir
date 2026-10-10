@@ -70,7 +70,7 @@ export async function setup(ctx) {
       <label>Planner output budget (tokens)<input data-et="plannerTokens" type="number" min="1024" max="32768" step="1024" value="8192"></label>
     </div><label style="margin-top:10px">Additional Gemini voices · one ID | description per line<textarea data-et="extraVoices" placeholder="voice_... | warm storyteller"></textarea></label>
     <p>Other providers reuse your existing Lumiverse connections and credentials. Style support depends on their API. Gemini uses structured style metadata and a separate session key.</p></details>
-    <div class="et-row"><button data-et="load">Reload connections and voices</button></div>
+    <div class="et-row"><button data-et="load">Reload connections and voices</button><button data-et="testPlanner">Test planner</button></div>
     <h3>Fixed cast for this chat</h3><p>Name your persona and characters exactly as they appear in the story. Each speaker can use its own TTS connection and voice. Use chat default inherits the default above. Narrator is reserved.</p>
     <div data-et="fixed"></div><button data-et="add">Add main character</button>
     <h3>NPC cast</h3><p>The planner selects new NPC voices and reuses their assignments throughout this chat. Gender preferences guide automatic voice selection. To recast an assigned voice with a new preference, select Let LLM choose, save, then plan again. Manual voices take priority.</p>
@@ -188,24 +188,27 @@ export async function setup(ctx) {
   }
   const settingsKey = id => `chat:${id}`;
 
-  function rpc(action,input,signal,timeoutMs=185000) {
+  function rpc(action,input,signal,timeoutMs=185000,onProgress) {
     if (signal?.aborted) return Promise.reject(abortError());
     return new Promise((resolve,reject) => {
       const id=crypto.randomUUID();
+      let lastProgress;
       const cancel=()=>{try{ctx.sendToBackend({namespace:'choir',id,action:'cancel'});}catch{}done(abortError());};
       const timer=setTimeout(()=>{
         try{ctx.sendToBackend({namespace:'choir',id,action:'cancel'});}catch{}
         done(new Error(action==='ping'
           ? 'Choir backend did not respond. Update and restart Choir in Extensions, then reload the page. Both backend and frontend must be running.'
-          : 'Choir request timed out. Check that its backend is running, grant the Generation permission for planning, and try a faster planner or shorter speech chunks.'));
+          : `${action==='plan' || action==='testPlanner'?'Planner':'TTS'} request timed out waiting for the backend. ${lastProgress?`Last reported stage: ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}.`:'The backend did not acknowledge this request; restart Choir and reload the page.'}`));
       },timeoutMs);
       const done=(error,result)=>{clearTimeout(timer);signal?.removeEventListener('abort',cancel);pending.delete(id);error?reject(error):resolve(result);};
+      done.progress=progress=>{lastProgress=progress;onProgress?.(progress);};
       pending.set(id,done); signal?.addEventListener('abort',cancel,{once:true});
       try {ctx.sendToBackend({namespace:'choir',id,action,input});} catch(error){done(error);}
     });
   }
   unsubs.push(ctx.onBackendMessage(message=>{
     if(message?.namespace !== 'choir')return;
+    if(message.progress){pending.get(message.id)?.progress(message.progress);return;}
     pending.get(message.id)?.(message.error?new Error(message.error):null,message.result);
   }));
 
@@ -302,7 +305,7 @@ export async function setup(ctx) {
   }
   function setBusy(value) {
     busy=value;
-    for (const name of ['save','latest','load','add','reset','mode','connection','apply','auto'])$(name).disabled=value;
+    for (const name of ['save','latest','load','testPlanner','add','reset','mode','connection','apply','auto'])$(name).disabled=value;
     for (const name of ['model','planner','styleParam','apiBase','chunk','plannerTokens','extraVoices','useStyle','key','planJson','retention'])$(name).disabled=value;
     $('play').disabled=value || !plan;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
@@ -327,7 +330,7 @@ export async function setup(ctx) {
   async function loadProviders() {
     const version=loadVersion;
     const results=await Promise.allSettled([
-      api('/tts-connections?limit=200').then(r=>r.json()),api('/tts-connections/providers').then(r=>r.json())
+      api('/tts-connections?limit=200').then(r=>r.json()),api('/tts-connections/providers').then(r=>r.json()),api('/connections?limit=200').then(r=>r.json())
     ]);
     if(disposed || version!==loadVersion)return;
     nativeConnections=results[0].status==='fulfilled' ? results[0].value.data || [] : [];
@@ -336,7 +339,9 @@ export async function setup(ctx) {
     nativeConnections.forEach(c=>option($('connection'),c.id,`${c.name} · ${c.provider}`));
     $('connection').value=config.connection;
     $('planner').replaceChildren();option($('planner'),'','Default LLM connection');
-    for(const c of ctx.connections?.list?.() || [])option($('planner'),c.id,`${c.name} · ${c.model || ''}`);
+    const plannerConnections=results[2].status==='fulfilled'?results[2].value.data || []:[];
+    for(const c of plannerConnections)option($('planner'),c.id,`${c.name} · ${c.provider || ''} · ${c.model || 'No model configured'}`);
+    if(config.planner && !plannerConnections.some(c=>c.id===config.planner))option($('planner'),config.planner,'Saved planner connection · unavailable');
     $('planner').value=config.planner;
     await loadVoices(version);
     if(config.mode==='native' && results[0].status==='rejected')throw results[0].reason;
@@ -440,7 +445,8 @@ export async function setup(ctx) {
         status(`Planning section ${index+1}/${sections.length}: speakers and voices…`);
         const result=await rpc('plan',{transcript:section,config:snapshot,
           context:[context,previous?`Previous section of this same reply:\n${previous.slice(-3000)}`:''].filter(Boolean).join('\n').slice(-16000),
-          connectionId:config.planner,maxTokens:config.plannerTokens},ctrl.signal);
+          connectionId:config.planner,maxTokens:config.plannerTokens},ctrl.signal,185000,
+          progress=>status(`Planning section ${index+1}/${sections.length}: ${progress.stage}${progress.model?` · ${progress.model}`:''}`));
         if(token!==revision || targetChat!==chatId || disposed)return;
         const checked=validatePlan({segments:stripBase(result.segments)},section,snapshot);
         snapshot.npcs=checked.npcs;
@@ -607,6 +613,15 @@ export async function setup(ctx) {
     try{await action();}catch(error){if(error.name!=='AbortError')status(error.message,true);}
   }
   $('save').onclick=()=>run(save);
+  $('testPlanner').onclick=()=>run(async()=>{
+    stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);status('Testing planner…');
+    try {
+      await rpc('ping',{},ctrl.signal,8000);
+      const result=await rpc('testPlanner',{connectionId:$('planner').value},ctrl.signal,65000,
+        progress=>status(`Planner test: ${progress.stage}${progress.model?` · ${progress.model}`:''}`));
+      if(token===revision)status(`Planner test passed: ${result.provider} · ${result.model}. Response: ${result.response}`);
+    } finally {if(token===revision){controller=null;setBusy(false);}}
+  });
   $('latest').onclick=()=>run(async()=>{
     const latest=ctx.messages.getRecent(200).filter(v=>!v.is_user && !v.extra?.is_system).at(-1);
     if(!latest)throw new Error('No assistant reply in the active chat.');await prepare(latest.id);

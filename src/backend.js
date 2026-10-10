@@ -14,17 +14,32 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   const send = payload => {
     if (!controller.signal.aborted) spindle.sendToFrontend({namespace:'choir',id:message.id,...payload},userId,{frontendSessionId});
   };
-  const timer = setTimeout(() => { send({error:message.action==='plan'
-    ? 'Planning this section timed out after 3 minutes. Try a faster Planner LLM. Speech chunk size affects playback, not planning.'
-    : 'Speech generation timed out. Try a shorter speech request or check the TTS provider.'}); controller.abort(); },180000);
+  let lastProgress={stage:'Starting request'};
+  const progress=update=>{lastProgress=update;send({progress:update});};
+  const timer = setTimeout(() => { send({error:message.action==='plan' || message.action==='testPlanner'
+    ? `Planner timed out while ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}. Check this LLM connection in Lumiverse. Speech chunk size does not affect planning.`
+    : 'Speech generation timed out. Try a shorter speech request or check the TTS provider.'}); controller.abort(); },message.action==='testPlanner'?60000:180000);
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.0.11',ready:true}});return;
+      send({result:{version:'1.0.12',ready:true}});return;
+    }
+    if(message.action==='testPlanner') {
+      progress({stage:'Resolving saved LLM connection'});
+      const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
+      if(controller.signal.aborted)return;
+      if(!connection?.model)throw new Error('Select a Planner LLM connection with a configured text-generation model.');
+      progress({stage:'Waiting for a short LLM test response',provider:connection.provider,model:connection.model});
+      const result=await spindle.generate.raw({type:'raw',userId,model:connection.model,connection_id:connection.id,
+        messages:[{role:'user',content:'Reply with the single word READY.'}],parameters:{max_tokens:64},reasoning:{source:'off'},signal:controller.signal});
+      if(controller.signal.aborted)return;
+      if(!String(result.content || '').trim())throw new Error(`Planner test returned no text: ${connection.provider} · ${connection.model}. Check model access and response settings.`);
+      send({result:{provider:connection.provider || 'Saved connection',model:connection.model,response:String(result.content).trim().slice(0,200)}});return;
     }
     if (message.action === 'plan') {
       if (typeof input.transcript !== 'string' || !input.transcript.trim()) throw new Error('Choose a message with text to plan.');
       validateCastConfig(input.config);
+      progress({stage:'Resolving saved LLM connection'});
       const context = typeof input.context === 'string' ? input.context.slice(-16000) : '';
       const messages = plannerPrompt(input.transcript,input.config,context);
       const connection=input.connectionId
@@ -36,6 +51,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       if(!Number.isInteger(maxTokens) || maxTokens<1024 || maxTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
       let failure;
       for (let attempt=0;attempt<2;attempt++) {
+        progress({stage:`Waiting for planner response (attempt ${attempt+1}/2)`,provider:connection.provider,model:connection.model});
         // Raw calls use the saved connection credentials without inheriting a chat preset's
         // short output limit, stop strings, response format or reasoning budget.
         const result = await spindle.generate.raw({type:'raw',userId,model:connection.model,
@@ -44,6 +60,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
               connection.provider==='openai'?{response_format:{type:'json_object'}}:{})},
           reasoning:{source:'off'},signal:controller.signal});
         if (controller.signal.aborted) return;
+        progress({stage:'Validating planner response',provider:connection.provider,model:connection.model});
         try {
           const plan = validatePlan(resolvePlanReferences(parsePlanJson(result.content),input.transcript,input.config),input.transcript,input.config);
           send({result:plan}); return;

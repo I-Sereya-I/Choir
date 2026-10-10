@@ -4,13 +4,13 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const bundle=readFileSync(new URL('../dist/backend.js',import.meta.url),'utf8');
 const config={voices:[{id:'Charon'},{id:'Kore'}],fixed:[{speaker:'Narrator',voice:'Charon',style:''}],npcs:[],useStyle:true};
-async function harness(generate, cors, provider) {
+async function harness(generate, cors, provider, deadline) {
   let handler;const sent=[];let wake;
   const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider};
-  vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});wake?.();},generate:{raw:generate},connections:{get:async()=>connection,list:async()=>[connection]},cors},
-    console,Map,Set,AbortController,setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView});
+  vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate},connections:{get:async()=>connection,list:async()=>[connection]},cors},
+    console,Map,Set,AbortController,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView});
   return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
-    result:()=>sent.length?Promise.resolve(sent.at(-1)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
+    result:()=>sent.some(item=>item.message.result || item.message.error)?Promise.resolve(sent.findLast(item=>item.message.result || item.message.error)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
 }
 test('planner uses user identity and routes replies only to the originating browser session',async()=>{
   let request;
@@ -39,7 +39,7 @@ test('cancellation aborts planner and suppresses stale replies',async()=>{
   const h=await harness(input=>{signal=input.signal;return new Promise(r=>resolve=r);});
   h.send('plan',{transcript:'Hello.',config});await new Promise(r=>setTimeout(r,0));h.send('cancel',{});
   assert.ok(signal.aborted);resolve({content:'{"segments":[{"speaker":"Narrator","unit_ids":[0]}]}'});
-  await new Promise(r=>setTimeout(r,10));assert.equal(h.sent.length,0);
+  await new Promise(r=>setTimeout(r,10));assert.equal(h.sent.filter(item=>item.message.result || item.message.error).length,0);
 });
 
 test('truncated JSON retries with a larger output budget and accepts only a complete plan',async()=>{
@@ -62,7 +62,7 @@ test('empty planner responses produce an actionable error',async()=>{
 test('backend readiness check replies without making an LLM or TTS request',async()=>{
   const h=await harness(()=>{throw new Error('Should not call planner');},()=>{throw new Error('Should not call TTS');});
   h.send('ping',{});
-  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.0.11');
+  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.0.12');
 });
 
 test('prose-only planner responses expose a useful diagnostic after retry',async()=>{
@@ -81,4 +81,24 @@ test('known planners request provider JSON mode; other providers retain portable
     if(provider==='openai')assert.equal(parameters.response_format.type,'json_object');
     if(provider==='anthropic')assert.deepEqual(Object.keys(parameters),['max_tokens']);
   }
+});
+
+test('planner test sends a small independent request and reports the exact model',async()=>{
+  let request;
+  const h=await harness(async input=>{request=input;return {content:'READY'};},null,'openai');
+  h.send('testPlanner',{connectionId:'llm-a'});
+  const result=await h.result();
+  assert.equal(result.message.result.model,'gemini-flash-text');assert.equal(result.message.result.provider,'openai');
+  assert.equal(request.parameters.max_tokens,64);assert.equal(request.connection_id,'llm-a');
+  assert.ok(h.sent.some(item=>item.message.progress?.model==='gemini-flash-text'));
+  assert.ok(!request.messages[0].content.includes('transcript'));
+});
+
+test('a stalled planner test reports its model and cancels generation at the deadline',async()=>{
+  let expire,limit,signal;
+  const h=await harness(input=>{signal=input.signal;return new Promise(()=>{});},null,'openai',(fn,ms)=>{expire=fn;limit=ms;});
+  h.send('testPlanner',{connectionId:'llm-a'});await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(limit,60000);expire();
+  const result=await h.result();assert.match(result.message.error,/Waiting for a short LLM test response/);
+  assert.match(result.message.error,/gemini-flash-text/);assert.ok(signal.aborted);
 });
