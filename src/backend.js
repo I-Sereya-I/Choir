@@ -14,11 +14,13 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   const send = payload => {
     if (!controller.signal.aborted) spindle.sendToFrontend({namespace:'choir',id:message.id,...payload},userId,{frontendSessionId});
   };
-  const timer = setTimeout(() => { send({error:'Request timed out. Try shorter speech chunks or a faster planner.'}); controller.abort(); },180000);
+  const timer = setTimeout(() => { send({error:message.action==='plan'
+    ? 'Planning this section timed out after 3 minutes. Try a faster Planner LLM. Speech chunk size affects playback, not planning.'
+    : 'Speech generation timed out. Try a shorter speech request or check the TTS provider.'}); controller.abort(); },180000);
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.0.10',ready:true}});return;
+      send({result:{version:'1.0.11',ready:true}});return;
     }
     if (message.action === 'plan') {
       if (typeof input.transcript !== 'string' || !input.transcript.trim()) throw new Error('Choose a message with text to plan.');

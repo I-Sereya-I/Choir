@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 import path from 'node:path';
-import {validatePlan} from '../src/core.js';
+import {validatePlan,speechSourceUnits} from '../src/core.js';
 import {setup} from '../dist/frontend.js';
 const require=process.env.CHOIR_TEST_MODULES?createRequire(path.join(process.env.CHOIR_TEST_MODULES,'package.json')):createRequire(import.meta.url);
 const {JSDOM}=require('jsdom');
@@ -62,7 +62,11 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
       requests.push(message);if(message.action==='cancel')return;
       setTimeout(()=>{
         let result;
-        if(message.action==='ping')result={version:'1.0.10',ready:true};
+        if(message.action==='ping')result={version:'1.0.11',ready:true};
+        else if(message.action==='plan' && message.input.transcript.trim().startsWith('Long narration'))result=validatePlan({segments:speechSourceUnits(message.input.transcript).map(unit=>({
+          speaker:unit.kind==='dialogue'?'Traveler':'Narrator',text:unit.text,
+          voice:message.input.config.voices.filter(voice=>voice.route===message.input.config.defaultRoute).at(-1).id
+        }))},message.input.transcript,message.input.config);
         else if(message.action==='plan')result=validatePlan({segments:[
           {speaker:'Narrator',text:'The hall fell silent.',style:'Calm'},
           {speaker:'Mira',voice:(message.input.config.voices.find(v=>v.gender==='female') || message.input.config.voices[1]).id,text:'Hello, stranger.',style:'Curious'},
@@ -182,6 +186,15 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     events.get('MESSAGE_EDITED')({messageId:'message-a'});
     [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
     await until(()=>$('status').textContent.includes('No saved audio'));
+    message.content=Array.from({length:100},()=> 'Long narration. "Welcome."').join('\n');
+    events.get('MESSAGE_EDITED')({messageId:'message-a'});
+    const beforeLong=requests.filter(request=>request.action==='plan').length;
+    $('latest').click();await until(()=>$('status').textContent.startsWith('Ready: 200 turns'));
+    const longRequests=requests.filter(request=>request.action==='plan').slice(beforeLong);
+    assert.equal(longRequests.length,5);
+    assert.equal(longRequests.map(request=>request.input.transcript).join(''),message.content);
+    assert.equal(longRequests[1].input.config.npcs.find(actor=>actor.speaker==='Traveler').voice,'echo');
+    assert.equal(store.get('chat:chat-a').casts['native:native-a'].find(actor=>actor.speaker==='Traveler').voice,'echo');
     active='chat-b';listeners.get('chat.active')();await tick();await tick();
     assert.match($('npcs').textContent,/No NPCs/);
     cleanup();assert.equal(root.children.length,0);assert.equal(listeners.size,0);assert.equal(events.size,0);

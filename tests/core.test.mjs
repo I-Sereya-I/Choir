@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt} from '../src/core.js';
 
 const config = () => ({voices:[{id:'Charon'},{id:'Kore'},{id:'Puck'},{id:'Fenrir'}],useStyle:true,
   fixed:[{speaker:'Narrator',voice:'Charon',style:'Calm'},{speaker:'Alice',voice:'Kore',style:''}],npcs:[]});
@@ -157,4 +157,21 @@ test('new NPCs use the default connection and saved NPC overrides remain stable'
   assert.throws(()=>validatePlan({segments:[{speaker:'Guard',voice:'custom',route:'native:other',text:'Hello.'}]},'Hello.',c),/selected TTS connection/);
   c.npcs=[{speaker:'Guard',voice:'custom',route:'native:other',style:''}];
   assert.equal(validatePlan({segments:[{speaker:'Guard',voice:'Kore',route:'gemini',text:'Hello.'}]},'Hello.',c).segments[0].route,'native:other');
+});
+
+test('long replies split into planning sections without splitting quoted speech or losing whitespace',()=>{
+  const text=Array.from({length:120},(_,i)=>'She waved. "Line '+i+'."\n\n').join('');
+  const sections=planningSections(text,600,10);
+  assert.ok(sections.length>1);assert.equal(sections.join(''),text);
+  for(const section of sections){assert.equal((section.match(/"/g) || []).length%2,0);assert.ok(speechSourceUnits(section).length<=10);}
+  const quote='"'+ 'word '.repeat(1500)+'"';
+  assert.equal(planningSections(quote).length,1);
+});
+
+test('very long individual units use compact identification previews while audio keeps the original',()=>{
+  const transcript='"'+ 'Hello there. '.repeat(3000)+'"';
+  const data=JSON.parse(plannerPrompt(transcript,config(),'')[1].content);
+  assert.ok(data.sourceUnits[0].excerpted);assert.ok(data.sourceUnits[0].text.length<2600);
+  const plan=validatePlan(resolvePlanReferences({segments:[{speaker:'Alice',voice:'Kore',unit_ids:[0]}]},transcript,config()),transcript,config());
+  assert.equal(plan.segments[0].text,transcript);
 });

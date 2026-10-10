@@ -1,4 +1,4 @@
-import { GEMINI_VOICES, normalizeName, normalizeVoiceCatalogue, transcriptFromMessage, validateCastConfig, validatePlan, parsePlanJson, splitSegment, audioBytes } from './core.js';
+import { GEMINI_VOICES, normalizeName, normalizeVoiceCatalogue, transcriptFromMessage, planningSections, validateCastConfig, validatePlan, parsePlanJson, splitSegment, audioBytes } from './core.js';
 
 export async function setup(ctx) {
   const tab = ctx.ui.registerDrawerTab({id:'ensemble',title:'Choir',shortName:'Voices',
@@ -430,15 +430,25 @@ export async function setup(ctx) {
     try {
       await rpc('ping',{},ctrl.signal,8000);
       if(token!==revision || ctrl.signal.aborted)return;
-      status('Planning speakers, NPC voices and delivery…');
-      const result=await rpc('plan',{transcript,config:snapshot,context,connectionId:config.planner,maxTokens:config.plannerTokens},ctrl.signal);
-      if(token!==revision || targetChat!==chatId || disposed)return;
-      // Validate independently in the frontend before any audio or cast persistence.
-      const validated=validatePlan({segments:result.segments.map(s=>{
+      const stripBase=segments=>segments.map(s=>{
         const actor=[...snapshot.fixed,...snapshot.npcs].find(v=>normalizeName(v.speaker)===normalizeName(s.speaker));
         const prefix=actor?.style?`${actor.style}. `:'';
         return {...s,style:prefix && s.style.startsWith(prefix)?s.style.slice(prefix.length):s.style===actor?.style?'':s.style};
-      })},transcript,snapshot);
+      });
+      const sections=planningSections(transcript),combined=[];let previous='';
+      for(const [index,section] of sections.entries()) {
+        status(`Planning section ${index+1}/${sections.length}: speakers and voices…`);
+        const result=await rpc('plan',{transcript:section,config:snapshot,
+          context:[context,previous?`Previous section of this same reply:\n${previous.slice(-3000)}`:''].filter(Boolean).join('\n').slice(-16000),
+          connectionId:config.planner,maxTokens:config.plannerTokens},ctrl.signal);
+        if(token!==revision || targetChat!==chatId || disposed)return;
+        const checked=validatePlan({segments:stripBase(result.segments)},section,snapshot);
+        snapshot.npcs=checked.npcs;
+        for(const actor of snapshot.fixed)if(!actor.voice)actor.voice=checked.segments.find(s=>normalizeName(s.speaker)===normalizeName(actor.speaker))?.voice || '';
+        combined.push(...stripBase(checked.segments));previous=section;
+      }
+      // Validate the complete original reply before audio or cast persistence.
+      const validated=validatePlan({segments:combined},transcript,snapshot);
       plan=validated;planSource={messageId,content,transcript,chatId:targetChat};
       config.casts[scope(config)]=validated.npcs;
       for(const actor of config.fixed) {
