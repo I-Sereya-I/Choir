@@ -18,11 +18,11 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   const progress=update=>{lastProgress=update;send({progress:update});};
   const timer = setTimeout(() => { send({error:message.action==='plan' || message.action==='testPlanner'
     ? `Planner timed out while ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}. Check this LLM connection in Lumiverse. Speech chunk size does not affect planning.`
-    : 'Speech generation timed out. Try a shorter speech request or check the TTS provider.'}); controller.abort(); },message.action==='testPlanner'?60000:message.action==='plan'?600000:180000);
+    : 'Speech generation timed out. Try a shorter speech request or check the TTS provider.'}); controller.abort(); },message.action==='testPlanner'?60000:message.action==='plan'?Math.min(600000,Math.max(1000,Number(message.input?.timeoutMs)||600000)):180000);
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.0.13',ready:true}});return;
+      send({result:{version:'1.0.14',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       progress({stage:'Resolving saved LLM connection'});

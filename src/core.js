@@ -198,7 +198,7 @@ export function resolvePlanReferences(raw, transcript, config) {
   return {segments:merged.map(({__start,__end,unit_ids,...segment})=>segment)};
 }
 
-export function planningSections(transcript,maxChars=6000,maxUnits=40) {
+export function planningSections(transcript,maxChars=1200,maxUnits=8) {
   const units=speechSourceUnits(transcript),sections=[];
   let start=0,count=0,end=0;
   for(const unit of units) {

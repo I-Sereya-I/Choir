@@ -39,6 +39,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   const placementListeners=new Map();
   const messageActions=dom.window.document.createElement('div');
   const minimalFooter=dom.window.document.createElement('div');
+  let timeoutLongOnce=true;
   const ctx={
     registerDomDecorator:options=>{
       assert.equal(options.mount,'message_footer');
@@ -62,10 +63,14 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     sendToBackend:message=>{
       requests.push(message);if(message.action==='cancel')return;
       setTimeout(()=>{
+        if(message.action==='plan' && message.input.transcript.trim().startsWith('Long narration') && timeoutLongOnce) {
+          timeoutLongOnce=false;
+          onBackend?.({namespace:'choir',id:message.id,error:'Planner timed out while waiting for response.'});return;
+        }
         let result;
-        if(message.action==='ping')result={version:'1.0.13',ready:true};
+        if(message.action==='ping')result={version:'1.0.14',ready:true};
         else if(message.action==='testPlanner')result={model:'gpt-text-test',provider:'openai',response:'READY'};
-        else if(message.action==='plan' && message.input.transcript.trim().startsWith('Long narration'))result=validatePlan({segments:speechSourceUnits(message.input.transcript).map(unit=>({
+        else if(message.action==='plan' && (message.input.transcript.trim().startsWith('Long narration') || message.input.transcript.trim().startsWith('"Welcome."')))result=validatePlan({segments:speechSourceUnits(message.input.transcript).map(unit=>({
           speaker:unit.kind==='dialogue'?'Traveler':'Narrator',text:unit.text,
           voice:message.input.config.voices.filter(voice=>voice.route===message.input.config.defaultRoute).at(-1).id
         }))},message.input.transcript,message.input.config);
@@ -197,9 +202,12 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     const beforeLong=requests.filter(request=>request.action==='plan').length;
     $('latest').click();await until(()=>$('status').textContent.startsWith('Ready: 200 turns'));
     const longRequests=requests.filter(request=>request.action==='plan').slice(beforeLong);
-    assert.equal(longRequests.length,5);
-    assert.equal(longRequests.map(request=>request.input.transcript).join(''),message.content);
-    assert.equal(longRequests[1].input.config.npcs.find(actor=>actor.speaker==='Traveler').voice,'echo');
+    assert.equal(longRequests.length,33);
+    assert.ok(longRequests.every(request=>speechSourceUnits(request.input.transcript).length<=8));
+    assert.ok(speechSourceUnits(longRequests[1].input.transcript).length===1);
+    assert.equal(longRequests.slice(1).map(request=>request.input.transcript).join(''),message.content);
+    assert.ok(longRequests.every(request=>request.input.timeoutMs===90000));
+    assert.equal(longRequests[3].input.config.npcs.find(actor=>actor.speaker==='Traveler').voice,'echo');
     assert.equal(store.get('chat:chat-a').casts['native:native-a'].find(actor=>actor.speaker==='Traveler').voice,'echo');
     active='chat-b';listeners.get('chat.active')();await tick();await tick();
     assert.match($('npcs').textContent,/No NPCs/);

@@ -441,12 +441,26 @@ export async function setup(ctx) {
         return {...s,style:prefix && s.style.startsWith(prefix)?s.style.slice(prefix.length):s.style===actor?.style?'':s.style};
       });
       const sections=planningSections(transcript),combined=[];let previous='';
-      for(const [index,section] of sections.entries()) {
+      for(let index=0;index<sections.length;index++) {
+        const section=sections[index];
         status(`Planning section ${index+1}/${sections.length}: speakers and voices…`);
-        const result=await rpc('plan',{transcript:section,config:snapshot,
+        let result;
+        try {result=await rpc('plan',{transcript:section,config:snapshot,timeoutMs:90000,
           context:[context,previous?`Previous section of this same reply:\n${previous.slice(-2000)}`:''].filter(Boolean).join('\n').slice(-4000),
-          connectionId:config.planner,maxTokens:config.plannerTokens},ctrl.signal,605000,
+          connectionId:config.planner,maxTokens:config.plannerTokens},ctrl.signal,95000,
           progress=>status(`Planning section ${index+1}/${sections.length}: ${progress.stage}${progress.model?` · ${progress.model}`:''}`));
+        } catch(error) {
+          if(ctrl.signal.aborted || token!==revision)throw error;
+          if(/timed out|timeout/i.test(error.message)) {
+            const smaller=planningSections(section,Math.max(1,Math.floor(section.length/2)),1);
+            if(smaller.length>1) {
+              sections.splice(index,1,...smaller);index--;
+              status(`Splitting the slow section into ${smaller.length} smaller parts…`);continue;
+            }
+            throw new Error(`A single speech turn timed out while identifying its speaker. Earlier sections completed, but no audio was generated. Try a faster Planner LLM connection. ${error.message}`);
+          }
+          throw error;
+        }
         if(token!==revision || targetChat!==chatId || disposed)return;
         const checked=validatePlan({segments:stripBase(result.segments)},section,snapshot);
         snapshot.npcs=checked.npcs;

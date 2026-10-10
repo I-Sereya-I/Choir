@@ -15,7 +15,7 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? In **Extensions**, update Choir to **1.0.13**, restart it, then reload the page. Full planning now streams model activity into the status display and allows up to ten minutes per section, while the short **Test planner** check still uses one minute. Reasoning content is never displayed. Nearby chat context is limited to 4,000 characters; the original reply remains intact for speech. This accommodates slower planners and distinguishes processing from receiving output, but cannot force a stalled provider to respond.
+Already installed? In **Extensions**, update Choir to **1.0.14**, restart it, then reload the page. Planning now uses small sections: at most eight source units, targeting 1,200 characters per request. A section that times out after 90 seconds is automatically split into individual source units and retried without restarting completed sections. Speaker and voice assignments carry forward. Quoted speech stays intact, so one long quoted turn can exceed the target; identification uses a compact preview while audio retains its full original text. A single unit that still times out reports a clear error. Live model progress remains visible.
 
 ## Install locally
 
@@ -107,7 +107,7 @@ Changing chat, editing/deleting a message, or changing its swipe stops the activ
 
 ## Validation and development
 
-Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 37 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Planner tests verify independent output settings, a retry after truncated JSON, clear empty-response errors, and backend readiness replies. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
+Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 38 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Planner tests verify independent output settings, a retry after truncated JSON, clear empty-response errors, and backend readiness replies. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
 
 **It has not been installed into your running Lumiverse instance or tested with real provider credentials.** Actual synthesis quality, provider availability and live UI integration still need your first-use check.
 

@@ -175,3 +175,10 @@ test('very long individual units use compact identification previews while audio
   const plan=validatePlan(resolvePlanReferences({segments:[{speaker:'Alice',voice:'Kore',unit_ids:[0]}]},transcript,config()),transcript,config());
   assert.equal(plan.segments[0].text,transcript);
 });
+
+test('default planning sections keep ordinary requests small and preserve every character',()=>{
+  const text=Array.from({length:40},()=> 'She nodded. "Hello."\n').join('');
+  const sections=planningSections(text);
+  assert.equal(sections.length,10);assert.equal(sections.join(''),text);
+  assert.ok(sections.every(section=>speechSourceUnits(section).length<=8 && section.length<=1200));
+});
