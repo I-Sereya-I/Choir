@@ -29,8 +29,26 @@ export function normalizeVoiceCatalogue(catalogue) {
 }
 
 export function transcriptFromMessage(value) {
-  // Strip presentation markup only; narration remains spoken. Never send code or hidden thinking.
-  return String(value || '')
+  // Remove complete metadata panels before unwrapping ordinary story markup.
+  let text=String(value || '').replace(/<!--[\s\S]*?(?:-->|$)/g,' ');
+  const tags=/<\/?([a-z][\w-]*)\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+  const metadata=/^(?:think|thinking|reasoning|analysis|redacted_thinking|tracker|stats|status|state|details|script|style|(?:loom|tool|function|ext_tracker)(?:[_-][\w-]+)?)$/i;
+  const ranges=[];let block=null,match;
+  while((match=tags.exec(text))) {
+    const closing=match[0].startsWith('</'),selfClosing=/\/\s*>$/.test(match[0]),tag=match[1].toLowerCase();
+    if(block) {
+      if(tag===block.tag) {
+        if(closing)block.depth--;else if(!selfClosing)block.depth++;
+        if(!block.depth){ranges.push([block.start,tags.lastIndex]);block=null;}
+      }
+    } else if(!closing && (metadata.test(tag) || /\b(?:class|id)\s*=\s*(?:"[^"]*\b(?:tracker|stats|status-panel|hud)\b[^\"]*"|'[^']*\b(?:tracker|stats|status-panel|hud)\b[^']*'|(?:tracker|stats|status-panel|hud)\b)/i.test(match[0]))) {
+      if(selfClosing)ranges.push([match.index,tags.lastIndex]);
+      else block={tag,start:match.index,depth:1};
+    }
+  }
+  if(block)ranges.push([block.start,text.length]);
+  for(const [start,end] of ranges.reverse())text=text.slice(0,start)+' '+text.slice(end);
+  return text
     .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
     .replace(/```[\s\S]*?```/g, '')
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')

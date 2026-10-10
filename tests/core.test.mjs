@@ -18,6 +18,15 @@ test('Gemini batches preserve turn metadata and split on third speaker or provid
 
 const config = () => ({voices:[{id:'Charon'},{id:'Kore'},{id:'Puck'},{id:'Fenrir'}],useStyle:true,
   fixed:[{speaker:'Narrator',voice:'Charon',style:'Calm'},{speaker:'Alice',voice:'Kore',style:''}],npcs:[]});
+
+test('speech strips tracker blocks and nested panels while retaining surrounding narration',()=>{
+  for(const block of ['<tracker>HP: 50</tracker>','<details><summary>Tracker</summary><div>HP: 50</div></details>', '<div class="tracker"><div>HP: 50</div>Location: room</div>', '<loom_state><tracker>HP: 50</tracker></loom_state>']) {
+    assert.equal(transcriptFromMessage('Before. '+block+' After.').replace(/\s+/g,' '),'Before. After.');
+  }
+  assert.equal(transcriptFromMessage('Before. <tracker>HP: 50'),'Before.');
+  assert.equal(transcriptFromMessage('<div>Normal narration.</div>'),'Normal narration.');
+  assert.equal(transcriptFromMessage('Before. <!-- HP: 50 --> After.').replace(/\s+/g,' '),'Before. After.');
+});
 test('fixed voices override model choices and NPC voices stay stable',()=>{
   const c=config();
   const result=validatePlan({segments:[

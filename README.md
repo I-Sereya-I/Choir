@@ -15,7 +15,7 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? Update Choir to **1.0.16**, restart it, then reload. Greetings containing **{{user}}** now use the active persona name before planning and synthesis. If the active persona cannot be loaded, Choir uses the persona name in its fixed cast. Saved message text stays unchanged. Recordings made with unresolved or different persona names need fresh planning/playback; the message Play button regenerates them automatically.
+Already installed? Update Choir to **1.0.17**, restart it, then reload. Choir removes tracker/status/state blocks, collapsible details panels, HTML comments, and HTML panels marked with tracker/stats/hud classes or IDs before planning and speech. Nested and unfinished metadata blocks are handled. Ordinary narration remains spoken. Older recordings containing removed metadata need regeneration; Play Choir on the message automatically plans/records fresh audio when its saved speech text no longer matches.
 
 ## Install locally
 
@@ -107,7 +107,7 @@ Changing chat, editing/deleting a message, or changing its swipe stops the activ
 
 ## Validation and development
 
-Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 39 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Planner tests verify independent output settings, a retry after truncated JSON, clear empty-response errors, and backend readiness replies. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
+Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 40 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Planner tests verify independent output settings, a retry after truncated JSON, clear empty-response errors, and backend readiness replies. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
 
 **It has not been installed into your running Lumiverse instance or tested with real provider credentials.** Actual synthesis quality, provider availability and live UI integration still need your first-use check.
 

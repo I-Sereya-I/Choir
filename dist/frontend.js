@@ -30,8 +30,26 @@ function normalizeVoiceCatalogue(catalogue) {
 }
 
 function transcriptFromMessage(value) {
-  // Strip presentation markup only; narration remains spoken. Never send code or hidden thinking.
-  return String(value || '')
+  // Remove complete metadata panels before unwrapping ordinary story markup.
+  let text=String(value || '').replace(/<!--[\s\S]*?(?:-->|$)/g,' ');
+  const tags=/<\/?([a-z][\w-]*)\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+  const metadata=/^(?:think|thinking|reasoning|analysis|redacted_thinking|tracker|stats|status|state|details|script|style|(?:loom|tool|function|ext_tracker)(?:[_-][\w-]+)?)$/i;
+  const ranges=[];let block=null,match;
+  while((match=tags.exec(text))) {
+    const closing=match[0].startsWith('</'),selfClosing=/\/\s*>$/.test(match[0]),tag=match[1].toLowerCase();
+    if(block) {
+      if(tag===block.tag) {
+        if(closing)block.depth--;else if(!selfClosing)block.depth++;
+        if(!block.depth){ranges.push([block.start,tags.lastIndex]);block=null;}
+      }
+    } else if(!closing && (metadata.test(tag) || /\b(?:class|id)\s*=\s*(?:"[^"]*\b(?:tracker|stats|status-panel|hud)\b[^\"]*"|'[^']*\b(?:tracker|stats|status-panel|hud)\b[^']*'|(?:tracker|stats|status-panel|hud)\b)/i.test(match[0]))) {
+      if(selfClosing)ranges.push([match.index,tags.lastIndex]);
+      else block={tag,start:match.index,depth:1};
+    }
+  }
+  if(block)ranges.push([block.start,text.length]);
+  for(const [start,end] of ranges.reverse())text=text.slice(0,start)+' '+text.slice(end);
+  return text
     .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
     .replace(/```[\s\S]*?```/g, '')
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
@@ -741,6 +759,13 @@ export async function setup(ctx) {
     if(name && name!=='Persona')return name;
     throw new Error('Set your persona name in Choir’s fixed cast to resolve {{user}}.');
   }
+  async function recordingMatchesTranscript(recording,content) {
+    let transcript=transcriptFromMessage(content);
+    if(/\{\{\s*user\s*\}\}/i.test(transcript))transcript=replacePersonaMacro(transcript,await personaName());
+    const saved=recording.transcript ?? recording.segments?.map(segment=>segment.text).join(' ');
+    const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
+    return canonical(saved)===canonical(transcript);
+  }
   async function prepare(messageId,autoPlay=false,contentOverride) {
     if(!chatId)throw new Error('Open a chat first.');
     stop(false);clearPlan();config=capture();validateSettings(config);
@@ -902,7 +927,7 @@ export async function setup(ctx) {
       if(token!==revision || ctrl.signal.aborted)throw abortError();
       if(!recording)throw new Error('No saved audio for this message on this device. Plan and play it first.');
       if(ctx.messages.getContent(messageId)!==recording.content)throw new Error('The message changed since recording. Plan and play the current reply.');
-      if(/\{\{\s*user\s*\}\}/i.test(recording.content) && recording.transcript!==replacePersonaMacro(transcriptFromMessage(recording.content),await personaName()))throw new Error('This recording uses an older persona name. Plan and play the message again.');
+      if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to remove trackers or update the persona name.');
       for(const [index,blob] of recording.blobs.entries()) {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
@@ -917,7 +942,7 @@ export async function setup(ctx) {
     status('Checking saved audio…');
     const content=ctx.messages.getContent(messageId);
     let recording;try{recording=await recordingStore('get',recordingKey(chatId,messageId));}catch{}
-    if(recording?.content===content && (!/\{\{\s*user\s*\}\}/i.test(content) || recording.transcript===replacePersonaMacro(transcriptFromMessage(content),await personaName()))){await replayRecording(messageId);return;}
+    if(recording?.content===content && await recordingMatchesTranscript(recording,content)){await replayRecording(messageId);return;}
     await prepare(messageId,true);
   }
   const decorateMessage=(target,context={})=>{

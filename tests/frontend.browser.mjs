@@ -69,7 +69,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
           onBackend?.({namespace:'choir',id:message.id,error:'Planner timed out while waiting for response.'});return;
         }
         let result;
-        if(message.action==='ping')result={version:'1.0.16',ready:true};
+        if(message.action==='ping')result={version:'1.0.17',ready:true};
         else if(message.action==='testPlanner')result={model:'gpt-text-test',provider:'openai',response:'READY'};
         else if(message.action==='plan' && (message.input.transcript.trim().startsWith('Long narration') || message.input.transcript.trim().startsWith('"Welcome."')))result=validatePlan({segments:speechSourceUnits(message.input.transcript).map(unit=>({
           speaker:unit.kind==='dialogue'?'Traveler':'Narrator',text:unit.text,
