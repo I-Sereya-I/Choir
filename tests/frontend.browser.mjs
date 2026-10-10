@@ -63,7 +63,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
       requests.push(message);if(message.action==='cancel')return;
       setTimeout(()=>{
         let result;
-        if(message.action==='ping')result={version:'1.0.12',ready:true};
+        if(message.action==='ping')result={version:'1.0.13',ready:true};
         else if(message.action==='testPlanner')result={model:'gpt-text-test',provider:'openai',response:'READY'};
         else if(message.action==='plan' && message.input.transcript.trim().startsWith('Long narration'))result=validatePlan({segments:speechSourceUnits(message.input.transcript).map(unit=>({
           speaker:unit.kind==='dialogue'?'Traveler':'Narrator',text:unit.text,

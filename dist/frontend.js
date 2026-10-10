@@ -707,7 +707,7 @@ export async function setup(ctx) {
     if(!transcript)throw new Error('This message contains no speakable text.');
     const snapshot=structuredClone(casting(config));
     const context=ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
-      .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content).slice(0,3000)}`).join('\n').slice(-16000);
+      .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content).slice(0,1000)}`).join('\n').slice(-4000);
     const ctrl=new AbortController();controller=ctrl;setBusy(true);status('Checking Choir backend…');
     try {
       await rpc('ping',{},ctrl.signal,8000);
@@ -721,8 +721,8 @@ export async function setup(ctx) {
       for(const [index,section] of sections.entries()) {
         status(`Planning section ${index+1}/${sections.length}: speakers and voices…`);
         const result=await rpc('plan',{transcript:section,config:snapshot,
-          context:[context,previous?`Previous section of this same reply:\n${previous.slice(-3000)}`:''].filter(Boolean).join('\n').slice(-16000),
-          connectionId:config.planner,maxTokens:config.plannerTokens},ctrl.signal,185000,
+          context:[context,previous?`Previous section of this same reply:\n${previous.slice(-2000)}`:''].filter(Boolean).join('\n').slice(-4000),
+          connectionId:config.planner,maxTokens:config.plannerTokens},ctrl.signal,605000,
           progress=>status(`Planning section ${index+1}/${sections.length}: ${progress.stage}${progress.model?` · ${progress.model}`:''}`));
         if(token!==revision || targetChat!==chatId || disposed)return;
         const checked=validatePlan({segments:stripBase(result.segments)},section,snapshot);

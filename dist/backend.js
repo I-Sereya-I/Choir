@@ -295,11 +295,11 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   const progress=update=>{lastProgress=update;send({progress:update});};
   const timer = setTimeout(() => { send({error:message.action==='plan' || message.action==='testPlanner'
     ? `Planner timed out while ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}. Check this LLM connection in Lumiverse. Speech chunk size does not affect planning.`
-    : 'Speech generation timed out. Try a shorter speech request or check the TTS provider.'}); controller.abort(); },message.action==='testPlanner'?60000:180000);
+    : 'Speech generation timed out. Try a shorter speech request or check the TTS provider.'}); controller.abort(); },message.action==='testPlanner'?60000:message.action==='plan'?600000:180000);
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.0.12',ready:true}});return;
+      send({result:{version:'1.0.13',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       progress({stage:'Resolving saved LLM connection'});
@@ -317,7 +317,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       if (typeof input.transcript !== 'string' || !input.transcript.trim()) throw new Error('Choose a message with text to plan.');
       validateCastConfig(input.config);
       progress({stage:'Resolving saved LLM connection'});
-      const context = typeof input.context === 'string' ? input.context.slice(-16000) : '';
+      const context = typeof input.context === 'string' ? input.context.slice(-4000) : '';
       const messages = plannerPrompt(input.transcript,input.config,context);
       const connection=input.connectionId
         ? await spindle.connections.get(input.connectionId,userId)
@@ -331,11 +331,28 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         progress({stage:`Waiting for planner response (attempt ${attempt+1}/2)`,provider:connection.provider,model:connection.model});
         // Raw calls use the saved connection credentials without inheriting a chat preset's
         // short output limit, stop strings, response format or reasoning budget.
-        const result = await spindle.generate.raw({type:'raw',userId,model:connection.model,
+        const request = {type:'raw',userId,model:connection.model,
           connection_id:connection.id,messages,parameters:{max_tokens:maxTokens,
             ...(connection.provider==='google'?{responseMimeType:'application/json'}:
               connection.provider==='openai'?{response_format:{type:'json_object'}}:{})},
-          reasoning:{source:'off'},signal:controller.signal});
+          reasoning:{source:'off'},signal:controller.signal};
+        let result;
+        if(typeof spindle.generate.rawStream==='function') {
+          let content='',lastUpdate=0,received=0,completed=false;
+          for await(const chunk of spindle.generate.rawStream(request)) {
+            if(controller.signal.aborted)return;
+            if(chunk.type==='done') {result={content:chunk.content,finish_reason:chunk.finish_reason};completed=true;break;}
+            if(chunk.type==='token')content+=chunk.token || '';
+            if(chunk.type==='token' || chunk.type==='reasoning') {
+              received++;
+              if(received===1 || Date.now()-lastUpdate>=1000) {
+                lastUpdate=Date.now();
+                progress({stage:content.length?`Receiving planner output (${content.length} characters; attempt ${attempt+1}/2)`:`Planner is processing (attempt ${attempt+1}/2)`,provider:connection.provider,model:connection.model});
+              }
+            }
+          }
+          if(!completed)throw new Error('Planner stream ended before completion. Check the LLM connection or retry.');
+        } else result=await spindle.generate.raw(request);
         if (controller.signal.aborted) return;
         progress({stage:'Validating planner response',provider:connection.provider,model:connection.model});
         try {

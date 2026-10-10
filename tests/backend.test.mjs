@@ -4,10 +4,31 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const bundle=readFileSync(new URL('../dist/backend.js',import.meta.url),'utf8');
 const config={voices:[{id:'Charon'},{id:'Kore'}],fixed:[{speaker:'Narrator',voice:'Charon',style:''}],npcs:[],useStyle:true};
-async function harness(generate, cors, provider, deadline) {
+test('streaming planner reports activity, keeps reasoning private and uses completed JSON',async()=>{
+  let limit,request;
+  const content='{"segments":[{"speaker":"Narrator","unit_ids":[0]}]}';
+  const h=await harness(()=>{throw new Error('Expected streaming');},null,'custom',(_,ms)=>limit=ms,async function*(input){
+    request=input;
+    yield {type:'reasoning',token:'private processing text'};
+    yield {type:'token',token:content.slice(0,20)};
+    yield {type:'done',content,finish_reason:'stop'};
+  });
+  h.send('plan',{transcript:'Hello.',config,context:'x'.repeat(16000)});
+  const result=await h.result();
+  assert.equal(result.message.result.segments[0].text,'Hello.');assert.equal(limit,600000);
+  assert.ok(h.sent.some(item=>/Planner is processing/.test(item.message.progress?.stage || '')));
+  assert.ok(!JSON.stringify(h.sent).includes('private processing text'));
+  assert.ok(!JSON.stringify(request.messages).includes('x'.repeat(4001)));
+});
+test('an incomplete stream is never accepted as a finished speech plan',async()=>{
+  const h=await harness(null,null,'custom',null,async function*(){yield {type:'token',token:'{"segments":[]}'};});
+  h.send('plan',{transcript:'Hello.',config});
+  assert.match((await h.result()).message.error,/stream ended before completion/);
+});
+async function harness(generate, cors, provider, deadline, stream) {
   let handler;const sent=[];let wake;
   const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider};
-  vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate},connections:{get:async()=>connection,list:async()=>[connection]},cors},
+  vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate,rawStream:stream},connections:{get:async()=>connection,list:async()=>[connection]},cors},
     console,Map,Set,AbortController,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView});
   return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
     result:()=>sent.some(item=>item.message.result || item.message.error)?Promise.resolve(sent.findLast(item=>item.message.result || item.message.error)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
@@ -62,7 +83,7 @@ test('empty planner responses produce an actionable error',async()=>{
 test('backend readiness check replies without making an LLM or TTS request',async()=>{
   const h=await harness(()=>{throw new Error('Should not call planner');},()=>{throw new Error('Should not call TTS');});
   h.send('ping',{});
-  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.0.12');
+  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.0.13');
 });
 
 test('prose-only planner responses expose a useful diagnostic after retry',async()=>{
