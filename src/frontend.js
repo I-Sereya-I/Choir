@@ -134,6 +134,13 @@ export async function setup(ctx) {
         <label class="et-check" style="align-self:end"><input data-et="batchGemini" type="checkbox" checked> Batch Gemini turns (2 speakers)</label>
       </div>
       <label style="margin-top:10px">Additional Gemini voices (ID | description)<textarea data-et="extraVoices" rows="2" placeholder="voice_id | description"></textarea></label>
+      <div style="margin-top:10px;padding:8px 10px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;background:rgba(128,128,128,0.03)">
+        <label style="font-weight:600">Design Voice with Prompt (Gemini)</label>
+        <div style="display:flex;gap:6px;margin-top:4px">
+          <input data-et="voicePrompt" placeholder="e.g. Gruff Scottish blacksmith, deep gravelly timbre, weary humor" style="flex:1">
+          <button data-et="designVoice" type="button" class="et-btn-subtle" style="white-space:nowrap">Design voice</button>
+        </div>
+      </div>
     </details>
 
     <div class="et-section-header">
@@ -369,8 +376,8 @@ export async function setup(ctx) {
   }
   function setBusy(value) {
     busy=value;
-    for (const name of ['save','latest','load','testPlanner','add','reset','mode','connection','apply','auto'])$(name).disabled=value;
-    for (const name of ['model','planner','styleParam','apiBase','chunk','plannerTokens','extraVoices','useStyle','key','planJson','retention'])$(name).disabled=value;
+    for (const name of ['save','latest','load','testPlanner','designVoice','add','reset','mode','connection','apply','auto'])$(name).disabled=value;
+    for (const name of ['model','planner','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','key','planJson','retention'])$(name).disabled=value;
     $('play').disabled=value || !plan;
     $('batchGemini').disabled=value;$('concurrency').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
@@ -842,6 +849,24 @@ export async function setup(ctx) {
   $('pause').onclick=()=>{if(!currentAudio)return;if(currentAudio.paused){currentAudio.play().catch(e=>status(e.message,true));$('pause').textContent='Pause';}else{currentAudio.pause();$('pause').textContent='Resume';}};
   $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:'',style:''},$('fixed')));};
   $('reset').onclick=()=>{config=capture();config.casts[scope(config)]=[];renderCast();clearPlan();status('NPC cast cleared. Save to keep this change.');};
+  $('designVoice').onclick=()=>run(async()=>{
+    const prompt=$('voicePrompt').value.trim();
+    if(!prompt)throw new Error('Describe the voice to design (e.g. age, timbre, accent, persona).');
+    const apiKey=$('key').value.trim();
+    if(!apiKey)throw new Error('Enter a Gemini API key to use Voice Design.');
+    stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);
+    status('Designing voice with Gemini…');
+    try {
+      const result=await rpc('designVoice',{apiKey,prompt},ctrl.signal,45000);
+      if(token!==revision)return;
+      const entry=`${result.id} | ${result.description}`;
+      const existing=$('extraVoices').value.trim();
+      $('extraVoices').value=existing?`${existing}\n${entry}`:entry;
+      config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),config);
+      loadVersion++;await loadVoices();
+      $('voicePrompt').value='';status(`Voice designed and added to catalogue: ${result.id}`);
+    } finally {if(token===revision){controller=null;setBusy(false);}}
+  });
   $('load').onclick=()=>run(async()=>{config=capture();loadVersion++;await loadProviders();clearPlan();status('Connections and voices reloaded.');});
   for(const name of ['mode','connection'])$(name).onchange=()=>run(async()=>{
     stop(false);clearPlan();config=capture();loadVersion++;setFields();await loadVoices();

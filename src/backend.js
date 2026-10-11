@@ -91,6 +91,24 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       }
       throw new Error(`Planner failed twice: ${failure.message}`);
     }
+    if (message.action === 'designVoice') {
+      if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Gemini API key for this session.');
+      if (typeof input.prompt !== 'string' || !input.prompt.trim()) throw new Error('Describe the voice to design.');
+      const response = await spindle.cors('https://generativelanguage.googleapis.com/v1beta/voices', {
+        method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':input.apiKey.trim()},
+        body:JSON.stringify({type:'prompted',prompt:input.prompt.trim(),store:true})
+      });
+      if (controller.signal.aborted) return;
+      if (response.status < 200 || response.status >= 300) {
+        let detail = '';
+        try { detail = JSON.parse(response.body)?.error?.message || ''; } catch {}
+        throw new Error(`Gemini Voice Design HTTP ${response.status}${detail ? `: ${detail}` : ''}. Check API key and quota.`);
+      }
+      const data = JSON.parse(response.body);
+      const voiceId = (data?.name || data?.id || data?.voice?.id || data?.voice?.name || '').replace(/^voices\//, '');
+      if (!voiceId) throw new Error('Gemini Voice Design did not return a voice ID.');
+      send({result:{id:voiceId,name:voiceId,description:input.prompt.trim()}});return;
+    }
     if (message.action === 'gemini') {
       if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Gemini API key for this session.');
       const segment = input.segment;

@@ -123,3 +123,28 @@ test('a stalled planner test reports its model and cancels generation at the dea
   const result=await h.result();assert.match(result.message.error,/Waiting for a short LLM test response/);
   assert.match(result.message.error,/gemini-flash-text/);assert.ok(signal.aborted);
 });
+
+test('designVoice creates a custom Gemini voice from a natural language prompt',async()=>{
+  let request;
+  const h=await harness(null,async(url,options)=>{
+    request={url,options};
+    return {status:200,body:JSON.stringify({name:'voices/voice_test_123',voice:{id:'voice_test_123'}})};
+  });
+  h.send('designVoice',{apiKey:'key-test',prompt:'Gruff dwarf blacksmith'});
+  const result=await h.result();
+  assert.equal(result.message.result.id,'voice_test_123');
+  assert.equal(result.message.result.description,'Gruff dwarf blacksmith');
+  assert.equal(request.url,'https://generativelanguage.googleapis.com/v1beta/voices');
+  assert.equal(request.options.headers['x-goog-api-key'],'key-test');
+  assert.deepEqual(JSON.parse(request.options.body),{type:'prompted',prompt:'Gruff dwarf blacksmith',store:true});
+});
+
+test('designVoice handles missing API key or empty prompt',async()=>{
+  const h=await harness();
+  h.send('designVoice',{apiKey:'',prompt:'Gruff dwarf'});
+  assert.match((await h.result()).message.error,/Enter a Gemini API key/);
+
+  const h2=await harness();
+  h2.send('designVoice',{apiKey:'key',prompt:''});
+  assert.match((await h2.result()).message.error,/Describe the voice to design/);
+});
