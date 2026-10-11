@@ -519,3 +519,52 @@ test('autoDesignNPCs setting auto-designs bespoke Gemini voices for new NPCs wit
     dom.window.close();
   }
 });
+
+test('character row allows inline voice search and community voice discovery directly on the card', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  const store = new Map(), requests = [];
+  globalThis.fetch = async (url) => {
+    if (url.includes('/providers')) return new Response(JSON.stringify({providers: []}), {headers: {'Content-Type': 'application/json'}});
+    if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}]}), {headers: {'Content-Type': 'application/json'}});
+    return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
+  };
+  const root = dom.window.document.createElement('div');
+  const ctx = {
+    registerDomDecorator: () => () => {},
+    settings: {
+      get: async key => store.get(key) || null,
+      set: async (key, value) => { store.set(key, structuredClone(value)); }
+    },
+    messages: { getRecent: () => [{id: 'msg-1', name: 'Char', content: 'Story text.'}], getContent: () => 'Story text.' },
+    state: { get: () => null, subscribe: () => () => {} },
+    events: { on: () => () => {} },
+    getActiveChat: () => ({chatId: 'chat-search', characterId: 'char-1'}),
+    characters: { get: async () => ({name: 'Nia'}) },
+    dom: { addStyle: () => () => {}, getMessageId: () => null },
+    ui: { registerDrawerTab: () => ({root, activate: () => {}, onActivate: (fn) => { fn(); return () => {}; }, destroy: () => {}}), registerInputBarAction: () => ({onClick(){}, destroy(){}}), createTab: () => ({root, activate: () => {}, onActivate: () => () => {}, destroy: () => {}}), mount: () => null },
+    onBackendMessage: () => () => {},
+    sendToBackend: (msg) => requests.push(msg)
+  };
+  
+  const cleanup = await setup(ctx);
+  await until(() => root.querySelector('[data-et="fixed"]')?.querySelectorAll('.et-card')?.length >= 2);
+  const firstCard = root.querySelector('[data-et="fixed"]').querySelector('.et-card');
+  assert.ok(firstCard);
+  
+  const voiceSearchInput = firstCard.querySelector('input[placeholder*="Filter"]');
+  assert.ok(voiceSearchInput, 'Inline voice search input should exist on character card');
+  
+  // Test local filtering
+  voiceSearchInput.value = 'Charon';
+  voiceSearchInput.dispatchEvent(new dom.window.Event('input'));
+  const voiceSelect = firstCard.querySelector('[data-choir-voice]');
+  const optionTexts = [...voiceSelect.options].map(o => o.textContent);
+  assert.ok(optionTexts.some(t => t.includes('Charon')), 'Charon should match filter');
+  assert.ok(!optionTexts.some(t => t.includes('Zephyr')), 'Zephyr should be filtered out');
+
+  cleanup?.();
+  Object.assign(globalThis, old);
+});

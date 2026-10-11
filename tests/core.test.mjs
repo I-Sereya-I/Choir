@@ -255,3 +255,30 @@ test('stripAudioTags strips Fish Audio natural language bracket and parenthetica
   assert.equal(stripAudioTags('(happy) Good morning.'), 'Good morning.');
   assert.equal(stripAudioTags('[sigh: deep] Finally.'), 'Finally.');
 });
+
+test('transcriptFromMessage filters HUD status blocks, metadata, and divider lines', () => {
+  const message = `Time: Tuesday, October 14, 07:45 AM (Autumn)
+Location: Living Room, Subsidized Apartment 402
+Costume: White dress shirt, black trousers, black socks
+Posture: Sitting on the edge of the sofa, leaning forward
+Nearby Races: Cat Girl (Nekomusume)
+
+Approved
+
+Response
+---------
+Chapter 1: Cohabitation Clause
+
+A warm weight dropped across Jay's lap before he could reach his second sock.
+
+"Nnnh... you're late, Jay-kun," Nia purred.`;
+
+  const clean = transcriptFromMessage(message);
+  assert.ok(!clean.includes('Time:'));
+  assert.ok(!clean.includes('Location:'));
+  assert.ok(!clean.includes('Costume:'));
+  assert.ok(!clean.includes('Approved'));
+  assert.ok(!clean.includes('Chapter 1'));
+  assert.ok(clean.includes("A warm weight dropped across Jay's lap"));
+  assert.ok(clean.includes("Nia purred"));
+});

@@ -49,6 +49,16 @@ function transcriptFromMessage(value) {
   }
   if(block)ranges.push([block.start,text.length]);
   for(const [start,end] of ranges.reverse())text=text.slice(0,start)+' '+text.slice(end);
+
+  const hudKeys = 'Time|Date|Location|Place|Setting|Costume|Outfit|Clothing|Posture|Position|' +
+    'Nearby(?:\\s+Races?)?|Races?|Health|HP|MP|SP|Stamina|Mana|Stats?|Status|State|' +
+    'Mood|Affection|Love|Trust|Favor|Lust|Arousal|Karma|Gold|Money|Cash|Coins|' +
+    'Inventory|Items?|Equipment|Weapons?|Armor|Objective|Quest|Goals?|Targets?|' +
+    'Weather|Environment|Temperature|Atmosphere|Context|Scene|System(?:\\s+Note)?|OOC|Summary';
+
+  const sysHeaders = 'Approved|Denied|Confirmed|Acknowledged|Response|Output|Roleplay\\s+Response|' +
+    'Status\\s+Window|Character\\s+Sheet|Attributes?|Stats?\\s+Screen';
+
   return text
     .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
     .replace(/```[\s\S]*?```/g, '')
@@ -57,10 +67,18 @@ function transcriptFromMessage(value) {
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/<[^>]+>/g, '')
+    .replace(/^[ \t]*[─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬+|-]{3,}[ \t]*$/gm, '')
+    .replace(/^[ \t]*[-=_~*]{3,}[ \t]*$/gm, '')
+    .replace(/^[ \t]*\|.*\|[ \t]*$/gm, '')
+    .replace(/\[(?:OOC|System|Note|Author'?s?\s*Note|A\/N|AI\s*Note)[\s:][^\]]*\]/gi, '')
+    .replace(new RegExp(`^[ \\t]*(?!["“])(?:${hudKeys})\\s*:[^\\n]*$`, 'gim'), '')
+    .replace(new RegExp(`^[ \\t]*(?:${sysHeaders})\\b[.:\\s]*$`, 'gim'), '')
+    .replace(/^[ \t]*(?:Chapter|Act|Episode|Scene)\s+\d+[:\s][^\n]*$/gim, '')
     .replace(/^[ \t]*#{1,6}\s+/gm, '')
     .replace(/\*|`/g, '')
     .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
@@ -694,10 +712,14 @@ export async function setup(ctx) {
     gender.dataset.choirGender='';
     for(const [value,label] of [['auto','All voices / let LLM infer'],['female','Female voices'],['male','Male voices'],['neutral','Neutral voices']])option(gender,value,label);
     gender.value=actor.gender || 'auto';
+
+    let searchFilter='';
     const filterVoices=()=>{
       const selected=voice.value;voice.replaceChildren();option(voice,'','Let LLM choose');
+      const q=searchFilter.toLowerCase().trim();
       for(const item of rowVoices) {
         if(gender.value!=='auto' && item.gender!==gender.value && item.id!==selected)continue;
+        if(q && !String(item.name || '').toLowerCase().includes(q) && !String(item.id || '').toLowerCase().includes(q) && !String(item.description || '').toLowerCase().includes(q) && item.id!==selected)continue;
         const mismatch=gender.value!=='auto' && item.gender!==gender.value;
         option(voice,item.id,`${item.name || item.id} · ${item.gender==='female'?'Female':item.gender==='male'?'Male':item.gender==='neutral'?'Neutral':'Gender unknown'}${item.description ? ` · ${item.description}`:''}${mismatch?' · selected voice differs from filter':''}`);
       }
@@ -714,8 +736,90 @@ export async function setup(ctx) {
         $('gemini').hidden=config.mode!=='gemini' && ![...castRows,...npcRows].some(row=>row.read().route==='gemini');
       } finally {if(!disposed && route.value===selected)voice.disabled=busy;}
     });
+
+    const voiceWrap=document.createElement('div');
+    const voiceSearchRow=document.createElement('div');
+    voiceSearchRow.style.cssText='display:flex;gap:4px;margin-bottom:4px';
+    const voiceSearchInput=document.createElement('input');
+    voiceSearchInput.type='text';
+    voiceSearchInput.placeholder='Filter / search community…';
+    voiceSearchInput.style.cssText='font-size:0.85em;padding:4px 6px;flex:1';
+    voiceSearchInput.oninput=()=>{searchFilter=voiceSearchInput.value;filterVoices();};
+
+    const searchCommBtn=document.createElement('button');
+    searchCommBtn.type='button';searchCommBtn.className='et-btn-subtle';
+    searchCommBtn.title='Search community voices';searchCommBtn.textContent='🔍';
+    searchCommBtn.style.cssText='padding:2px 8px';
+    const doRowSearch=()=>run(async()=>{
+      const q=voiceSearchInput.value.trim();
+      if(!q)throw new Error('Enter a character or voice name to search.');
+      searchCommBtn.disabled=true;searchCommBtn.textContent='…';
+      try {
+        const res=await rpc('searchVoices',{query:q,limit:10},null,15000);
+        if(!res?.results?.length)throw new Error(`No community voices found for "${q}".`);
+        for(const item of res.results) {
+          const entry=`${item.id} | ${item.name}${item.description ? ` · ${item.description}` : ''}`;
+          const existing=String(config.extraVoices || '').trim();
+          if(!existing.includes(item.id)) {
+            config.extraVoices=existing?`${existing}\n${entry}`:entry;
+            $('extraVoices').value=config.extraVoices;
+          }
+          if(!rowVoices.some(v=>v.id===item.id)) {
+            rowVoices.push({id:item.id,name:item.name,description:item.description});
+          }
+        }
+        searchFilter='';voiceSearchInput.value='';filterVoices();
+        voice.value=res.results[0].id;
+        config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),config);
+        status(`Assigned community voice "${res.results[0].name}" to ${name.value || 'character'}.`);
+      } finally {searchCommBtn.disabled=false;searchCommBtn.textContent='🔍';}
+    });
+    searchCommBtn.onclick=doRowSearch;
+    voiceSearchInput.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();doRowSearch();}};
+
+    const auditionRowBtn=document.createElement('button');
+    auditionRowBtn.type='button';auditionRowBtn.className='et-btn-subtle';
+    auditionRowBtn.title='Audition voice';auditionRowBtn.textContent='▶';
+    auditionRowBtn.style.cssText='padding:2px 8px';
+    auditionRowBtn.onclick=()=>run(async()=>{
+      const selectedVoice=voice.value;
+      if(!selectedVoice)throw new Error('Choose a voice first to audition.');
+      stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);
+      status(`Auditioning ${selectedVoice}…`);
+      try {
+        let blob;
+        const sampleText='Hello! I am your voice for this story.';
+        const selectedRoute=route.value || scope(config);
+        if(selectedRoute==='gemini') {
+          const apiKey=$('key').value.trim();
+          if(!apiKey)throw new Error('Enter a Gemini API key for this session.');
+          const result=await rpc('gemini',{segment:{speaker:name.value || 'Voice',voice:selectedVoice,text:sampleText,style:''},model:config.model,apiKey},ctrl.signal);
+          const audio=audioBytes(result.base64,result.mimeType);
+          blob=new Blob([audio.data],{type:audio.mimeType});
+        } else {
+          const connectionId=selectedRoute.startsWith('native:')?selectedRoute.slice(7):config.connection;
+          const conn=nativeConnections.find(c=>c.id===connectionId) || nativeConnections[0];
+          if(!conn)throw new Error('TTS connection not available for audition.');
+          const isFish=/fish/i.test(conn.provider || '');
+          const textToSend=isFish ? `[cheerful] ${sampleText}` : sampleText;
+          const resp=await api('/tts/synthesize',{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({connectionId:conn.id,model:conn.model,voice:selectedVoice,text:textToSend,parameters:{}}),
+            signal:ctrl.signal
+          });
+          blob=await resp.blob();
+        }
+        if(token!==revision || ctrl.signal.aborted)return;
+        await playBlob(blob,ctrl.signal);
+        if(token===revision)status('Audition finished.');
+      } finally {if(token===revision){controller=null;setBusy(false);}}
+    });
+
+    voiceSearchRow.append(voiceSearchInput,searchCommBtn,auditionRowBtn);
+    voiceWrap.append(voiceSearchRow,voice);
+
     const style=document.createElement('input');style.value=actor.style || '';style.maxLength=600;
-    for (const [label,node] of [['Speaker name',name],['TTS connection',route],['Voice gender filter',gender],['Voice',voice],['Base delivery style',style]]) {
+    for (const [label,node] of [['Speaker name',name],['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style]]) {
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);row.append(wrap);
     }
     if(!reserved){const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();};row.append(remove);}

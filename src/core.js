@@ -48,6 +48,16 @@ export function transcriptFromMessage(value) {
   }
   if(block)ranges.push([block.start,text.length]);
   for(const [start,end] of ranges.reverse())text=text.slice(0,start)+' '+text.slice(end);
+
+  const hudKeys = 'Time|Date|Location|Place|Setting|Costume|Outfit|Clothing|Posture|Position|' +
+    'Nearby(?:\\s+Races?)?|Races?|Health|HP|MP|SP|Stamina|Mana|Stats?|Status|State|' +
+    'Mood|Affection|Love|Trust|Favor|Lust|Arousal|Karma|Gold|Money|Cash|Coins|' +
+    'Inventory|Items?|Equipment|Weapons?|Armor|Objective|Quest|Goals?|Targets?|' +
+    'Weather|Environment|Temperature|Atmosphere|Context|Scene|System(?:\\s+Note)?|OOC|Summary';
+
+  const sysHeaders = 'Approved|Denied|Confirmed|Acknowledged|Response|Output|Roleplay\\s+Response|' +
+    'Status\\s+Window|Character\\s+Sheet|Attributes?|Stats?\\s+Screen';
+
   return text
     .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
     .replace(/```[\s\S]*?```/g, '')
@@ -56,10 +66,18 @@ export function transcriptFromMessage(value) {
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/<[^>]+>/g, '')
+    .replace(/^[ \t]*[─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬+|-]{3,}[ \t]*$/gm, '')
+    .replace(/^[ \t]*[-=_~*]{3,}[ \t]*$/gm, '')
+    .replace(/^[ \t]*\|.*\|[ \t]*$/gm, '')
+    .replace(/\[(?:OOC|System|Note|Author'?s?\s*Note|A\/N|AI\s*Note)[\s:][^\]]*\]/gi, '')
+    .replace(new RegExp(`^[ \\t]*(?!["“])(?:${hudKeys})\\s*:[^\\n]*$`, 'gim'), '')
+    .replace(new RegExp(`^[ \\t]*(?:${sysHeaders})\\b[.:\\s]*$`, 'gim'), '')
+    .replace(/^[ \t]*(?:Chapter|Act|Episode|Scene)\s+\d+[:\s][^\n]*$/gim, '')
     .replace(/^[ \t]*#{1,6}\s+/gm, '')
     .replace(/\*|`/g, '')
     .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
