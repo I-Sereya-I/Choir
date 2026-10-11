@@ -698,10 +698,14 @@ export async function setup(ctx) {
                 ? (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:undefined)
                 : (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:['instructions','instruct','prompt'].find(p=>supported[p]));
               if(snapshot.useStyle && styleParam && seg.style)parameters[styleParam]=seg.style;
+              const isFish=/fish/i.test(connection.provider || '');
+              const textToSend=isFish && snapshot.useStyle && seg.style && !seg.text.startsWith('[')
+                ? `[${seg.style}] ${seg.text}`
+                : seg.text;
               const response=await api('/tts/synthesize',{
                 method:'POST',
                 headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({connectionId:connection.id,model:connection.model,voice:seg.voice,text:seg.text,parameters}),
+                body:JSON.stringify({connectionId:connection.id,model:connection.model,voice:seg.voice,text:textToSend,parameters}),
                 signal:ctrl.signal
               });
               blob=await response.blob();
@@ -946,10 +950,12 @@ export async function setup(ctx) {
       } else {
         const connection=nativeConnections.find(c=>`native:${c.id}`===config.connection) || nativeConnections.find(c=>c.id===config.connection) || nativeConnections[0];
         if(!connection)throw new Error('TTS connection is not available for audition.');
+        const isFish=/fish/i.test(connection.provider || '');
+        const textToSend=isFish ? `[cheerful] ${sampleText}` : sampleText;
         const response=await api('/tts/synthesize',{
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({connectionId:connection.id,model:connection.model,voice:voiceId,text:sampleText,parameters:{}}),
+          body:JSON.stringify({connectionId:connection.id,model:connection.model,voice:voiceId,text:textToSend,parameters:{}}),
           signal:ctrl.signal
         });
         blob=await response.blob();

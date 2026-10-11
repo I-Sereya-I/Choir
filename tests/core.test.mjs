@@ -248,3 +248,10 @@ test('validatePlan preserving voicePrompt on newly cast NPCs',()=>{
   assert.equal(plan2.npcs[0].speaker,'Merchant');
   assert.equal(plan2.npcs[0].voicePrompt,'Fast-talking traveling merchant, nasal high pitch');
 });
+
+test('stripAudioTags strips Fish Audio natural language bracket and parenthetical emotion tags', () => {
+  assert.equal(stripAudioTags('[whispering, nervously] Hello!'), 'Hello!');
+  assert.equal(stripAudioTags('[laughs warmly] That is great.'), 'That is great.');
+  assert.equal(stripAudioTags('(happy) Good morning.'), 'Good morning.');
+  assert.equal(stripAudioTags('[sigh: deep] Finally.'), 'Finally.');
+});

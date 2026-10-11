@@ -189,3 +189,36 @@ test('backend retry fallback when custom voice_ returns 404',async()=>{
   assert.equal(femaleCalls[0].body.generationConfig.speechConfig.voiceConfig.voice,'voice_female_elf');
   assert.equal(femaleCalls[1].body.generationConfig.speechConfig.voiceConfig.voice,'Kore');
 });
+
+test('fishaudio synthesizes speech with Authorization header and emotion tag formatting', async () => {
+  let request;
+  const h = await harness(null, async (url, options) => {
+    request = { url, options };
+    return { status: 200, body: 'bXAzLWF1ZGlv' };
+  });
+  h.send('fishaudio', {
+    apiKey: 'fish-secret-123',
+    model: 's2.1-pro',
+    segment: { text: 'Watch out!', voice: 'voice-ref-456', style: 'shouting in alarm' }
+  });
+  const result = await h.result();
+  assert.equal(result.message.result.base64, 'bXAzLWF1ZGlv');
+  assert.equal(result.message.result.mimeType, 'audio/mpeg');
+  assert.equal(request.url, 'https://api.fish.audio/v1/tts');
+  assert.equal(request.options.headers.Authorization, 'Bearer fish-secret-123');
+  assert.equal(request.options.headers.model, 's2.1-pro');
+  const body = JSON.parse(request.options.body);
+  assert.equal(body.text, '[shouting in alarm] Watch out!');
+  assert.equal(body.reference_id, 'voice-ref-456');
+  assert.equal(body.format, 'mp3');
+});
+
+test('fishaudio handles missing API key or empty segment', async () => {
+  const h = await harness();
+  h.send('fishaudio', { apiKey: '', segment: { text: 'Hello.' } });
+  assert.match((await h.result()).message.error, /Enter a Fish Audio API key/);
+
+  const h2 = await harness();
+  h2.send('fishaudio', { apiKey: 'key', segment: { text: '' } });
+  assert.match((await h2.result()).message.error, /Invalid speech chunk/);
+});

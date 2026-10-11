@@ -109,6 +109,24 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       if (!voiceId) throw new Error('Gemini Voice Design did not return a voice ID.');
       send({result:{id:voiceId,name:voiceId,description:input.prompt.trim()}});return;
     }
+    if (message.action === 'fishaudio') {
+      if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Fish Audio API key for this session.');
+      const segment = input.segment;
+      if (!segment || typeof segment.text !== 'string' || !segment.text.trim()) throw new Error('Invalid speech chunk.');
+      const text = segment.style && !segment.text.startsWith('[') ? `[${segment.style}] ${segment.text}` : segment.text;
+      const model = input.model || 's2.1-pro';
+      const response = await spindle.cors('https://api.fish.audio/v1/tts', {
+        method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${input.apiKey.trim()}`,'model':model},
+        body:JSON.stringify({text,reference_id:segment.voice || undefined,format:'mp3'})
+      });
+      if (controller.signal.aborted) return;
+      if (response.status < 200 || response.status >= 300) {
+        let detail = '';
+        try { detail = JSON.parse(response.body)?.message || JSON.parse(response.body)?.error || ''; } catch {}
+        throw new Error(`Fish Audio HTTP ${response.status}${detail ? `: ${detail}` : ''}. Check API key and quota.`);
+      }
+      send({result:{base64:response.body,mimeType:'audio/mpeg'}}); return;
+    }
     if (message.action === 'gemini') {
       if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Gemini API key for this session.');
       const segment = input.segment;
