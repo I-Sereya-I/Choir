@@ -36,6 +36,14 @@ try{
   browser=await chromium.launch({headless:true,channel:process.env.CHOIR_BROWSER_CHANNEL || 'chrome',args:['--disable-crash-reporter']});
   const page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',error=>errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.ready);
+  const launcher=page.getByRole('button',{name:'Open Choir voice mixer',exact:true});
+  const iconBounds=await launcher.boundingBox();assert.equal(Math.round(iconBounds.width),44);assert.equal(Math.round(iconBounds.height),44);
+  assert.equal(await page.getByRole('slider',{name:'Master volume',exact:true}).isVisible(),false);
+  await page.mouse.move(iconBounds.x+22,iconBounds.y+22);await page.mouse.down();await page.mouse.move(iconBounds.x+92,iconBounds.y+82);await page.mouse.up();
+  const movedBounds=await launcher.boundingBox();assert.equal(Math.round(movedBounds.x-iconBounds.x),70);assert.equal(Math.round(movedBounds.y-iconBounds.y),60);
+  assert.equal(await launcher.getAttribute('aria-expanded'),'false');
+  if(process.env.CHOIR_ICON_SCREENSHOT)await page.screenshot({path:process.env.CHOIR_ICON_SCREENSHOT,clip:{x:Math.max(0,movedBounds.x-16),y:Math.max(0,movedBounds.y-16),width:76,height:76}});
+  await launcher.press('Enter');assert.equal(await page.getByRole('slider',{name:'Master volume',exact:true}).isVisible(),true);
   await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await page.locator('[data-et="play"]').click();await page.waitForFunction(()=>document.querySelector('[data-choir-mixer]').textContent.includes('Speaking: Narrator'));
   await page.waitForFunction(()=>window.gains.length===1 && window.audios[0].paused===false && !document.querySelector('[data-et="pause"]').disabled);

@@ -3,17 +3,18 @@ import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
 import {IDBFactory} from 'fake-indexeddb';
 import {setup} from '../dist/frontend.js';
-import {validatePlan,speechSourceUnits} from '../src/core.js';
+import {validatePlan,speechSourceUnits,planningSections} from '../src/core.js';
 
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 const until=async(predicate)=>{for(let i=0;i<250;i++){if(predicate())return;await tick();}throw Error('Timed out waiting for regression state');};
 
-async function harness(){
+async function harness(mixerPreferences){
   const dom=new JSDOM('<body><main></main><footer></footer></body>',{url:'https://lumiverse.test'});
   const original={document:globalThis.document,Audio:globalThis.Audio,fetch:globalThis.fetch,indexedDB:globalThis.indexedDB};
   globalThis.document=dom.window.document;globalThis.indexedDB=new IDBFactory();
   const root=document.querySelector('main'),footer=document.querySelector('footer');
   const state={active:'chat-a',blockAudio:false,failVoice:null,delay:0,held:false,aborted:0},store=new Map(),requests=[],synthesis=[],audios=[],events=new Map(),subscriptions=new Map(),heldPlans=[];
+  if(mixerPreferences)store.set('ui:mixer',mixerPreferences);
   const message={id:'message-a',content:'At dawn. "Hello." "Wait." The gate closed.',name:'Mira',is_user:false};
   store.set('chat:chat-a',{mode:'native',connection:'a',styleParam:'instructions',chunk:500,concurrency:1,prefetch:0,
     fixed:[{speaker:'Narrator',voice:'n',style:'Calm'},{speaker:'You',voice:'y',style:''},{speaker:'Mira',voice:'m',route:'native:b',style:'',aliases:['Captain'],pronunciation:'Mira: mee-rah',accent:'Irish'}],
@@ -43,7 +44,7 @@ async function harness(){
     return Response.json(value);
   };
   let backend,decorationCleanup;
-  const ctx={settings:{get:async key=>structuredClone(store.get(key) ?? null),set:async(key,value)=>store.set(key,structuredClone(value))},
+  const ctx={settings:{get:async key=>structuredClone(store.get(key) ?? null),set:async(key,value)=>{if(state.failPlanSave && /^(plan:|activeplan:)/.test(key))throw Error('Settings storage failed');store.set(key,structuredClone(value));}},
     messages:{getRecent:()=>state.active==='chat-a'?[message]:[],getContent:id=>id===message.id && state.active==='chat-a'?message.content:null},
     state:{subscribe:(key,fn)=>{subscriptions.set(key,fn);return()=>subscriptions.delete(key);}},events:{on:(key,fn)=>{events.set(key,fn);return()=>events.delete(key);}},
     characters:{get:async()=>({name:'Mira'})},getActiveChat:()=>({chatId:state.active,characterId:'mira'}),dom:{addStyle:()=>()=>{}},
@@ -54,6 +55,7 @@ async function harness(){
       setTimeout(()=>{
         if(!backend)return;
         if(request.action==='plan' && state.held){heldPlans.push(request);return;}
+        if(request.action==='plan' && state.failPlanAt===requests.filter(r=>r.action==='plan').length){backend({namespace:'choir',id:request.id,error:'Planner quota exhausted'});return;}
         let result;
         if(request.action==='ping')result={ready:true};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
@@ -70,14 +72,14 @@ async function harness(){
   const plan=()=>click('latest',text=>text.startsWith('Ready:') || text.includes('Saved attribution'));
   const play=()=>click('play',text=>text.includes('Playback finished'));
   const reload=async()=>{cleanup();cleanup=await setup(ctx);};
-  return {dom,state,store,requests,synthesis,audios,message,events,subscriptions,root,footer,$,click,plan,play,reload,
+  return {dom,state,store,requests,synthesis,audios,message,events,subscriptions,root,footer,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
     async close(){cleanup();await tick();Object.assign(globalThis,original);dom.window.close();}};
 }
 
 test('reload and chat navigation restore plans; recasting and edited text regenerate only affected passages',async()=>{
   const h=await harness();try{
-    assert.match(h.footer.textContent,/Play Choir/); // New ctx.ui decorator API.
+    assert.equal(h.footer.querySelector('button').title,'Play Choir · click again to stop'); // New ctx.ui decorator API.
     await h.plan();await h.play();assert.equal(h.synthesis.length,4);
     assert.equal(h.requests.filter(r=>r.action==='plan').length,1);
     assert.equal(h.synthesis.find(r=>r.voice==='m').parameters.accent,'Irish');
@@ -111,6 +113,7 @@ test('429 retains completed audio across reload and retry bills only missing pas
 
 test('selection and exclusion retain all text, resume seeks, mixer controls and position survive reload',async()=>{
   const h=await harness();try{
+    h.$('showMixer').click();
     await h.plan();const select=h.$('preview').querySelector('[aria-label="Select passage 2"]');select.checked=true;select.dispatchEvent(new h.dom.window.Event('change'));
     await h.click('playSelected',text=>text.includes('Playback finished'));assert.equal(h.synthesis.length,1);
     assert.equal(h.synthesis[0].voice,'m');assert.equal(h.$('preview').querySelectorAll('.et-card').length,4);
@@ -128,8 +131,79 @@ test('selection and exclusion retain all text, resume seeks, mixer controls and 
     const before=h.synthesis.length;h.$('resumePosition').click();await until(()=>h.audios.at(-1)?.paused===false);assert.equal(h.audios.at(-1).currentTime,7);
     h.state.blockAudio=false;h.audios.at(-1).onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
     assert.equal(h.synthesis.length,before+1);assert.ok(!h.synthesis.some(r=>r.voice==='g'));
-    document.querySelector('[aria-label="Collapse or reopen voice mixer"]').click();assert.equal(document.querySelector('[data-choir-mixer]').children[1].hidden,true);
+    h.$('showMixer').click();document.querySelector('[aria-label="Collapse Choir voice mixer"]').click();assert.equal(document.querySelector('[data-choir-mixer]').children[1].hidden,true);
     h.$('showMixer').click();assert.equal(document.querySelector('[data-choir-mixer]').children[1].hidden,false);
+  }finally{await h.close();}
+});
+
+test('mixer starts as a draggable sound icon even with old expanded preferences, and dragging does not open it',async()=>{
+  const h=await harness({master:0.4,channels:{},x:50,y:100,collapsed:false});try{
+    const mixer=document.querySelector('[data-choir-mixer]'),button=mixer.querySelector('[aria-label="Open Choir voice mixer"]');
+    assert.equal(mixer.style.width,'44px');assert.equal(mixer.children[1].hidden,true);assert.equal(mixer.firstChild.firstChild.hidden,true);assert.ok(button.querySelector('svg'));assert.equal(button.getAttribute('aria-expanded'),'false');
+    button.dispatchEvent(new h.dom.window.MouseEvent('pointerdown',{bubbles:true,clientX:50,clientY:100}));button.dispatchEvent(new h.dom.window.MouseEvent('pointermove',{bubbles:true,clientX:90,clientY:140}));button.dispatchEvent(new h.dom.window.MouseEvent('pointerup',{bubbles:true}));button.dispatchEvent(new h.dom.window.MouseEvent('click',{bubbles:true,detail:1}));
+    assert.equal(mixer.style.left,'90px');assert.equal(mixer.children[1].hidden,true);
+    button.click();assert.equal(mixer.children[1].hidden,false);assert.equal(button.getAttribute('aria-expanded'),'true');assert.equal(mixer.querySelector('[aria-label="Master volume"]').value,'0.4');
+    button.click();assert.equal(mixer.style.width,'44px');assert.equal(mixer.children[1].hidden,true);
+    await h.reload();assert.equal(document.querySelector('[data-choir-mixer]').style.left,'90px');assert.equal(document.querySelector('[data-choir-mixer]').dataset.collapsed,'true');
+  }finally{await h.close();}
+});
+
+test('host remount replaces the previous mixer and cancels its playback',async()=>{
+  const h=await harness();try{
+    await h.plan();h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.at(-1)?.paused===false);
+    h.$('showMixer').click();await h.remount();assert.ok(h.audios.every(audio=>audio.paused));
+    assert.equal(document.querySelectorAll('[data-choir-mixer]').length,1);assert.equal(document.querySelector('[data-choir-mixer]').style.width,'44px');
+  }finally{await h.close();}
+});
+
+test('latest planned notice invites an explicit redo without discarding cached audio',async()=>{
+  const h=await harness();try{
+    assert.equal(h.$('latestNotice').hidden,true);await h.plan();await h.play();
+    assert.equal(h.$('latestNotice').hidden,false);assert.equal(h.$('latestNotice').textContent,'latest already planned, click on plan latest to redo it');
+    const before=h.synthesis.length;await h.plan();assert.equal(h.requests.filter(r=>r.action==='plan').length,2);await h.play();assert.equal(h.synthesis.length,before);
+    await h.reload();assert.equal(h.$('latestNotice').hidden,false);await h.plan();assert.equal(h.requests.filter(r=>r.action==='plan').length,3);
+    h.store.set('activeplan:chat-a','another-message');await h.reload();await until(()=>!h.$('latestNotice').hidden);
+    assert.equal(h.$('preview').children.length,0);await h.plan();assert.equal(h.requests.filter(r=>r.action==='plan').length,4);
+    h.message.content='A different scene. "Hello."';h.events.get('MESSAGE_EDITED')({messageId:h.message.id});assert.equal(h.$('latestNotice').hidden,true);
+  }finally{await h.close();}
+});
+
+test('message play reuses the current validated plan even when saving it fails, and overlapping clicks do not replan',async()=>{
+  const h=await harness();try{
+    h.state.failPlanSave=true;h.$('latest').click();await until(()=>h.$('status').textContent.includes('Settings storage failed'));
+    assert.equal(h.requests.filter(r=>r.action==='plan').length,1);
+    const button=h.footer.querySelector('button');assert.equal(button.textContent,'');assert.equal(button.style.width,'28px');
+    button.click();button.click();await until(()=>h.$('status').textContent.includes('Playback finished'));
+    assert.equal(h.requests.filter(r=>r.action==='plan').length,1);const synthesized=h.synthesis.length;
+    button.click();await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.requests.filter(r=>r.action==='plan').length,1);assert.equal(h.synthesis.length,synthesized);
+  }finally{await h.close();}
+});
+
+test('section playback is an optional persisted toggle and synthesizes only the selected planner section',async()=>{
+  const h=await harness();try{
+    h.message.content='The hall was quiet '.repeat(70)+'. "Welcome." '+'The road was dark '.repeat(80)+'.';
+    await h.plan();const planned=h.requests.filter(r=>r.action==='plan').length;assert.ok(planned>=3);
+    assert.equal(h.footer.querySelector('details').hidden,true);
+    h.$('sectionButtons').checked=true;h.$('sectionButtons').dispatchEvent(new h.dom.window.Event('change'));await tick();
+    const sections=h.footer.querySelector('details');assert.equal(sections.hidden,false);assert.equal(sections.querySelectorAll('[data-choir-section]').length,planned);
+    sections.querySelector('[data-choir-section="1"]').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
+    assert.equal(h.synthesis.length,1);assert.equal(h.synthesis[0].voice,'m');assert.match(h.synthesis[0].text,/Welcome/);assert.equal(h.requests.filter(r=>r.action==='plan').length,planned);
+    await h.reload();assert.equal(h.$('sectionButtons').checked,true);await until(()=>h.footer.querySelectorAll('[data-choir-section]').length===planned);
+    h.$('sectionButtons').checked=false;h.$('sectionButtons').dispatchEvent(new h.dom.window.Event('change'));await tick();assert.equal(h.footer.querySelector('details').hidden,true);
+    assert.equal(h.$('preview').querySelectorAll('[data-choir-section]').length,0);
+  }finally{await h.close();}
+});
+
+test('retrying message play after a planner failure and reload reuses completed attribution sections',async()=>{
+  const h=await harness();try{
+    h.message.content='The hall was quiet '.repeat(70)+'. "Welcome." '+'The road was dark '.repeat(80)+'.';
+    const count=planningSections(h.message.content).length;h.state.failPlanAt=2;
+    h.$('latest').click();await until(()=>h.$('status').textContent.includes('Planner quota exhausted'));
+    const first=h.requests.find(r=>r.action==='plan').input.transcript;
+    h.state.failPlanAt=null;await h.reload();h.footer.querySelector('button').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
+    assert.equal(h.requests.filter(r=>r.action==='plan' && r.input.transcript===first).length,1);
+    assert.equal(h.requests.filter(r=>r.action==='plan').length,count+1);
+    h.message.content='A changed reply. "Hello."';h.events.get('MESSAGE_EDITED')({messageId:h.message.id});await h.plan();assert.equal(h.requests.filter(r=>r.action==='plan').length,count+2);
   }finally{await h.close();}
 });
 
