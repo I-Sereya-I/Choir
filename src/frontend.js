@@ -6,8 +6,11 @@ const ICON_PAUSE = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="1
 const ICON_SEARCH = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`;
 const ICON_SPARKLE = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg>`;
 const ICON_CLOSE = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`;
+const ICON_SOUND = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4z"/><path d="M15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"/></svg>`;
 
 export async function setup(ctx) {
+  // A host remount or extension update must not leave a second floating mixer behind.
+  for(const previous of document.querySelectorAll('[data-choir-mixer]')){previous.dispatchEvent(new document.defaultView.Event('choir:replace'));previous.remove();}
   const tab = ctx.ui.registerDrawerTab({id:'ensemble',title:'Choir',shortName:'Choir',iconSvg:CHOIR_ICON_SVG,
     description:'Cast and play your story with multiple voices',keywords:['tts','audio','choir','voices','narrator']});
   const root=document.createElement('div');
@@ -80,6 +83,9 @@ export async function setup(ctx) {
     .choir-mixer button[aria-pressed="true"]{background:Highlight;color:HighlightText}
     .choir-mixer label{display:grid;gap:5px;margin:8px 0}
     .choir-mixer input[type="range"]{width:100%;min-width:0;accent-color:Highlight}
+    .choir-mixer [hidden]{display:none!important}
+    .choir-mixer[data-collapsed="true"] button{width:44px;height:44px;display:grid;place-items:center;padding:0;border:0;border-radius:50%;touch-action:none}
+    .choir-mixer button:focus-visible{outline:2px solid Highlight;outline-offset:2px}
   `);
   root.innerHTML = `<div class="ensemble-tts">
     <div class="et-header">
@@ -96,6 +102,7 @@ export async function setup(ctx) {
         <button data-et="showMixer">Voice mixer</button>
       </div>
     </div>
+    <p data-et="latestNotice" role="status" hidden>latest already planned, click on plan latest to redo it</p>
     <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
     <div class="et-status" data-et="statusActions" hidden></div>
     <details data-et="setupGuide">
@@ -150,6 +157,7 @@ export async function setup(ctx) {
     <div class="et-row" style="margin-top:10px;flex-wrap:wrap;gap:12px">
       <label class="et-check"><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
       <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
+      <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show section play buttons</label>
       <label class="et-check"><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
 
@@ -277,13 +285,13 @@ export async function setup(ctx) {
   }
   const recordingKey=(chat,message)=>JSON.stringify([audioNamespace,chat,message]);
   const unsubs = [];
-  const messageStatuses=new Map();let messagePlaybackId=null;
+  const messageStatuses=new Map(),messageSections=new Set();let messagePlaybackId=null,messageOperation=null;
   let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, planningSource=null, busy=false;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
   const voiceCatalogues=new Map();
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
   const defaults = () => ({mode:'gemini',model:'gemini-3.8-flash-tts',planner:'',connection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:false,concurrency:1,plannerTokens:8192,
-    prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,
+    prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,sectionButtons:false,
     extraVoices:'',useStyle:true,auto:false,autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1/classify',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
@@ -295,9 +303,10 @@ export async function setup(ctx) {
   };
   const selectedPassages=new Set(), excludedPassages=new Set();
   let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback;
-  let mixerState={master:1,channels:{},x:20,y:80,collapsed:false,...await ctx.settings.get('ui:mixer').catch(()=>null)};
+  // Keep the launcher unobtrusive on every load, including existing expanded preferences.
+  let mixerState={master:1,channels:{},x:20,y:80,...await ctx.settings.get('ui:mixer').catch(()=>null),collapsed:true};
   const mixer=document.createElement('section');mixer.className='choir-mixer';mixer.dataset.choirMixer='';mixer.setAttribute('aria-label','Choir voice mixer');
-  mixer.style.cssText='position:fixed;z-index:10000;width:290px;max-width:90vw;max-height:70vh;overflow:auto;background:Canvas;color:CanvasText;border:1px solid #888;border-radius:10px;box-shadow:0 6px 24px #0004;padding:10px;font:14px system-ui';
+  mixer.style.cssText='position:fixed;z-index:10000;box-sizing:border-box;max-width:90vw;max-height:70vh;overflow:auto;background:Canvas;color:CanvasText;border:1px solid #888;box-shadow:0 6px 24px #0004;font:14px system-ui';
   const mixerHeader=document.createElement('div');mixerHeader.style.cssText='display:flex;gap:8px;align-items:center;cursor:move;touch-action:none';
   const mixerTitle=document.createElement('strong');mixerTitle.textContent='Choir voice mixer';
   const collapse=document.createElement('button');collapse.type='button';collapse.setAttribute('aria-label','Collapse or reopen voice mixer');
@@ -315,18 +324,25 @@ export async function setup(ctx) {
     else if(currentAudio)currentAudio.volume=volume;
   }
   function positionMixer(){
+    const collapsed=Boolean(mixerState.collapsed);
+    mixer.dataset.collapsed=String(collapsed);mixerBody.hidden=collapsed;mixerTitle.hidden=collapsed;
+    mixer.style.width=collapsed?'44px':'270px';mixer.style.padding=collapsed?'0':'10px';mixer.style.borderRadius=collapsed?'50%':'10px';
+    mixer.style.borderWidth=collapsed?'0':'1px';
+    collapse.innerHTML=collapsed?ICON_SOUND:ICON_CLOSE;
+    collapse.setAttribute('aria-label',collapsed?'Open Choir voice mixer':'Collapse Choir voice mixer');
+    collapse.setAttribute('aria-expanded',String(!collapsed));collapse.title=collapsed?'Choir voice mixer · click to open, drag to move':'Collapse voice mixer';
     const view=document.defaultView;
     mixerState.x=Math.max(0,Math.min(Number(mixerState.x)||0,Math.max(0,(view?.innerWidth || 1024)-mixer.offsetWidth-10)));
     mixerState.y=Math.max(0,Math.min(Number(mixerState.y)||0,Math.max(0,(view?.innerHeight || 768)-mixer.offsetHeight-10)));
     mixer.style.left=`${mixerState.x}px`;mixer.style.top=`${mixerState.y}px`;
-    mixerBody.hidden=Boolean(mixerState.collapsed);collapse.textContent=mixerState.collapsed?'Open':'Collapse';
   }
-  collapse.onclick=()=>{mixerState.collapsed=!mixerState.collapsed;positionMixer();persistMixer();};
+  let suppressMixerClick=false;
+  collapse.onclick=event=>{if(suppressMixerClick && event.detail!==0){suppressMixerClick=false;return;}suppressMixerClick=false;mixerState.collapsed=!mixerState.collapsed;positionMixer();persistMixer();};
   master.oninput=()=>{mixerState.master=Number(master.value);applyVolume();};master.onchange=persistMixer;
   let drag;
-  mixerHeader.addEventListener('pointerdown',event=>{if(event.target.closest('button'))return;drag={x:event.clientX,y:event.clientY,left:mixerState.x,top:mixerState.y};mixerHeader.setPointerCapture?.(event.pointerId);});
-  mixerHeader.addEventListener('pointermove',event=>{if(!drag)return;mixerState.x=drag.left+event.clientX-drag.x;mixerState.y=drag.top+event.clientY-drag.y;positionMixer();});
-  const endDrag=()=>{if(drag){drag=null;persistMixer();}};
+  mixerHeader.addEventListener('pointerdown',event=>{suppressMixerClick=false;if(event.button!==0 || (!mixerState.collapsed && event.target.closest('button')))return;drag={x:event.clientX,y:event.clientY,left:mixerState.x,top:mixerState.y,moved:false};(event.target.closest('button') || mixerHeader).setPointerCapture?.(event.pointerId);});
+  mixerHeader.addEventListener('pointermove',event=>{if(!drag)return;const dx=event.clientX-drag.x,dy=event.clientY-drag.y;if(!drag.moved && Math.hypot(dx,dy)<5)return;drag.moved=true;mixerState.x=drag.left+dx;mixerState.y=drag.top+dy;positionMixer();});
+  const endDrag=()=>{if(drag){suppressMixerClick=drag.moved;drag=null;persistMixer();}};
   mixerHeader.addEventListener('pointerup',endDrag);mixerHeader.addEventListener('pointercancel',endDrag);
   const resizeMixer=()=>positionMixer();document.defaultView?.addEventListener('resize',resizeMixer);
   unsubs.push(()=>{document.defaultView?.removeEventListener('resize',resizeMixer);mixer.remove();audioContext?.close().catch(()=>{});});
@@ -348,7 +364,7 @@ export async function setup(ctx) {
   function status(text,error=false) {
     if(disposed)return;
     for(const name of ['status','statusActions']) {$(name).textContent=text;$(name).classList.toggle('et-error',error);}
-    for(const node of messageStatuses.get(messagePlaybackId) || [])node.textContent=text;
+    for(const node of messageStatuses.get(messagePlaybackId) || []){node.textContent=text;node.title=text;}
   }
   const abortError = () => new DOMException('Stopped','AbortError');
   const scope = c => c.mode === 'gemini' ? 'gemini' : `native:${c.connection}`;
@@ -834,7 +850,7 @@ export async function setup(ctx) {
       mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,concurrency:Number($('concurrency').value),
-      prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,
+      prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,
       extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,autoDesignNPCs:$('autoDesignNPCs').checked,plannerMode:$('plannerMode')?$('plannerMode').value:(config.plannerMode||'llm'),useFastClassifier:$('useFastClassifier')?$('useFastClassifier').checked:false,useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
   }
   function casting(c=config) {
@@ -903,7 +919,7 @@ export async function setup(ctx) {
     if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);
     if($('jevKey'))$('jevKey').value=config.jevApiKey||'';
     if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';
-    for(const name of ['allowLlmFallback','allowVoiceFallback','normalizeLoudness'])$(name).checked=Boolean(config[name]);
+    for(const name of ['allowLlmFallback','allowVoiceFallback','normalizeLoudness','sectionButtons'])$(name).checked=Boolean(config[name]);
     $('prefetch').value=config.prefetch;
     // Per-speaker mixing and exclusions need individual passages.
     $('batchGemini').checked=false;$('batchGeminiWrap').hidden=true;
@@ -913,13 +929,13 @@ export async function setup(ctx) {
   function setBusy(value) {
     busy=value;
     for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','apply','auto'])if($(name))$(name).disabled=value;
-    for (const name of ['model','planner','plannerMode','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','testTts','guidePlanner','importCast'])if($(name))$(name).disabled=value;
+    for (const name of ['model','planner','plannerMode','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','testTts','guidePlanner','importCast'])if($(name))$(name).disabled=value;
     if($('play'))$('play').disabled=value || !plan;
     if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
   }
-  function clearPlan() {plan=null;planSource=null;selectedPassages.clear();excludedPassages.clear();$('preview').replaceChildren();$('planJson').value='';$('play').disabled=true;renderMixer();}
+  function clearPlan() {plan=null;planSource=null;selectedPassages.clear();excludedPassages.clear();$('preview').replaceChildren();$('planJson').value='';$('play').disabled=true;$('latestNotice').hidden=true;renderMixer();refreshSectionControls();}
   function stop(show=true) {
     revision++;controller?.abort();controller=null;planningSource=null;
     currentAudio?.pause();finishAudio?.();currentAudio=null;finishAudio=null;
@@ -1034,12 +1050,28 @@ export async function setup(ctx) {
     if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return false;
     const restored=restoreAttribution(saved.attribution,saved.transcript,casting(config));
     config.casts[scope(config)]=restored.npcs;
-    plan={...restored,warning:saved.warning || ''};planSource={messageId,content:saved.content,transcript:saved.transcript,chatId:targetChat};
+    plan={...restored,warning:saved.warning || ''};planSource={messageId,content:saved.content,transcript:saved.transcript,chatId:targetChat,sections:saved.sections};
     selectedPassages.clear();excludedPassages.clear();for(const index of saved.excluded || [])excludedPassages.add(index);
-    renderPreview();return true;
+    renderCast();renderPreview();return true;
+  }
+  let latestNoticeVersion=0;
+  function refreshLatestNotice(){
+    const version=++latestNoticeVersion,targetChat=chatId;
+    const latest=ctx.messages.getRecent(200).filter(v=>!v.is_user && !v.extra?.is_system).at(-1);
+    const content=latest && ctx.messages.getContent(latest.id);
+    const current=plan && latest && planSource?.chatId===targetChat && planSource.messageId===latest.id && planSource.content===content;
+    $('latestNotice').hidden=!current;
+    if(current || !latest || !targetChat)return;
+    void (async()=>{
+      const saved=await ctx.settings.get(await planKey(targetChat,latest.id));
+      const matches=saved?.content===content && saved.attribution?.segments?.length && await recordingMatchesTranscript(saved,content);
+      if(!disposed && version===latestNoticeVersion && targetChat===chatId && ctx.messages.getContent(latest.id)===content)$('latestNotice').hidden=!matches;
+    })().catch(()=>{});
   }
   function renderPreview() {
+    refreshLatestNotice();
     $('preview').replaceChildren();
+    if(config.sectionButtons){const sections=document.createElement('div');sections.className='et-row';appendSectionButtons(sections,planSource,plan.segments,planSource.messageId);$('preview').append(sections);}
     if(plan.warning){const warning=document.createElement('p');warning.setAttribute('role','note');warning.textContent=`Jev failed: ${plan.warning}. Explicit LLM fallback supplied this attribution.`;$('preview').append(warning);}
     for(const [index,segment] of plan.segments.entries()) {
       const card=document.createElement('div');card.className='et-card';
@@ -1063,7 +1095,7 @@ export async function setup(ctx) {
       const style=s.style || ''; return {...s,style:prefix && style.startsWith(prefix)?style.slice(prefix.length):style===actor?.style?'':style};
     })},null,2);
     $('play').disabled=busy;
-    renderMixer();void refreshCacheStatus();
+    renderMixer();void refreshCacheStatus();refreshSectionControls();
   }
   async function refreshCacheStatus(){
     if(!planSource)return;
@@ -1095,7 +1127,7 @@ export async function setup(ctx) {
     const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
     return canonical(saved)===canonical(transcript);
   }
-  async function prepare(messageId,autoPlay=false,contentOverride) {
+  async function prepare(messageId,autoPlay=false,contentOverride,forceReplan=false) {
     if(!chatId)throw new Error('Open a chat first.');
     stop(false);clearPlan();config=capture();validateSettings(config);
     const token=revision, targetChat=chatId;
@@ -1115,7 +1147,7 @@ export async function setup(ctx) {
         if(ctrl.signal.aborted || token!==revision)return;
         transcript=replacePersonaMacro(transcript,name);context=replacePersonaMacro(context,name);
       }
-      if(await restoreSavedPlan(messageId)){
+      if(!forceReplan && await restoreSavedPlan(messageId)){
         status('Saved attribution reused.');
         if(autoPlay){controller=null;setBusy(false);await play();}
         return;
@@ -1162,7 +1194,7 @@ export async function setup(ctx) {
         }
       }
 
-      const combined = [];
+      const combined = [],playbackSections=[];
       let previous = '';
 
       if (fastPlan) {
@@ -1171,8 +1203,13 @@ export async function setup(ctx) {
           if (!actor.voice) actor.voice = fastPlan.segments.find(s => normalizeName(s.speaker) === normalizeName(actor.speaker))?.voice || '';
         }
         combined.push(...stripBase(fastPlan.segments));
+        playbackSections.push(...fastPlan.segments.map((_,index)=>[index]));
       } else {
         const sections = planningSections(transcript);
+        const progressKey=`progress:${(await planKey(targetChat,messageId)).slice(5)}`;
+        const savedProgress=forceReplan?null:await ctx.settings.get(progressKey).catch(()=>null);
+        if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
+        const completedSections=savedProgress?.content===content && savedProgress.transcript===transcript && Array.isArray(savedProgress.sections)?savedProgress.sections.filter(saved=>saved && typeof saved.text==='string'):[];
         let timeoutSplits=0;
         streaming = autoPlay && sections.length > 1 && !config.autoDesignNPCs;
         if (streaming) {
@@ -1187,7 +1224,11 @@ export async function setup(ctx) {
           status(`Planning section ${index+1}/${sections.length}: speakers and voices…`);
           let result;
           try {
-            result = await rpc('plan', {
+            const cachedSection=completedSections.find(saved=>saved.index===index && saved.text===section);
+            if(cachedSection){
+              try{result=restoreAttribution(cachedSection.attribution,section,snapshot);status(`Saved section ${index+1}/${sections.length} reused.`);}catch{result=null;}
+            }
+            if(!result)result = await rpc('plan', {
               transcript: section,
               config: snapshot,
               timeoutMs: 90000,
@@ -1210,10 +1251,17 @@ export async function setup(ctx) {
           }
           if (token !== revision || targetChat !== chatId || disposed) return;
           const checked = validatePlan({ segments: stripBase(result.segments) }, section, snapshot);
+          const savedSection={index,text:section,attribution:attributionPlan(checked,snapshot)};
+          const existing=completedSections.findIndex(saved=>saved.index===index && saved.text===section);
+          if(existing<0)completedSections.push(savedSection);else completedSections[existing]=savedSection;
+          try{await ctx.settings.set(progressKey,{content,transcript,sections:completedSections});}
+          catch(error){status(`Section ready, but planning progress could not be saved: ${error.message}`,true);}
+          if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
           snapshot.npcs = checked.npcs;
           for (const actor of snapshot.fixed) {
             if (!actor.voice) actor.voice = checked.segments.find(s => normalizeName(s.speaker) === normalizeName(actor.speaker))?.voice || '';
           }
+          playbackSections.push(checked.segments.map((_,index)=>combined.length+index));
           combined.push(...stripBase(checked.segments)); previous = section;
           if (streaming) {
             const offset=combined.length-checked.segments.length;
@@ -1225,7 +1273,7 @@ export async function setup(ctx) {
       }
       // Validate the complete original reply before audio or cast persistence.
       const validated=validatePlan({segments:combined},transcript,snapshot);
-      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat};
+      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat,sections:playbackSections};
       config.casts[scope(config)]=validated.npcs;
       for(const actor of config.fixed) {
         if(!actor.voice)actor.voice=validated.segments.find(s=>normalizeName(s.speaker)===normalizeName(actor.speaker))?.voice || '';
@@ -1537,28 +1585,78 @@ export async function setup(ctx) {
   }
   async function playMessage(messageId) {
     if(controller && messagePlaybackId===messageId){stop();return;}
-    messagePlaybackId=messageId;
-    status('Checking saved audio…');
-    const content=ctx.messages.getContent(messageId);
-    let recording;try{recording=await recordingStore('get',recordingKey(chatId,messageId));}catch{}
-    if(await restoreSavedPlan(messageId)){await play();return;}
-    if(recording?.content===content && await recordingMatchesTranscript(recording,content)){
-      const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
-      const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).map(segment=>segment.text).join(' ');
-      if(canonical(recordedText)===canonical(recording.transcript || transcriptFromMessage(content)) && Array.from(recording.blobs || []).every(Boolean) && recording.blobs?.length===recording.segments?.length){await replayRecording(messageId);return;}
-    }
-    await prepare(messageId,true);
+    if(messageOperation?.messageId===messageId && messageOperation.chatId===chatId)return;
+    stop(false);messagePlaybackId=messageId;
+    const operation={messageId,chatId,token:revision};messageOperation=operation;
+    const valid=()=>!disposed && chatId===operation.chatId && revision===operation.token;
+    try {
+      const content=ctx.messages.getContent(messageId);
+      // A validated plan remains playable even if saving it failed or has not finished.
+      if(plan && planSource?.chatId===chatId && planSource.messageId===messageId && planSource.content===content && await recordingMatchesTranscript(planSource,content)){
+        if(valid()){status('Reusing the current speech plan.');await play();}return;
+      }
+      status('Checking saved plan and audio…');
+      if(await restoreSavedPlan(messageId)){if(valid())await play();return;}
+      if(!valid())return;
+      let recording;try{recording=await recordingStore('get',recordingKey(operation.chatId,messageId));}catch{}
+      if(!valid())return;
+      if(recording?.content===content && await recordingMatchesTranscript(recording,content)){
+        if(!valid())return;
+        const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
+        const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).map(segment=>segment.text).join(' ');
+        if(canonical(recordedText)===canonical(recording.transcript || transcriptFromMessage(content)) && Array.from(recording.blobs || []).every(Boolean) && recording.blobs?.length===recording.segments?.length){await replayRecording(messageId);return;}
+      }
+      if(valid())await prepare(messageId,true);
+    } finally {if(messageOperation===operation)messageOperation=null;}
   }
+  function sectionsFor(source,segments){
+    const sections=source?.sections,indices=Array.isArray(sections)?sections.flat():[];
+    if(Array.isArray(sections) && sections.every(section=>Array.isArray(section) && section.length) && indices.length===segments.length && indices.every((index,position)=>Number.isInteger(index) && index===position))return sections;
+    return segments.map((_,index)=>[index]);
+  }
+  function appendSectionButtons(container,source,segments,messageId){
+    for(const [section,indices] of sectionsFor(source,segments).entries()){
+      const button=document.createElement('button');button.type='button';button.dataset.choirSection=section;button.innerHTML=`${ICON_PLAY} ${section+1}`;
+      button.setAttribute('aria-label',`Play Choir section ${section+1}`);button.title=`Section ${section+1}: ${indices.map(index=>segments[index].text).join(' ').slice(0,120)}`;
+      button.style.cssText='display:inline-flex;align-items:center;gap:4px;padding:3px 6px;border:1px solid #8886;border-radius:5px;background:transparent;color:inherit;font:12px system-ui;cursor:pointer';
+      button.onclick=()=>run(()=>playSection(messageId,section));container.append(button);
+    }
+  }
+  async function playSection(messageId,section){
+    const targetChat=chatId,content=ctx.messages.getContent(messageId);
+    if(controller && messagePlaybackId===messageId){stop();return;}
+    if(!(plan && planSource?.messageId===messageId && planSource.chatId===targetChat && planSource.content===content))await prepare(messageId);
+    if(chatId!==targetChat || ctx.messages.getContent(messageId)!==content || planSource?.messageId!==messageId || planSource.content!==content)return;
+    const indices=sectionsFor(planSource,plan.segments)[section];if(!indices)throw new Error('This section changed. Choose a current section.');
+    selectedPassages.clear();for(const index of indices)selectedPassages.add(index);renderPreview();messagePlaybackId=messageId;await play({selected:true});
+  }
+  async function renderSectionControls(entry){
+    const version=++entry.version,targetChat=chatId,content=ctx.messages.getContent(entry.messageId);
+    entry.details.hidden=!config?.sectionButtons;entry.list.replaceChildren();if(entry.details.hidden)return;
+    let source,segments;
+    if(planSource?.chatId===targetChat && planSource.messageId===entry.messageId && planSource.content===content){source=planSource;segments=plan.segments;}
+    else {
+      const saved=await ctx.settings.get(await planKey(targetChat,entry.messageId)).catch(()=>null);
+      if(saved && saved.content===content && await recordingMatchesTranscript(saved,content)){source=saved;segments=saved.attribution?.segments;}
+    }
+    if(disposed || entry.version!==version || chatId!==targetChat || !messageSections.has(entry) || !config?.sectionButtons)return;
+    if(segments?.length)appendSectionButtons(entry.list,source,segments,entry.messageId);
+    else {const label=document.createElement('span');label.textContent='Plan this message to show its sections.';entry.list.append(label);}
+  }
+  function refreshSectionControls(){for(const entry of messageSections)void renderSectionControls(entry).catch(error=>{if(!disposed)status(`Section controls unavailable: ${error.message}`,true);});}
   const decorateMessage=(target,context={})=>{
     const messageId=context.messageId || ctx.dom.getMessageId?.(context.node || target) || context.scope?.match(/^message:(.*):(?:bubble|minimal):footer$/)?.[1] || context.scope?.split(':')[1];
     if(!messageId)return;
-    const controls=document.createElement('div');controls.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px';
-    const button=document.createElement('button');button.type='button';button.innerHTML=`${ICON_PLAY} Play Choir`;button.title='Play or stop Choir audio';button.setAttribute('aria-label','Play or stop Choir audio for this message');
-    button.style.cssText='cursor:pointer;border:1px solid currentColor;border-radius:6px;padding:4px 8px;background:transparent;color:inherit;font:inherit';
-    const progress=document.createElement('span');progress.setAttribute('role','status');progress.style.fontSize='0.8em';
+    const controls=document.createElement('div');controls.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:4px';
+    const button=document.createElement('button');button.type='button';button.innerHTML=ICON_PLAY;button.title='Play Choir · click again to stop';button.setAttribute('aria-label','Play or stop Choir audio for this message');
+    button.style.cssText='cursor:pointer;display:inline-grid;place-items:center;flex:0 0 28px;width:28px;height:28px;min-width:0;min-height:0;border:1px solid #8886;border-radius:50%;padding:0;background:transparent;color:inherit;font:inherit';
+    const progress=document.createElement('span');progress.setAttribute('role','status');progress.style.cssText='font-size:0.75em;max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
     let statuses=messageStatuses.get(messageId);if(!statuses){statuses=new Set();messageStatuses.set(messageId,statuses);}statuses.add(progress);
-    button.onclick=()=>run(()=>playMessage(messageId));controls.append(button,progress);target.append(controls);
-    return ()=>{controls.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
+    const sections=document.createElement('details');sections.hidden=true;sections.style.cssText='font:12px system-ui;max-width:100%';
+    const summary=document.createElement('summary');summary.textContent='Sections';summary.style.cursor='pointer';const sectionList=document.createElement('div');sectionList.style.cssText='display:flex;flex-wrap:wrap;gap:4px;padding-top:5px';sections.append(summary,sectionList);
+    const entry={messageId,details:sections,list:sectionList,version:0};messageSections.add(entry);void renderSectionControls(entry);
+    button.onclick=()=>run(()=>playMessage(messageId));controls.append(button,progress,sections);target.append(controls);
+    return ()=>{entry.version++;messageSections.delete(entry);controls.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
   };
   const registerDecorator=ctx.ui.registerDomDecorator?.bind(ctx.ui) || ctx.registerDomDecorator?.bind(ctx);
   if(registerDecorator) {
@@ -1569,6 +1667,8 @@ export async function setup(ctx) {
     unsubs.push(()=>handle.destroy());
   }
   function renderMessages() {
+    refreshLatestNotice();
+    refreshSectionControls();
     $('messages').replaceChildren();
     const recent=ctx.messages.getRecent(20).filter(v=>!v.extra?.is_system);
     for(const message of recent) {
@@ -1619,7 +1719,12 @@ export async function setup(ctx) {
   });
   $('latest').onclick=()=>run(async()=>{
     const latest=ctx.messages.getRecent(200).filter(v=>!v.is_user && !v.extra?.is_system).at(-1);
-    if(!latest)throw new Error('No assistant reply in the active chat.');await prepare(latest.id);
+    if(!latest)throw new Error('No assistant reply in the active chat.');
+    const targetChat=chatId,content=ctx.messages.getContent(latest.id);
+    const alreadyShown=plan && planSource?.messageId===latest.id && planSource.content===ctx.messages.getContent(latest.id);
+    const alreadyPlanned=alreadyShown || await restoreSavedPlan(latest.id);
+    if(disposed || targetChat!==chatId || ctx.messages.getContent(latest.id)!==content)return;
+    await prepare(latest.id,false,undefined,Boolean(alreadyPlanned));
   });
   $('stop').onclick=()=>stop();$('play').onclick=()=>run(play);
   $('pause').onclick=()=>{if(!currentAudio)return;if(currentAudio.paused){currentAudio.play().catch(e=>status(e.message,true));$('pause').textContent='Pause';}else{currentAudio.pause();$('pause').textContent='Resume';}};
@@ -1728,6 +1833,7 @@ export async function setup(ctx) {
   $('load').onclick=()=>run(async()=>{config=capture();loadVersion++;await loadProviders();clearPlan();status('Connections and voices reloaded.');});
   $('plannerMode')?.addEventListener('change',updatePlannerVisibility);
   $('allowLlmFallback').onchange=updatePlannerVisibility;
+  $('sectionButtons').onchange=()=>run(async()=>{config.sectionButtons=$('sectionButtons').checked;refreshSectionControls();if(plan)renderPreview();if(chatId)await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));});
   $('guidePlanner').onclick=()=>$('testPlanner').click();
   $('testTts').onclick=()=>castRows[0]?.row.querySelector('[data-choir-preview]')?.click();
   $('playSelected').onclick=()=>run(()=>play({selected:true}));
@@ -1782,6 +1888,7 @@ export async function setup(ctx) {
     audioDatabase?.then(db=>db.close()).catch(()=>{});
     sessionAudio.clear();
   };
+  mixer.addEventListener('choir:replace',cleanup,{once:true});unsubs.push(()=>mixer.removeEventListener('choir:replace',cleanup));
   await run(switchChat);
   return cleanup;
 }
