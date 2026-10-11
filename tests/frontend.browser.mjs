@@ -88,7 +88,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   try {
     let cleanup=await setup(ctx);
     const $=name=>root.querySelector(`[data-et="${name}"]`) || settingsRoot.querySelector(`[data-et="${name}"]`);
-    assert.match(minimalFooter.querySelector('button').textContent,/Play Choir/);
+    assert.match(minimalFooter.querySelector('button').title,/Play Choir/);
     assert.match($('planner').textContent,/GPT planner · openai · gpt-text-test/);
     $('planner').value='planner-a';$('testPlanner').click();await until(()=>$('status').textContent.includes('Planner test passed'));
     assert.equal(requests.find(request=>request.action==='testPlanner').input.connectionId,'planner-a');
@@ -125,7 +125,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     const replay=[...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay');
     replay.click();await until(()=>$('status').textContent==='Replay finished.');
     assert.equal(requests.filter(v=>v.action==='gemini').length,generated);
-    $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
+    $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3 && !$('latest').disabled);
     assert.ok(!JSON.stringify([...store.values()]).includes('test-key'));
     blockAudio=true;$('play').click();await tick();const previous=requests.filter(v=>v.action==='gemini').length;
     $('stop').click();await tick();assert.equal(requests.filter(v=>v.action==='gemini').length,previous);
@@ -137,7 +137,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     $('fixed').querySelectorAll('[data-choir-voice]')[2].value='coral';
     $('save').click();await until(()=>$('status').textContent.includes('retention saved'));
     $('key').value='mixed-key';
-    $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
+    $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3 && !$('latest').disabled);
     const beforeMixed=requests.filter(request=>request.action==='gemini').length;
     $('play').click();await until(()=>$('status').textContent.includes('Audio saved'));
     assert.equal(nativeRequests.length,1);assert.equal(nativeRequests[0].voice,'coral');
@@ -155,7 +155,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.match($('fixed').querySelector('[data-choir-voice]').textContent,/onyx · Male/);
     for(const [index,select] of [...$('fixed').querySelectorAll('[data-choir-voice]')].entries())select.value=['alloy','coral','onyx'][index];
     $('styleParam').value='instructions';$('concurrency').value='2';$('save').click();await tick();
-    $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
+    $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3 && !$('latest').disabled);
     $('play').click();await until(()=>$('status').textContent.includes('finished'));
     assert.equal(nativeRequests.length,3);
     assert.equal(peakTTS,2);assert.equal(store.get('chat:chat-a').concurrency,2);
@@ -171,7 +171,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
       await until(()=>$('status').textContent.includes('No saved audio'));
     } finally {Date.now=realNow;}
     $('retention').value='session';$('save').click();await until(()=>$('status').textContent.includes('retention saved'));
-    $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
+    $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3 && !$('latest').disabled);
     $('play').click();await until(()=>$('status').textContent.includes('kept for this session'));
     const syntheses=nativeRequests.length;
     [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
@@ -181,7 +181,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     await until(()=>$('status').textContent.includes('No saved audio'));
     // Create a persistent recording for the edit and deletion checks.
     $('retention').value='forever';$('save').click();await until(()=>$('status').textContent.includes('retention saved'));
-    $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3);
+    $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3 && !$('latest').disabled);
     $('play').click();await until(()=>$('status').textContent.includes('Audio saved'));
     $('deleteChatAudio').click();await until(()=>$('status').textContent.includes('All Choir audio deleted'));
     [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
