@@ -279,17 +279,28 @@ function loudnessGain(channels, target=0.12) {
 }
 
 function castExport(config) {
-  const clean=castImport({format:'choir-cast',version:1,fixed:config.fixed,casts:config.casts});
+  const clean=castImport({format:'choir-cast',version:1,fixed:config.fixed,casts:config.casts,connectionMode:config.connectionMode,singleVoices:config.singleVoices});
   return {format:'choir-cast',version:1,...clean};
 }
 
 function castImport(raw) {
   if(raw?.format!=='choir-cast' || raw.version!==1 || !Array.isArray(raw.fixed) || !raw.casts || typeof raw.casts!=='object' || Array.isArray(raw.casts))throw new Error('Expected a Choir cast export (version 1).');
+  const routing={};
+  if(raw.connectionMode!==undefined){if(!['one','several'].includes(raw.connectionMode))throw new Error('Invalid cast connection mode.');routing.connectionMode=raw.connectionMode;}
+  if(raw.singleVoices!==undefined){
+    if(!raw.singleVoices || typeof raw.singleVoices!=='object' || Array.isArray(raw.singleVoices))throw new Error('Invalid single-provider voice choices.');
+    routing.singleVoices=Object.fromEntries(Object.entries(raw.singleVoices).map(([route,choices])=>{
+      if(!/^(gemini|native:[\w.-]+)$/.test(route) || !choices || typeof choices!=='object' || Array.isArray(choices) || Object.keys(choices).length>550)throw new Error('Invalid single-provider voice choices.');
+      return [route,Object.fromEntries(Object.entries(choices).map(([speaker,voice])=>{
+        if(!speaker.trim() || speaker.length>100 || typeof voice!=='string' || voice.length>1000)throw new Error('Invalid single-provider voice choice.');return [speaker,voice];
+      }))];
+    }));
+  }
   const clean=actor=>{
     if(!actor || typeof actor.speaker!=='string' || typeof actor.voice!=='string' || typeof actor.style!=='string')throw new Error('Invalid imported cast row.');
     return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
   };
-  return {fixed:raw.fixed.map(clean),casts:Object.fromEntries(Object.entries(raw.casts).map(([route,actors])=>{
+  return {...routing,fixed:raw.fixed.map(clean),casts:Object.fromEntries(Object.entries(raw.casts).map(([route,actors])=>{
     if(!Array.isArray(actors) || actors.length>500 || !/^(gemini|native:[\w.-]+)$/.test(route))throw new Error('Invalid imported cast provider.');
     return [route,actors.map(clean)];
   }))};
