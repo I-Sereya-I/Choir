@@ -2,6 +2,8 @@ import { GEMINI_VOICES, normalizeName, normalizeVoiceCatalogue, transcriptFromMe
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
 const ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
+const ICON_NEXT = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="m8 7 7 5-7 5z" fill="currentColor" stroke="currentColor" stroke-linejoin="round"/><path d="M17 8v8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+const ICON_PREVIOUS = ICON_NEXT.replace('<path d="m8','<g transform="translate(24 0) scale(-1 1)"><path d="m8').replace('</svg>','</g></svg>');
 const ICON_PAUSE = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
 const ICON_SEARCH = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`;
 const ICON_SPARKLE = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg>`;
@@ -70,6 +72,10 @@ export async function setup(ctx) {
     .ensemble-tts .et-check{display:inline-flex;gap:6px;align-items:center;cursor:pointer;font-size:0.85em}
     .ensemble-tts .et-check input{width:auto;margin:0;cursor:pointer}
     .ensemble-tts .et-card{padding:10px 12px;border:1px solid rgba(128,128,128,0.25);border-radius:8px;background:rgba(128,128,128,0.03);margin:8px 0}
+    .ensemble-tts .et-cast-row{padding:6px 10px;margin:4px 0}
+    .ensemble-tts .et-cast-header{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:28px}
+    .ensemble-tts .et-cast-header strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.9em}
+    .ensemble-tts .et-cast-editor{margin-top:10px;padding-top:10px;border-top:1px solid rgba(128,128,128,0.2)}
     .ensemble-tts .et-status{white-space:pre-wrap;padding:8px 12px;border-radius:6px;background:rgba(128,128,128,0.08);font-size:0.88em;margin:8px 0}
     .ensemble-tts [hidden]{display:none!important}
     .ensemble-tts .et-error{color:#ef7878}
@@ -96,6 +102,8 @@ export async function setup(ctx) {
       <div class="et-toolbar">
         <button data-et="play" class="et-btn-primary" disabled>Play plan</button>
         <button data-et="pause" disabled>Pause</button>
+        <button data-et="previous" disabled aria-label="Previous spoken block" title="Previous narration or character turn">${ICON_PREVIOUS}</button>
+        <button data-et="next" disabled aria-label="Next spoken block" title="Skip to the next narration or character turn">${ICON_NEXT}</button>
         <button data-et="stop">Stop</button>
         <button data-et="latest">Plan latest</button>
         <button data-et="save" class="et-btn-primary">Save cast</button>
@@ -105,16 +113,7 @@ export async function setup(ctx) {
     <p data-et="latestNotice" role="status" hidden>latest already planned, click on plan latest to redo it</p>
     <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
     <div class="et-status" data-et="statusActions" hidden></div>
-    <details data-et="setupGuide">
-      <summary>Guided setup</summary>
-      <ol><li>Choose a planner engine and connection, then <button data-et="guidePlanner">Test planner connection</button>.</li>
-      <li>Choose a speech provider and narrator voice, then <button data-et="testTts">Test TTS connection</button>. This generates a short billable preview.</li>
-      <li>Check the automatically filled persona and character names. Use each voice’s preview button to audition it.</li>
-      <li>Save the cast, plan a reply, and inspect its speakers before playback.</li></ol>
-      <details><summary>Optional roleplay formatting suggestion</summary><p>If attribution is ambiguous, you may add this to your chat prompt: “Put spoken dialogue in double quotes and identify the speaker nearby. Leave actions as narration.” Choir never changes your chat prompt.</p></details>
-      <p>Provider failures stop playback. Choir never switches TTS providers automatically.</p>
-    </details>
-
+    <div data-et="seekHost"></div>
     <div class="et-section-header">
       <h3>Lead Cast</h3>
       <button data-et="add" class="et-btn-subtle">+ Add character</button>
@@ -131,6 +130,7 @@ export async function setup(ctx) {
       <h3>Speech & Planner</h3>
       <div class="et-row" style="margin:0">
         <button data-et="testPlanner" class="et-btn-subtle">Test planner</button>
+        <button data-et="testTts" class="et-btn-subtle">Test TTS</button>
         <button data-et="load" class="et-btn-subtle">Reload</button>
       </div>
     </div>
@@ -285,7 +285,7 @@ export async function setup(ctx) {
   }
   const recordingKey=(chat,message)=>JSON.stringify([audioNamespace,chat,message]);
   const unsubs = [];
-  const messageStatuses=new Map(),messageSections=new Set();let messagePlaybackId=null,messageOperation=null;
+  const messageStatuses=new Map(),messageSections=new Set(),messageNextButtons=new Set(),seekControls=new Set();let messagePlaybackId=null,messageOperation=null;
   let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, planningSource=null, busy=false;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
   const voiceCatalogues=new Map();
@@ -302,7 +302,7 @@ export async function setup(ctx) {
     return `plan:${Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join('')}`;
   };
   const selectedPassages=new Set(), excludedPassages=new Set();
-  let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback;
+  let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio;
   // Keep the launcher unobtrusive on every load, including existing expanded preferences.
   let mixerState={master:1,channels:{},x:20,y:80,...await ctx.settings.get('ui:mixer').catch(()=>null),collapsed:true};
   const mixer=document.createElement('section');mixer.className='choir-mixer';mixer.dataset.choirMixer='';mixer.setAttribute('aria-label','Choir voice mixer');
@@ -316,7 +316,12 @@ export async function setup(ctx) {
   const masterLabel=document.createElement('label');masterLabel.textContent='Master volume';masterLabel.append(master);
   const mixerPlay=document.createElement('button');mixerPlay.type='button';mixerPlay.textContent='Play / pause';
   mixerPlay.onclick=()=>{if(currentAudio)$('pause').click();else run(()=>play({resume:true}));};
-  mixerBody.append(masterLabel,mixerPlay,speakerLabel,channelsRoot);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
+  const mixerNext=document.createElement('button');mixerNext.type='button';mixerNext.innerHTML=ICON_NEXT;mixerNext.title='Next spoken block';mixerNext.setAttribute('aria-label','Next spoken block');mixerNext.disabled=true;mixerNext.onclick=()=>advancePlayback?.();
+  const mixerPrevious=document.createElement('button');mixerPrevious.type='button';mixerPrevious.innerHTML=ICON_PREVIOUS;mixerPrevious.title='Previous spoken block';mixerPrevious.setAttribute('aria-label','Previous spoken block');mixerPrevious.disabled=true;mixerPrevious.onclick=()=>advancePlayback?.(-1);
+  for(const button of [mixerPrevious,mixerNext])button.style.cssText='width:30px;height:30px;display:grid;place-items:center;border:0;padding:0';
+  const transport=document.createElement('div');transport.style.cssText='display:flex;gap:6px;align-items:center';transport.append(mixerPrevious,mixerPlay,mixerNext);
+  const mixerSeek=makeSeekControl();$('seekHost').append(makeSeekControl().root);
+  mixerBody.append(masterLabel,transport,mixerSeek.root,speakerLabel,channelsRoot);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
   const persistMixer=()=>ctx.settings.set('ui:mixer',mixerState).catch(error=>status(`Mixer preferences could not be saved: ${error.message}`,true));
   function applyVolume(){
     const volume=mixerVolume(mixerState.master,currentSpeaker,mixerState.channels);
@@ -347,6 +352,7 @@ export async function setup(ctx) {
   const resizeMixer=()=>positionMixer();document.defaultView?.addEventListener('resize',resizeMixer);
   unsubs.push(()=>{document.defaultView?.removeEventListener('resize',resizeMixer);mixer.remove();audioContext?.close().catch(()=>{});});
   function renderMixer(){
+    updateNextControls();
     channelsRoot.replaceChildren();speakerLabel.textContent=currentSpeaker?`Speaking: ${currentSpeaker}`:'Ready to play';
     for(const speaker of new Set(plan?.segments.map(s=>s.speaker) || [])){
       const channel=Object.hasOwn(mixerState.channels,speaker)?mixerState.channels[speaker]:{volume:1,mute:false,solo:false};Object.defineProperty(mixerState.channels,speaker,{value:channel,writable:true,enumerable:true,configurable:true});
@@ -359,6 +365,30 @@ export async function setup(ctx) {
       channelsRoot.append(row);
     }
     positionMixer();
+  }
+  function updateNextControls(){
+    const available=Boolean(advancePlayback && skipAudio && activePlayback?.chatId===chatId);
+    $('next').disabled=!available;$('previous').disabled=!available;mixerNext.disabled=!available;mixerPrevious.disabled=!available;
+    for(const entry of messageNextButtons){const active=available && activePlayback.messageId===entry.messageId;for(const button of entry.buttons){button.hidden=!active;button.disabled=!active;}}
+    updateSeekControls();
+  }
+  function makeSeekControl(messageId){
+    const root=document.createElement('div');root.hidden=true;root.style.cssText='display:flex;align-items:center;gap:6px;max-width:100%;font:11px system-ui';
+    const slider=document.createElement('input');slider.type='range';slider.min='0';slider.max='0';slider.step='0.1';slider.value='0';slider.disabled=true;slider.setAttribute('aria-label','Seek in current spoken block');slider.style.cssText='width:140px;min-width:60px;max-width:100%;padding:0;accent-color:Highlight';
+    const time=document.createElement('span');time.style.whiteSpace='nowrap';root.append(slider,time);
+    const control={root,slider,time,messageId};seekControls.add(control);
+    slider.oninput=()=>{const audio=currentAudio;if(disposed || root.hidden || slider.disabled || !audio || !activePlayback || (messageId && messageId!==activePlayback.messageId) || !Number.isFinite(audio.duration))return;audio.currentTime=Math.max(0,Math.min(Number(slider.value),Math.max(0,audio.duration-0.05)));savePosition(audio.currentTime);updateSeekControls();};
+    return control;
+  }
+  function updateSeekControls(){
+    const audio=currentAudio,available=Boolean(audio && skipAudio && activePlayback?.chatId===chatId);
+    const duration=available && Number.isFinite(audio.duration)?audio.duration:0,seconds=available?audio.currentTime || 0:0;
+    const clock=value=>`${Math.floor(value/60)}:${String(Math.floor(value%60)).padStart(2,'0')}`;
+    for(const control of seekControls){
+      const visible=available && (!control.messageId || control.messageId===activePlayback.messageId);control.root.hidden=!visible;control.slider.disabled=!visible || duration<=0;
+      control.slider.max=String(duration);control.slider.value=String(Math.min(seconds,duration));control.time.textContent=`${clock(seconds)} / ${clock(duration)}`;
+      const part=(activePlayback?.chunk ?? 0)+1;control.slider.title=`${currentSpeaker || 'Current block'}${part>1?` · part ${part}`:''}`;control.slider.setAttribute('aria-valuetext',`${clock(seconds)} of ${clock(duration)}${part>1?`, part ${part}`:''}`);
+    }
   }
   $('showMixer').onclick=()=>{mixerState.collapsed=false;positionMixer();persistMixer();};positionMixer();
   function status(text,error=false) {
@@ -641,9 +671,15 @@ export async function setup(ctx) {
     if (defaultQuery) doSearch();
   }
 
-  function makeRow(actor,container,reserved=false) {
-    const row=document.createElement('div');row.className='et-card et-grid';
+  let castEditorId=0;
+  function makeRow(actor,container,reserved=false,open=false) {
+    const row=document.createElement('div');row.className='et-card et-cast-row';
+    const header=document.createElement('div');header.className='et-cast-header';
+    const heading=document.createElement('strong'),edit=document.createElement('button');edit.type='button';edit.className='et-btn-subtle';edit.dataset.choirEdit='';
+    const editor=document.createElement('div');editor.className='et-grid et-cast-editor';editor.dataset.choirCastEditor='';editor.id=`choir-cast-editor-${++castEditorId}`;editor.hidden=!open;edit.setAttribute('aria-controls',editor.id);
     const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;
+    const refreshHeading=()=>{const speaker=name.value.trim() || 'Character';heading.textContent=speaker;edit.textContent=editor.hidden?'Edit':'Done';edit.setAttribute('aria-label',editor.hidden?`Edit ${speaker}`:`Close ${speaker} editor`);edit.setAttribute('aria-expanded',String(!editor.hidden));};
+    name.addEventListener('input',refreshHeading);edit.onclick=()=>{editor.hidden=!editor.hidden;refreshHeading();};refreshHeading();header.append(heading,edit);row.append(header,editor);
     const voice=document.createElement('select');
     const route=document.createElement('select');route.dataset.choirRoute='';
     option(route,'','Use chat default');option(route,'gemini','Gemini style metadata');
@@ -829,9 +865,9 @@ export async function setup(ctx) {
     voiceWrap.append(voiceSearchRow,voice);
 
     for (const [label,node] of [['Speaker name',name],['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Pronunciation instruction',pronunciation],['Accent preference',accent],['Exclude from synthesis (keep text)',excluded]]) {
-      const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);row.append(wrap);
+      const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);editor.append(wrap);
     }
-    if(!reserved){const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();};row.append(remove);}
+    if(!reserved){const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();};editor.append(remove);}
     container.append(row);
     updateCardProviderControls();
     return {row,read:()=>({speaker:name.value.trim(),voice:voice.value,route:route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter(Boolean),pronunciation:pronunciation.value.trim(),accent:accent.value.trim(),excluded:excluded.checked})};
@@ -929,7 +965,7 @@ export async function setup(ctx) {
   function setBusy(value) {
     busy=value;
     for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','apply','auto'])if($(name))$(name).disabled=value;
-    for (const name of ['model','planner','plannerMode','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','testTts','guidePlanner','importCast'])if($(name))$(name).disabled=value;
+    for (const name of ['model','planner','plannerMode','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','testTts','importCast'])if($(name))$(name).disabled=value;
     if($('play'))$('play').disabled=value || !plan;
     if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
@@ -937,11 +973,12 @@ export async function setup(ctx) {
   }
   function clearPlan() {plan=null;planSource=null;selectedPassages.clear();excludedPassages.clear();$('preview').replaceChildren();$('planJson').value='';$('play').disabled=true;$('latestNotice').hidden=true;renderMixer();refreshSectionControls();}
   function stop(show=true) {
-    revision++;controller?.abort();controller=null;planningSource=null;
+    if(activePlayback && currentAudio)savePosition(currentAudio.currentTime || 0);
+    revision++;controller?.abort();controller=null;planningSource=null;advancePlayback=null;skipAudio=null;activePlayback=null;currentSpeaker='';
     currentAudio?.pause();finishAudio?.();currentAudio=null;finishAudio=null;
     if(objectUrl){URL.revokeObjectURL(objectUrl);objectUrl=null;}
     $('pause').disabled=true;$('pause').textContent='Pause';
-    setBusy(false);if(show)status('Stopped.');
+    setBusy(false);renderMixer();if(show)status('Stopped.');
   }
   async function save() {
     if(!chatId)throw new Error('Open a chat first.');
@@ -1321,13 +1358,13 @@ export async function setup(ctx) {
         catch(error){storageError=error.message;}
         if(token===revision){renderMessages();status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:config.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.');}
       }
-    } finally {ctrl.abort();if(planningSource?.token===token)planningSource=null;if(token===revision){controller=null;setBusy(false);}}
+    } finally {ctrl.abort();if(planningSource?.token===token)planningSource=null;if(token===revision){controller=null;advancePlayback=null;updateNextControls();setBusy(false);}}
     if(autoPlay && !streaming && token===revision)await play();
   }
-  async function playBlob(blob,signal,speaker='',offset=0,normalize=false) {
+  async function playBlob(blob,signal,speaker='',offset=0,normalize=false,paused=false) {
     if(signal.aborted)throw abortError();
     const url=URL.createObjectURL(blob);objectUrl=url;currentAudio=new Audio(url);
-    const audio=currentAudio;$('pause').disabled=true;currentSpeaker=speaker;renderMixer();applyVolume();
+    const audio=currentAudio,position=activePlayback;$('pause').disabled=true;currentSpeaker=speaker;renderMixer();applyVolume();
     const AudioContextClass=globalThis.AudioContext || globalThis.webkitAudioContext;
     let mediaSource, gain;
     try {
@@ -1341,26 +1378,27 @@ export async function setup(ctx) {
         mediaSource.connect(gain);gain.connect(audioContext.destination);audio.volume=1;applyVolume();
       }catch(error){if(signal.aborted)throw error;status(`Loudness matching unavailable: ${error.message}. Playing at mixer volume.`);}
     }
-    const seek=()=>{if(offset>0 && Number.isFinite(audio.duration))audio.currentTime=Math.min(offset,Math.max(0,audio.duration-0.05));};
+    const seek=()=>{if(offset>0 && Number.isFinite(audio.duration))audio.currentTime=Math.min(offset,Math.max(0,audio.duration-0.05));updateSeekControls();};
     audio.onloadedmetadata=seek;seek();
     let lastSaved=0;
-    audio.ontimeupdate=()=>{if(activePlayback && Date.now()-lastSaved>1000){lastSaved=Date.now();savePosition(audio.currentTime);}};
+    audio.ontimeupdate=()=>{updateSeekControls();if(activePlayback && Date.now()-lastSaved>1000){lastSaved=Date.now();savePosition(audio.currentTime);}};
+    audio.ondurationchange=updateSeekControls;
       if(signal.aborted)throw abortError();
       await new Promise((resolve,reject)=>{
         let settled=false;
-        const done=error=>{if(settled)return;settled=true;signal.removeEventListener('abort',cancel);audio.onended=null;audio.onerror=null;finishAudio=null;error?reject(error):resolve();};
+        const done=error=>{if(settled)return;settled=true;signal.removeEventListener('abort',cancel);audio.onended=null;audio.onerror=null;if(currentAudio===audio){finishAudio=null;skipAudio=null;updateNextControls();}error?reject(error):resolve();};
         const cancel=()=>{audio.pause();done(abortError());};finishAudio=cancel;
+        skipAudio=()=>{audio.pause();done();};updateNextControls();
         audio.onended=()=>done();audio.onerror=()=>done(new Error('Browser could not decode this provider’s audio. Use WAV or MP3.'));
         signal.addEventListener('abort',cancel,{once:true});
-        audio.play().then(()=>{if(!settled && currentAudio===audio)$('pause').disabled=false;}).catch(error=>done(new Error(error.name==='NotAllowedError'?'Browser blocked audio. Click Play plan to enable playback.':error.message)));
+        if(paused){$('pause').disabled=false;$('pause').textContent='Resume';}
+        else audio.play().then(()=>{if(!settled && currentAudio===audio)$('pause').disabled=false;}).catch(error=>done(new Error(error.name==='NotAllowedError'?'Browser blocked audio. Click Play plan to enable playback.':error.message)));
       });
     } finally {
-      if(activePlayback)savePosition(audio.currentTime || 0);
-      audio.onloadedmetadata=null;audio.ontimeupdate=null;mediaSource?.disconnect();gain?.disconnect();currentGain=null;currentNormalize=1;
-      audio.pause();if(currentAudio===audio)currentAudio=null;
+      if(activePlayback===position && position)savePosition(audio.currentTime || 0);
+      audio.onloadedmetadata=null;audio.ontimeupdate=null;audio.ondurationchange=null;mediaSource?.disconnect();gain?.disconnect();
+      audio.pause();if(currentAudio===audio){currentAudio=null;skipAudio=null;currentGain=null;currentNormalize=1;$('pause').disabled=true;$('pause').textContent='Pause';currentSpeaker='';renderMixer();}
       URL.revokeObjectURL(url);if(objectUrl===url)objectUrl=null;
-      $('pause').disabled=true;$('pause').textContent='Pause';
-      currentSpeaker='';renderMixer();
     }
   }
   function savePosition(seconds=0){
@@ -1399,6 +1437,16 @@ export async function setup(ctx) {
     const blobs=[];
     let totalExpected=0;
     let playIdx=0,failed=false,saveError='',saveQueue=Promise.resolve();
+    const skipped=new Set(),failures=new Set(),scheduled=new Set();let jumpTo=null,pauseNext=false,initialized=false,resumePending=Boolean(source.resume);
+    const blockStart=(index)=>{const passage=segments[index]?.passageIndex ?? index;while(index>0 && (segments[index-1].passageIndex ?? index-1)===passage)index--;return index;};
+    advancePlayback=(direction=1)=>{
+      if(ctrl.signal.aborted || token!==revision || !skipAudio || !activePlayback)return;
+      const passage=segments[playIdx]?.passageIndex ?? playIdx;let next=playIdx+1;
+      while(next<segments.length && (segments[next].passageIndex ?? next)===passage)next++;
+      for(let index=playIdx;index<next;index++)skipped.add(index);
+      if(direction<0){const start=blockStart(playIdx);next=start>0?blockStart(start-1):0;for(let index=next;index<segments.length && (segments[index].passageIndex ?? index)===(segments[next].passageIndex ?? next);index++)skipped.delete(index);}
+      failed=[...failures].some(index=>!skipped.has(index));jumpTo=next;pauseNext=Boolean(currentAudio?.paused);skipAudio();
+    };
     const passages={...(cached?.passages || {})};
     const inflight=new Map();
     // Upgrade old complete recordings without discarding their audio.
@@ -1424,6 +1472,7 @@ export async function setup(ctx) {
       const concurrency=Math.max(1,Number(snapshot.concurrency)||1);
       while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=playIdx+Number(snapshot.prefetch ?? 1)) {
         const idx=nextToSynthesize++;
+        if(scheduled.has(idx))continue;scheduled.add(idx);
         ensureSlot(idx);
         activeWorkers++;
         (async()=>{
@@ -1468,7 +1517,7 @@ export async function setup(ctx) {
             resolvers.get(idx)({blob});
           } catch(error) {
             rejectFlight?.(error);
-            failed=true;
+            failures.add(idx);if(!skipped.has(idx))failed=true;
             resolvers.get(idx)({error});
           } finally {
             if(flightKey)inflight.delete(flightKey);
@@ -1482,6 +1531,7 @@ export async function setup(ctx) {
     function push(newSegments,total) {
       if(total)totalExpected=total;
       for(const s of newSegments)segments.push(s);
+      if(!initialized && segments.length){initialized=true;if(source.resume){const start=segments.findIndex(segment=>segment.passageIndex>source.resume.passage || (segment.passageIndex===source.resume.passage && segment.chunkIndex>=(source.resume.chunk || 0)));playIdx=start<0?segments.length:start;nextToSynthesize=playIdx;}}
       pump();
       wakePlayback?.();
     }
@@ -1507,9 +1557,10 @@ export async function setup(ctx) {
         const seg=segments[playIdx];
         status(`Playing ${playIdx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
         activePlayback={chatId:source.chatId,messageId:source.messageId,content:source.content,passage:seg.passageIndex ?? playIdx,chunk:seg.chunkIndex ?? 0};
-        const offset=source.resume && source.resume.passage===activePlayback.passage && source.resume.chunk===activePlayback.chunk?source.resume.seconds:0;
-        await playBlob(blob,ctrl.signal,seg.speaker,offset,snapshot.normalizeLoudness);
-        playIdx++;
+        const offset=resumePending && source.resume.passage===activePlayback.passage && source.resume.chunk===activePlayback.chunk?source.resume.seconds:0;resumePending=false;
+        const paused=pauseNext;pauseNext=false;
+        await playBlob(blob,ctrl.signal,seg.speaker,offset,snapshot.normalizeLoudness,paused);
+        const previous=playIdx;playIdx=jumpTo ?? playIdx+1;jumpTo=null;nextToSynthesize=playIdx<previous?Math.min(nextToSynthesize,playIdx):Math.max(nextToSynthesize,playIdx);
         activePlayback={...activePlayback,passage:segments[playIdx]?.passageIndex ?? (activePlayback.passage+1),chunk:segments[playIdx]?.chunkIndex ?? 0,complete:isDoneAdding && playIdx===segments.length};
         savePosition(0);activePlayback=null;pump();
       }
@@ -1533,8 +1584,8 @@ export async function setup(ctx) {
     if(token!==revision || ctrl.signal.aborted)throw abortError();
     const validResume=resume?.messageId===planSource.messageId && resume.content===planSource.content && !resume.complete?resume:null;
     const segments=plan.segments.flatMap((segment,index)=>{
-      if(excludedPassages.has(index) || actorFor(segment,snapshot)?.excluded || (options.selected && !selectedPassages.has(index)) || (validResume && index<validResume.passage))return [];
-      return speechBatches([segment],snapshot.chunk,scope(snapshot),false).map((batch,chunkIndex)=>({...batch,passageIndex:index,chunkIndex})).filter(batch=>!validResume || index!==validResume.passage || batch.chunkIndex>=(validResume.chunk || 0));
+      if(excludedPassages.has(index) || actorFor(segment,snapshot)?.excluded || (options.selected && !selectedPassages.has(index)))return [];
+      return speechBatches([segment],snapshot.chunk,scope(snapshot),false).map((batch,chunkIndex)=>({...batch,passageIndex:index,chunkIndex}));
     });
     if(!segments.length){controller=null;status('No included passages selected. Text remains in the plan.');return;}
     validateSettings(snapshot);
@@ -1559,7 +1610,7 @@ export async function setup(ctx) {
         catch(error){storageError=error.message;}
       }
       if(token===revision){renderMessages();status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.');}
-    } finally {ctrl.abort();activePlayback=null;void refreshCacheStatus();if(token===revision){controller=null;setBusy(false);}}
+    } finally {ctrl.abort();void refreshCacheStatus();if(token===revision){activePlayback=null;advancePlayback=null;updateNextControls();controller=null;setBusy(false);}}
   }
   async function replayRecording(messageId) {
     stop(false);const token=revision,targetChat=chatId;
@@ -1571,17 +1622,21 @@ export async function setup(ctx) {
       if(!recording)throw new Error('No saved audio for this message on this device. Plan and play it first.');
       if(ctx.messages.getContent(messageId)!==recording.content)throw new Error('The message changed since recording. Plan and play the current reply.');
       if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to remove trackers or update the persona name.');
-      for(const [index,blob] of recording.blobs.entries()) {
-        if(!blob)continue;
+      let pauseNext=false;
+      for(let index=0;index<recording.blobs.length;) {
+        const blob=recording.blobs[index];
+        if(!blob){index++;continue;}
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
         const segment=recording.segments[index];
+        let nextIndex=index+1;
+        advancePlayback=(direction=1)=>{if(!skipAudio || ctrl.signal.aborted || token!==revision)return;const passage=segment.passageIndex ?? index;if(direction<0){let start=index;while(start>0 && (recording.segments[start-1].passageIndex ?? start-1)===passage)start--;nextIndex=Math.max(0,start-1);const previous=recording.segments[nextIndex].passageIndex ?? nextIndex;while(nextIndex>0 && (recording.segments[nextIndex-1].passageIndex ?? nextIndex-1)===previous)nextIndex--;}else while(nextIndex<recording.segments.length && (recording.segments[nextIndex].passageIndex ?? nextIndex)===passage)nextIndex++;pauseNext=Boolean(currentAudio?.paused);skipAudio();};
         activePlayback={chatId:targetChat,messageId,content:recording.content,passage:segment.passageIndex ?? index,chunk:segment.chunkIndex ?? 0};
-        await playBlob(blob,ctrl.signal,recording.segments[index].speaker,0,config.normalizeLoudness);
-        const next=recording.segments[index+1];activePlayback={...activePlayback,passage:next?.passageIndex ?? (activePlayback.passage+1),chunk:next?.chunkIndex ?? 0,complete:index+1===recording.blobs.length};savePosition(0);activePlayback=null;
+        const paused=pauseNext;pauseNext=false;await playBlob(blob,ctrl.signal,recording.segments[index].speaker,0,config.normalizeLoudness,paused);
+        index=nextIndex;const next=recording.segments[index];activePlayback={...activePlayback,passage:next?.passageIndex ?? (activePlayback.passage+1),chunk:next?.chunkIndex ?? 0,complete:index===recording.blobs.length};savePosition(0);activePlayback=null;
       }
       if(token===revision)status('Replay finished.');
-    } finally {activePlayback=null;if(token===revision){controller=null;setBusy(false);}}
+    } finally {if(token===revision){activePlayback=null;advancePlayback=null;updateNextControls();controller=null;setBusy(false);}}
   }
   async function playMessage(messageId) {
     if(controller && messagePlaybackId===messageId){stop();return;}
@@ -1650,13 +1705,16 @@ export async function setup(ctx) {
     const controls=document.createElement('div');controls.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:4px';
     const button=document.createElement('button');button.type='button';button.innerHTML=ICON_PLAY;button.title='Play Choir · click again to stop';button.setAttribute('aria-label','Play or stop Choir audio for this message');
     button.style.cssText='cursor:pointer;display:inline-grid;place-items:center;flex:0 0 28px;width:28px;height:28px;min-width:0;min-height:0;border:1px solid #8886;border-radius:50%;padding:0;background:transparent;color:inherit;font:inherit';
+    const next=document.createElement('button');next.type='button';next.innerHTML=ICON_NEXT;next.title='Next spoken block';next.setAttribute('aria-label','Next spoken block');next.style.cssText=button.style.cssText+';border:0';next.hidden=true;next.disabled=true;next.onclick=()=>advancePlayback?.();
+    const previous=document.createElement('button');previous.type='button';previous.innerHTML=ICON_PREVIOUS;previous.title='Previous spoken block';previous.setAttribute('aria-label','Previous spoken block');previous.style.cssText=next.style.cssText;previous.hidden=true;previous.disabled=true;previous.onclick=()=>advancePlayback?.(-1);
+    const nextEntry={messageId,buttons:[previous,next]},seek=makeSeekControl(messageId);messageNextButtons.add(nextEntry);updateNextControls();
     const progress=document.createElement('span');progress.setAttribute('role','status');progress.style.cssText='font-size:0.75em;max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
     let statuses=messageStatuses.get(messageId);if(!statuses){statuses=new Set();messageStatuses.set(messageId,statuses);}statuses.add(progress);
     const sections=document.createElement('details');sections.hidden=true;sections.style.cssText='font:12px system-ui;max-width:100%';
     const summary=document.createElement('summary');summary.textContent='Sections';summary.style.cursor='pointer';const sectionList=document.createElement('div');sectionList.style.cssText='display:flex;flex-wrap:wrap;gap:4px;padding-top:5px';sections.append(summary,sectionList);
     const entry={messageId,details:sections,list:sectionList,version:0};messageSections.add(entry);void renderSectionControls(entry);
-    button.onclick=()=>run(()=>playMessage(messageId));controls.append(button,progress,sections);target.append(controls);
-    return ()=>{entry.version++;messageSections.delete(entry);controls.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
+    button.onclick=()=>run(()=>playMessage(messageId));controls.append(button,previous,next,seek.root,progress,sections);target.append(controls);
+    return ()=>{entry.version++;messageSections.delete(entry);messageNextButtons.delete(nextEntry);seekControls.delete(seek);controls.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
   };
   const registerDecorator=ctx.ui.registerDomDecorator?.bind(ctx.ui) || ctx.registerDomDecorator?.bind(ctx);
   if(registerDecorator) {
@@ -1727,8 +1785,10 @@ export async function setup(ctx) {
     await prepare(latest.id,false,undefined,Boolean(alreadyPlanned));
   });
   $('stop').onclick=()=>stop();$('play').onclick=()=>run(play);
+  $('next').onclick=()=>advancePlayback?.();
+  $('previous').onclick=()=>advancePlayback?.(-1);
   $('pause').onclick=()=>{if(!currentAudio)return;if(currentAudio.paused){currentAudio.play().catch(e=>status(e.message,true));$('pause').textContent='Pause';}else{currentAudio.pause();$('pause').textContent='Resume';}};
-  $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:'',style:''},$('fixed')));};
+  $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:'',style:''},$('fixed'),false,true));};
   $('reset').onclick=()=>{config=capture();config.casts[scope(config)]=[];renderCast();clearPlan();status('NPC cast cleared. Save to keep this change.');};
   $('designVoice').onclick=()=>run(async()=>{
     const prompt=$('voicePrompt').value.trim();
@@ -1834,7 +1894,6 @@ export async function setup(ctx) {
   $('plannerMode')?.addEventListener('change',updatePlannerVisibility);
   $('allowLlmFallback').onchange=updatePlannerVisibility;
   $('sectionButtons').onchange=()=>run(async()=>{config.sectionButtons=$('sectionButtons').checked;refreshSectionControls();if(plan)renderPreview();if(chatId)await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));});
-  $('guidePlanner').onclick=()=>$('testPlanner').click();
   $('testTts').onclick=()=>castRows[0]?.row.querySelector('[data-choir-preview]')?.click();
   $('playSelected').onclick=()=>run(()=>play({selected:true}));
   $('resumePosition').onclick=()=>run(()=>play({resume:true}));
