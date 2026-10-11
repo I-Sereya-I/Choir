@@ -377,10 +377,10 @@ export async function setup(ctx) {
     mixerPlay.innerHTML=paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE;mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || !plan;
     mixerStop.disabled=!controller && !currentAudio;
   }
-  function speakerExcluded(speaker){return Boolean([...(config?.fixed || []),...(config?.casts?.[scope(config)] || [])].find(actor=>normalizeName(actor.speaker)===normalizeName(speaker))?.excluded);}
+  function speakerExcluded(speaker){return [...(config?.fixed || []),...Object.values(config?.casts || {}).flat()].some(actor=>normalizeName(actor.speaker)===normalizeName(speaker) && actor.excluded);}
   async function setSpeakerExcluded(speaker,excluded){
     if(!chatId)return;
-    for(const actor of [...config.fixed,...(config.casts[scope(config)] || [])])if(normalizeName(actor.speaker)===normalizeName(speaker))actor.excluded=excluded;
+    for(const actor of [...config.fixed,...Object.values(config.casts).flat()])if(normalizeName(actor.speaker)===normalizeName(speaker))actor.excluded=excluded;
     for(const entry of [...castRows,...npcRows])if(normalizeName(entry.read().speaker)===normalizeName(speaker))entry.setExcluded(excluded);
     generationPolicyChanged?.();if(excluded && currentSpeaker===speaker)advancePlayback?.();
     renderMixer();void refreshCacheStatus();await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));
