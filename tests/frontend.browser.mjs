@@ -792,3 +792,73 @@ test('opens Fish Audio voice library overlay modal with avatars, audio preview, 
   cleanup?.();
   Object.assign(globalThis, old);
 });
+
+test('fast classifier setting resolves speech plan locally in 0ms without sending plan RPC', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  const requests = [], audios = [];
+  const message = {
+    id: 'message-fc',
+    chat_id: 'chat-fc',
+    name: 'Mira',
+    is_user: false,
+    content: 'The valley was quiet and peaceful.',
+    extra: {}
+  };
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; audios.push(this); }
+    play() { this.paused = false; setTimeout(() => this.onended?.(), 2); return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = FakeAudio;
+  globalThis.fetch = async () => new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}], data: []}), {headers: {'Content-Type': 'application/json'}});
+
+  const messageActions = dom.window.document.createElement('div');
+  const root = dom.window.document.createElement('div');
+  const ctx = {
+    registerDomDecorator: options => options.render(messageActions, {scope: 'message:message-fc:bubble:footer'}),
+    settings: {
+      get: async () => ({useFastClassifier: true, mode: 'gemini', casts: {}, fixed: [{speaker: 'Narrator', voice: 'Charon', style: ''}], voices: [{id: 'Charon'}]}),
+      set: async () => {}
+    },
+    messages: {
+      getRecent: () => [message],
+      getContent: id => id === message.id ? message.content : null
+    },
+    state: {subscribe: () => () => {}},
+    connections: {list: () => []},
+    characters: {get: async () => ({name: 'Mira'})},
+    getActiveChat: () => ({chatId: 'chat-fc', characterId: 'character-a'}),
+    dom: {addStyle: () => () => {}},
+    ui: {
+      registerDrawerTab: () => ({root, activate() {}, destroy() {}}),
+      mount: () => dom.window.document.createElement('div'),
+      registerInputBarAction: () => ({onClick() {}, destroy() {}})
+    },
+    events: {on: () => () => {}},
+    onBackendMessage: () => () => null,
+    sendToBackend: msg => {
+      requests.push(msg);
+      if (msg.action === 'ping') onBackend?.({namespace: 'choir', id: msg.id, result: {ready: true}});
+      if (msg.action === 'gemini') onBackend?.({namespace: 'choir', id: msg.id, result: {base64: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=', mimeType: 'audio/wav'}});
+    }
+  };
+  let onBackend;
+  ctx.onBackendMessage = fn => { onBackend = fn; return () => null; };
+
+  try {
+    const cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+    $('key').value = 'test-key';
+    messageActions.querySelector('button').click();
+    await until(() => audios.length > 0 || $('status').textContent.includes('Speech plan ready'));
+    // Zero plan RPC requests because fastClassifyPlan handled it locally!
+    assert.equal(requests.filter(r => r.action === 'plan').length, 0);
+    cleanup();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});

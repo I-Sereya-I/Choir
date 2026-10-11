@@ -381,3 +381,136 @@ For automatic voice selection, honor each cast entry gender preference: female m
     {role:'user',content:JSON.stringify({fixedCast:config.fixed,existingNPCs:config.npcs,availableVoices:config.voices,defaultRoute:config.defaultRoute || '',context,sourceUnits:speechSourceUnits(transcript).map(({id,kind,text})=>text.length>2400?{id,kind,text:text.slice(0,1200)+"\\n[Middle omitted from this identification preview; original audio text is preserved.]\\n"+text.slice(-1200),excerpted:true}:{id,kind,text})})}
   ];
 }
+
+
+export function fastClassifyPlan(transcript, config) {
+  if (!transcript || typeof transcript !== 'string') return null;
+  const units = speechSourceUnits(transcript);
+  if (!units.length) return null;
+
+  const narrator = config.fixed?.find(a => normalizeName(a.speaker) === 'narrator') || {
+    speaker: 'Narrator',
+    voice: config.voices?.[0]?.id || '',
+    route: config.defaultRoute || '',
+    style: '',
+    gender: 'auto'
+  };
+  if (!narrator.voice) return null;
+
+  const dialogueUnits = units.filter(u => u.kind === 'dialogue');
+
+  // Case 1: Pure narration (no quotes in transcript)
+  if (dialogueUnits.length === 0) {
+    const raw = {
+      segments: [
+        {
+          speaker: narrator.speaker || 'Narrator',
+          voice: narrator.voice,
+          route: narrator.route || config.defaultRoute || '',
+          style: narrator.style || '',
+          gender: narrator.gender || 'auto',
+          unit_ids: units.map(u => u.id)
+        }
+      ],
+      npcs: config.npcs || []
+    };
+    try {
+      return validatePlan(resolvePlanReferences(raw, transcript, config), transcript, config);
+    } catch {
+      return null;
+    }
+  }
+
+  // Find candidate characters (excluding narrator)
+  const allCast = [...(config.fixed || []), ...(config.npcs || [])];
+  const candidates = allCast.filter(a => normalizeName(a.speaker) !== 'narrator');
+  if (!candidates.length) return null;
+
+  // Emotion/style detector
+  const detectStyle = (textSnippet) => {
+    if (/whisper|murmur|mutter/i.test(textSnippet)) return 'whispering';
+    if (/shout|yell|scream/i.test(textSnippet)) return 'shouting';
+    if (/laugh|chuckle|giggle|smil/i.test(textSnippet)) return 'cheerful';
+    if (/sigh/i.test(textSnippet)) return 'sigh';
+    if (/gasp/i.test(textSnippet)) return 'gasp';
+    if (/cry|sob/i.test(textSnippet)) return 'crying';
+    if (/growl|snap|angry/i.test(textSnippet)) return 'angry';
+    return '';
+  };
+
+  const getImmediateTag = (u) => {
+    const afterRaw = transcript.slice(u.end);
+    const afterBoundary = afterRaw.search(/[.!?\n"]|$/);
+    const afterTag = afterRaw.slice(0, Math.min(afterBoundary + 1, 50));
+
+    const beforeRaw = transcript.slice(0, u.start);
+    const prevPunc = Math.max(beforeRaw.lastIndexOf('.'), beforeRaw.lastIndexOf('!'), beforeRaw.lastIndexOf('?'), beforeRaw.lastIndexOf('"'), beforeRaw.lastIndexOf('\n'));
+    const beforeTag = beforeRaw.slice(prevPunc === -1 ? 0 : prevPunc + 1);
+
+    return { beforeTag, afterTag };
+  };
+
+  const findSpeakerInTag = (tagText) => {
+    for (const cand of candidates) {
+      const esc = cand.speaker.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+      if (new RegExp('\\b' + esc + '\\b', 'i').test(tagText)) return cand;
+    }
+    return null;
+  };
+
+  // Case 2: 1-on-1 character dialogue
+  const isOneOnOne = candidates.length === 1 && candidates[0].voice;
+  const singleCharacter = isOneOnOne ? candidates[0] : (
+    candidates.length === 2 &&
+    (normalizeName(candidates[0].speaker) === 'user' || normalizeName(candidates[0].speaker) === 'persona') &&
+    candidates[1].voice
+  ) ? candidates[1] : null;
+
+  const unitAssignments = [];
+
+  for (const u of units) {
+    if (u.kind === 'narration') {
+      unitAssignments.push({
+        speaker: narrator.speaker || 'Narrator',
+        voice: narrator.voice,
+        route: narrator.route || config.defaultRoute || '',
+        style: narrator.style || '',
+        gender: narrator.gender || 'auto',
+        unit_ids: [u.id]
+      });
+      continue;
+    }
+
+    const { beforeTag, afterTag } = getImmediateTag(u);
+    let assigned = findSpeakerInTag(afterTag) || findSpeakerInTag(beforeTag);
+    if (!assigned && singleCharacter) {
+      assigned = singleCharacter;
+    }
+
+    if (!assigned || !assigned.voice) {
+      return null;
+    }
+
+    const style = detectStyle(afterTag) || detectStyle(beforeTag);
+
+    unitAssignments.push({
+      speaker: assigned.speaker,
+      voice: assigned.voice,
+      route: assigned.route || config.defaultRoute || '',
+      style: style || assigned.style || '',
+      gender: assigned.gender || 'auto',
+      unit_ids: [u.id]
+    });
+  }
+
+  const raw = {
+    segments: unitAssignments,
+    npcs: config.npcs || []
+  };
+
+  try {
+    return validatePlan(resolvePlanReferences(raw, transcript, config), transcript, config);
+  } catch {
+    return null;
+  }
+}

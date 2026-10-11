@@ -384,6 +384,139 @@ For automatic voice selection, honor each cast entry gender preference: female m
 }
 
 
+function fastClassifyPlan(transcript, config) {
+  if (!transcript || typeof transcript !== 'string') return null;
+  const units = speechSourceUnits(transcript);
+  if (!units.length) return null;
+
+  const narrator = config.fixed?.find(a => normalizeName(a.speaker) === 'narrator') || {
+    speaker: 'Narrator',
+    voice: config.voices?.[0]?.id || '',
+    route: config.defaultRoute || '',
+    style: '',
+    gender: 'auto'
+  };
+  if (!narrator.voice) return null;
+
+  const dialogueUnits = units.filter(u => u.kind === 'dialogue');
+
+  // Case 1: Pure narration (no quotes in transcript)
+  if (dialogueUnits.length === 0) {
+    const raw = {
+      segments: [
+        {
+          speaker: narrator.speaker || 'Narrator',
+          voice: narrator.voice,
+          route: narrator.route || config.defaultRoute || '',
+          style: narrator.style || '',
+          gender: narrator.gender || 'auto',
+          unit_ids: units.map(u => u.id)
+        }
+      ],
+      npcs: config.npcs || []
+    };
+    try {
+      return validatePlan(resolvePlanReferences(raw, transcript, config), transcript, config);
+    } catch {
+      return null;
+    }
+  }
+
+  // Find candidate characters (excluding narrator)
+  const allCast = [...(config.fixed || []), ...(config.npcs || [])];
+  const candidates = allCast.filter(a => normalizeName(a.speaker) !== 'narrator');
+  if (!candidates.length) return null;
+
+  // Emotion/style detector
+  const detectStyle = (textSnippet) => {
+    if (/whisper|murmur|mutter/i.test(textSnippet)) return 'whispering';
+    if (/shout|yell|scream/i.test(textSnippet)) return 'shouting';
+    if (/laugh|chuckle|giggle|smil/i.test(textSnippet)) return 'cheerful';
+    if (/sigh/i.test(textSnippet)) return 'sigh';
+    if (/gasp/i.test(textSnippet)) return 'gasp';
+    if (/cry|sob/i.test(textSnippet)) return 'crying';
+    if (/growl|snap|angry/i.test(textSnippet)) return 'angry';
+    return '';
+  };
+
+  const getImmediateTag = (u) => {
+    const afterRaw = transcript.slice(u.end);
+    const afterBoundary = afterRaw.search(/[.!?\n"]|$/);
+    const afterTag = afterRaw.slice(0, Math.min(afterBoundary + 1, 50));
+
+    const beforeRaw = transcript.slice(0, u.start);
+    const prevPunc = Math.max(beforeRaw.lastIndexOf('.'), beforeRaw.lastIndexOf('!'), beforeRaw.lastIndexOf('?'), beforeRaw.lastIndexOf('"'), beforeRaw.lastIndexOf('\n'));
+    const beforeTag = beforeRaw.slice(prevPunc === -1 ? 0 : prevPunc + 1);
+
+    return { beforeTag, afterTag };
+  };
+
+  const findSpeakerInTag = (tagText) => {
+    for (const cand of candidates) {
+      const esc = cand.speaker.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+      if (new RegExp('\\b' + esc + '\\b', 'i').test(tagText)) return cand;
+    }
+    return null;
+  };
+
+  // Case 2: 1-on-1 character dialogue
+  const isOneOnOne = candidates.length === 1 && candidates[0].voice;
+  const singleCharacter = isOneOnOne ? candidates[0] : (
+    candidates.length === 2 &&
+    (normalizeName(candidates[0].speaker) === 'user' || normalizeName(candidates[0].speaker) === 'persona') &&
+    candidates[1].voice
+  ) ? candidates[1] : null;
+
+  const unitAssignments = [];
+
+  for (const u of units) {
+    if (u.kind === 'narration') {
+      unitAssignments.push({
+        speaker: narrator.speaker || 'Narrator',
+        voice: narrator.voice,
+        route: narrator.route || config.defaultRoute || '',
+        style: narrator.style || '',
+        gender: narrator.gender || 'auto',
+        unit_ids: [u.id]
+      });
+      continue;
+    }
+
+    const { beforeTag, afterTag } = getImmediateTag(u);
+    let assigned = findSpeakerInTag(afterTag) || findSpeakerInTag(beforeTag);
+    if (!assigned && singleCharacter) {
+      assigned = singleCharacter;
+    }
+
+    if (!assigned || !assigned.voice) {
+      return null;
+    }
+
+    const style = detectStyle(afterTag) || detectStyle(beforeTag);
+
+    unitAssignments.push({
+      speaker: assigned.speaker,
+      voice: assigned.voice,
+      route: assigned.route || config.defaultRoute || '',
+      style: style || assigned.style || '',
+      gender: assigned.gender || 'auto',
+      unit_ids: [u.id]
+    });
+  }
+
+  const raw = {
+    segments: unitAssignments,
+    npcs: config.npcs || []
+  };
+
+  try {
+    return validatePlan(resolvePlanReferences(raw, transcript, config), transcript, config);
+  } catch {
+    return null;
+  }
+}
+
+
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
 
 export async function setup(ctx) {
@@ -520,6 +653,14 @@ export async function setup(ctx) {
         <label class="et-check" style="align-self:end"><input data-et="batchGemini" type="checkbox" checked> Batch Gemini turns (2 speakers)</label>
       </div>
       <label data-et="autoDesignNPCsWrap" class="et-check" style="margin-top:10px"><input data-et="autoDesignNPCs" type="checkbox"> Auto-design custom voices for new NPCs (Gemini / AI Studio)</label>
+      <label class="et-check" style="margin-top:10px"><input data-et="useFastClassifier" type="checkbox"> ⚡ Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
+      <div data-et="jevBox" style="margin-top:10px;padding:8px 10px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;background:rgba(128,128,128,0.03)">
+        <label class="et-check" style="font-weight:600"><input data-et="useJev" type="checkbox"> ⚡ Jev / System 1 Classifier (~20ms ultra-fast dialogue attribution)</label>
+        <div data-et="jevFields" style="margin-top:6px;display:flex;flex-direction:column;gap:6px">
+          <label>Jev API Key (Typesafe AI)<input data-et="jevKey" type="password" placeholder="jev_..."></label>
+          <label>Jev Endpoint URL<input data-et="jevEndpoint" placeholder="https://api.typesafe.ai/v1/classify"></label>
+        </div>
+      </div>
       <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
       <div data-et="voiceDesignBox" style="margin-top:10px;padding:8px 10px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;background:rgba(128,128,128,0.03)">
         <label style="font-weight:600">Design Voice with Prompt (Gemini / AI Studio)</label>
@@ -633,7 +774,7 @@ export async function setup(ctx) {
   const voiceCatalogues=new Map();
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
   const defaults = () => ({mode:'gemini',model:'gemini-3.8-flash-tts',planner:'',connection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:true,concurrency:1,plannerTokens:8192,
-    extraVoices:'',useStyle:true,auto:false,autoDesignNPCs:false,retention:'forever',casts:{},fixed:[
+    extraVoices:'',useStyle:true,auto:false,autoDesignNPCs:false,useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1/classify',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
       {speaker:'Character',voice:'',style:''} ]});
@@ -1120,7 +1261,7 @@ export async function setup(ctx) {
       mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:$('batchGemini').checked,concurrency:Number($('concurrency').value),
-      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,autoDesignNPCs:$('autoDesignNPCs').checked};
+      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,autoDesignNPCs:$('autoDesignNPCs').checked,useFastClassifier:$('useFastClassifier')?$('useFastClassifier').checked:false,useJev:$('useJev')?$('useJev').checked:false,jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
   }
   function casting(c=config) {
     const actors=[...c.fixed,...(c.casts[scope(c)] || [])];
@@ -1163,7 +1304,7 @@ export async function setup(ctx) {
   }
   function setFields() {
     for(const name of ['mode','model','planner','connection','styleParam','apiBase','chunk','plannerTokens','extraVoices','retention'])$(name).value=config[name];
-    $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;$('batchGemini').checked=config.batchGemini;$('concurrency').value=config.concurrency;$('autoDesignNPCs').checked=Boolean(config.autoDesignNPCs);
+    $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;$('batchGemini').checked=config.batchGemini;$('concurrency').value=config.concurrency;$('autoDesignNPCs').checked=Boolean(config.autoDesignNPCs);if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);if($('useJev'))$('useJev').checked=Boolean(config.useJev);if($('jevKey'))$('jevKey').value=config.jevApiKey||'';if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';
     updateProviderVisibility();
   }
   function setBusy(value) {
@@ -1319,7 +1460,7 @@ export async function setup(ctx) {
     let context=ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
       .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content).slice(0,1000)}`).join('\n').slice(-4000);
     const ctrl=new AbortController();controller=ctrl;setBusy(true);status('Checking Choir backend…');
-    let streaming=false;
+    let streaming=false, player=null;
     try {
       if(/\{\{\s*user\s*\}\}/i.test(transcript+context)) {
         const name=await personaName();
@@ -1333,44 +1474,94 @@ export async function setup(ctx) {
         const prefix=actor?.style?`${actor.style}. `:'';
         const style=s.style || ''; return {...s,style:prefix && style.startsWith(prefix)?style.slice(prefix.length):style===actor?.style?'':style};
       });
-      const sections=planningSections(transcript),combined=[];let previous='';
-      streaming=autoPlay && sections.length>1 && !config.autoDesignNPCs;
-      let player=null;
-      if(streaming) {
-        const apiKey=$('key').value.trim();
-        player=createStreamingPlayer(config,{chatId:targetChat,messageId,content,transcript},null,apiKey,ctrl,token);
+            // 1. Instant local fast-path (0ms)
+      let fastPlan = null;
+      if (config.useFastClassifier !== false) {
+        try {
+          fastPlan = fastClassifyPlan(transcript, snapshot);
+          if (fastPlan) status('Speech plan ready (instant local classifier, 0ms).');
+        } catch {
+          fastPlan = null;
+        }
       }
-      for(let index=0;index<sections.length;index++) {
-        const section=sections[index];
-        status(`Planning section ${index+1}/${sections.length}: speakers and voices…`);
-        let result;
-        try {result=await rpc('plan',{transcript:section,config:snapshot,timeoutMs:90000,
-          context:[context,previous?`Previous section of this same reply:\n${previous.slice(-2000)}`:''].filter(Boolean).join('\n').slice(-4000),
-          connectionId:config.planner,maxTokens:config.plannerTokens},ctrl.signal,95000,
-          progress=>status(`Planning section ${index+1}/${sections.length}: ${progress.stage}${progress.model?` · ${progress.model}`:''}`));
-        } catch(error) {
-          if(ctrl.signal.aborted || token!==revision)throw error;
-          if(/timed out|timeout/i.test(error.message)) {
-            const smaller=planningSections(section,Math.max(1,Math.floor(section.length/2)),1);
-            if(smaller.length>1) {
-              sections.splice(index,1,...smaller);index--;
-              status(`Splitting the slow section into ${smaller.length} smaller parts…`);continue;
-            }
-            throw new Error(`A single speech turn timed out while identifying its speaker. Earlier sections completed, but no audio was generated. Try a faster Planner LLM connection. ${error.message}`);
+      // 2. Jev System 1 classifier (~20ms)
+      if (!fastPlan && config.useJev && (config.jevApiKey || $('jevKey')?.value?.trim())) {
+        try {
+          status('Classifying dialogue with Jev System 1 model…');
+          const jevKey = (config.jevApiKey || $('jevKey')?.value || '').trim();
+          const jevEndpoint = (config.jevEndpoint || $('jevEndpoint')?.value || '').trim();
+          const result = await rpc('planJev', {
+            transcript,
+            config: snapshot,
+            apiKey: jevKey,
+            endpoint: jevEndpoint
+          }, ctrl.signal, 15000);
+          if (result && Array.isArray(result.segments)) {
+            fastPlan = validatePlan({ segments: stripBase(result.segments) }, transcript, snapshot);
+            status('Speech plan ready (Jev System 1 classifier).');
           }
-          throw error;
-        }
-        if(token!==revision || targetChat!==chatId || disposed)return;
-        const checked=validatePlan({segments:stripBase(result.segments)},section,snapshot);
-        snapshot.npcs=checked.npcs;
-        for(const actor of snapshot.fixed)if(!actor.voice)actor.voice=checked.segments.find(s=>normalizeName(s.speaker)===normalizeName(actor.speaker))?.voice || '';
-        combined.push(...stripBase(checked.segments));previous=section;
-        if(streaming) {
-          const sectionBatches=speechBatches(stripBase(checked.segments),snapshot.chunk,scope(snapshot),snapshot.batchGemini);
-          player.push(sectionBatches);
+        } catch (err) {
+          status(`Jev fast classification fell back to LLM: ${err.message}`);
+          fastPlan = null;
         }
       }
-      if(streaming)player.finish();
+
+      const combined = [];
+      let previous = '';
+
+      if (fastPlan) {
+        snapshot.npcs = fastPlan.npcs;
+        for (const actor of snapshot.fixed) {
+          if (!actor.voice) actor.voice = fastPlan.segments.find(s => normalizeName(s.speaker) === normalizeName(actor.speaker))?.voice || '';
+        }
+        combined.push(...stripBase(fastPlan.segments));
+      } else {
+        const sections = planningSections(transcript);
+        streaming = autoPlay && sections.length > 1 && !config.autoDesignNPCs;
+        if (streaming) {
+          const apiKey = $('key').value.trim();
+          player = createStreamingPlayer(config, { chatId: targetChat, messageId, content, transcript }, null, apiKey, ctrl, token);
+        }
+        for (let index = 0; index < sections.length; index++) {
+          const section = sections[index];
+          status(`Planning section ${index+1}/${sections.length}: speakers and voices…`);
+          let result;
+          try {
+            result = await rpc('plan', {
+              transcript: section,
+              config: snapshot,
+              timeoutMs: 90000,
+              context: [context, previous ? `Previous section of this same reply:\n${previous.slice(-2000)}` : ''].filter(Boolean).join('\n').slice(-4000),
+              connectionId: config.planner,
+              maxTokens: config.plannerTokens
+            }, ctrl.signal, 95000,
+            progress => status(`Planning section ${index+1}/${sections.length}: ${progress.stage}${progress.model ? ` · ${progress.model}` : ''}`));
+          } catch(error) {
+            if (ctrl.signal.aborted || token !== revision) throw error;
+            if (/timed out|timeout/i.test(error.message)) {
+              const smaller = planningSections(section, Math.max(1, Math.floor(section.length/2)), 1);
+              if (smaller.length > 1) {
+                sections.splice(index, 1, ...smaller); index--;
+                status(`Splitting the slow section into ${smaller.length} smaller parts…`); continue;
+              }
+              throw new Error(`A single speech turn timed out while identifying its speaker. Earlier sections completed, but no audio was generated. Try a faster Planner LLM connection. ${error.message}`);
+            }
+            throw error;
+          }
+          if (token !== revision || targetChat !== chatId || disposed) return;
+          const checked = validatePlan({ segments: stripBase(result.segments) }, section, snapshot);
+          snapshot.npcs = checked.npcs;
+          for (const actor of snapshot.fixed) {
+            if (!actor.voice) actor.voice = checked.segments.find(s => normalizeName(s.speaker) === normalizeName(actor.speaker))?.voice || '';
+          }
+          combined.push(...stripBase(checked.segments)); previous = section;
+          if (streaming) {
+            const sectionBatches = speechBatches(stripBase(checked.segments), snapshot.chunk, scope(snapshot), snapshot.batchGemini);
+            player.push(sectionBatches);
+          }
+        }
+        if (streaming) player.finish();
+      }
       // Validate the complete original reply before audio or cast persistence.
       const validated=validatePlan({segments:combined},transcript,snapshot);
       plan=validated;planSource={messageId,content,transcript,chatId:targetChat};

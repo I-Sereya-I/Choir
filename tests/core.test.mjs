@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan} from '../src/core.js';
 
 test('Gemini batches preserve turn metadata and split on third speaker or provider change',()=>{
   const turns=['Narrator','Alice','Narrator','Bob','Alice'].map((speaker,i)=>({speaker,voice:speaker==='Narrator'?'Charon':speaker==='Alice'?'Kore':'Puck',text:'Turn '+i,style:'Soft',route:'gemini'}));
@@ -281,4 +281,49 @@ A warm weight dropped across Jay's lap before he could reach his second sock.
   assert.ok(!clean.includes('Chapter 1'));
   assert.ok(clean.includes("A warm weight dropped across Jay's lap"));
   assert.ok(clean.includes("Nia purred"));
+});
+
+test('fastClassifyPlan resolves pure narration immediately without calling planner', () => {
+  const c = config();
+  const text = 'The castle gates swung open as the dawn mist cleared from the valley.';
+  const plan = fastClassifyPlan(text, c);
+  assert.ok(plan);
+  assert.equal(plan.segments.length, 1);
+  assert.equal(plan.segments[0].speaker, 'Narrator');
+  assert.equal(plan.segments[0].text, text);
+});
+
+test('fastClassifyPlan resolves 1-on-1 character dialogue directly in 0ms', () => {
+  const c = config(); // Narrator (Charon), User (Puck), Alice (Kore)
+  const text = 'Alice leaned forward. "Are you ready?" She waited for an answer. "We should leave soon."';
+  const plan = fastClassifyPlan(text, c);
+  assert.ok(plan);
+  assert.equal(plan.segments.length, 4);
+  assert.equal(plan.segments[0].speaker, 'Narrator');
+  assert.equal(plan.segments[1].speaker, 'Alice');
+  assert.equal(plan.segments[1].voice, 'Kore');
+  assert.equal(plan.segments[2].speaker, 'Narrator');
+  assert.equal(plan.segments[3].speaker, 'Alice');
+});
+
+test('fastClassifyPlan uses dialogue tag attribution and detects emotion style', () => {
+  const c = config();
+  c.fixed.push({ speaker: 'Bob', voice: 'Puck', route: 'gemini', style: '' });
+  c.voices.push({ id: 'Puck', route: 'gemini', gender: 'male' });
+  const text = '"Good morning," Alice smiled. Bob whispered, "Keep your voice down."';
+  const plan = fastClassifyPlan(text, c);
+  assert.ok(plan);
+  assert.equal(plan.segments[0].speaker, 'Alice');
+  assert.equal(plan.segments[0].style, 'cheerful');
+  assert.equal(plan.segments[2].speaker, 'Bob');
+  assert.equal(plan.segments[2].style, 'whispering');
+});
+
+test('fastClassifyPlan returns null on ambiguous multi-character dialogue without tags', () => {
+  const c = config();
+  c.fixed.push({ speaker: 'Bob', voice: 'Puck', route: 'gemini', style: '' });
+  c.voices.push({ id: 'Puck', route: 'gemini', gender: 'male' });
+  const text = '"Who is there?" + "\n" + "I am not sure."';
+  const plan = fastClassifyPlan(text, c);
+  assert.equal(plan, null); // Falls back to LLM/Jev
 });
