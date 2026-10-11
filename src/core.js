@@ -143,6 +143,16 @@ export function validateCastConfig(config) {
     if (typeof npc.style !== 'string' || npc.style.length > 600) throw new Error('Invalid NPC base style.');
     names.add(name);
   }
+  for (const actor of [...config.fixed, ...config.npcs]) {
+    if (actor.aliases !== undefined && (!Array.isArray(actor.aliases) || actor.aliases.length > 30 || actor.aliases.some(alias=>typeof alias!=='string' || !alias.trim() || alias.length>100))) throw new Error('Aliases must be a list of up to 30 names.');
+    for (const alias of actor.aliases || []) {
+      const key=normalizeName(alias);
+      if(names.has(key))throw new Error(`Conflicting character alias: ${alias}`);
+      names.add(key);
+    }
+    for(const field of ['pronunciation','accent'])if(actor[field] !== undefined && (typeof actor[field]!=='string' || actor[field].length>300))throw new Error(`Invalid ${field} preference.`);
+    if(actor.excluded !== undefined && typeof actor.excluded!=='boolean')throw new Error('Invalid character exclusion.');
+  }
   return config;
 }
 
@@ -151,6 +161,7 @@ export function validatePlan(raw, transcript, config) {
   if (!raw || !Array.isArray(raw.segments) || !raw.segments.length) throw new Error('Expected at least one speech segment.');
   const voices = new Set(config.voices.map(v => v.id));
   const cast = new Map([...config.fixed, ...config.npcs].map(v => [normalizeName(v.speaker), {...v}]));
+  const aliases = new Map([...config.fixed, ...config.npcs].flatMap(actor=>(actor.aliases || []).map(alias=>[normalizeName(alias),normalizeName(actor.speaker)])));
   const available=(voice,route)=>config.voices.some(v=>v.id===voice && (v.route || '')===route);
   const checkAutomaticGender=(voice,gender,route)=>{
     const choice=config.voices.find(v=>v.id===voice && (v.route || '')===route);
@@ -187,7 +198,7 @@ export function validatePlan(raw, transcript, config) {
       if (!matchOk) throw new Error(`Segment ${index+1} changes or skips the original text. Copy exact consecutive substrings.`);
       cursor = tIdx;
     }
-    const key = normalizeName(segment.speaker);
+    const key = aliases.get(normalizeName(segment.speaker)) || normalizeName(segment.speaker);
     if (!key || key.length > 100) throw new Error(`Segment ${index+1} has an invalid speaker.`);
     let actor = cast.get(key);
     if (!actor) {
@@ -225,6 +236,62 @@ export function validatePlan(raw, transcript, config) {
   if (transcript.slice(cursor).trim()) throw new Error('The plan omits the end of the original message.');
   const fixed = new Set(config.fixed.map(v => normalizeName(v.speaker)));
   return {segments, npcs:[...cast.values()].filter(v => !fixed.has(normalizeName(v.speaker)))};
+}
+
+// Persist attribution separately from synthesis choices so recasting is free.
+export function attributionPlan(plan, config) {
+  return {segments:plan.segments.map(segment=>{
+    const actor=[...config.fixed,...config.npcs].find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker));
+    const prefix=actor?.style?`${actor.style}. `:'';
+    return {speaker:segment.speaker,text:segment.text,style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style};
+  })};
+}
+
+export function restoreAttribution(saved, transcript, config) {
+  const actors=[...config.fixed,...config.npcs];
+  return validatePlan({segments:saved.segments.map(segment=>{
+    const actor=actors.find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker) || (a.aliases || []).some(alias=>normalizeName(alias)===normalizeName(segment.speaker)));
+    const route=actor?.route || config.defaultRoute || '';
+    const catalogue=config.voices.filter(v=>(v.route || '')===route);
+    const voice=actor?.voice || catalogue.find(v=>!actor?.gender || actor.gender==='auto' || v.gender===actor.gender)?.id;
+    return {...segment,voice,route};
+  })},transcript,config);
+}
+
+export function passageKey(segment, settings, connection, parameters={}) {
+  return JSON.stringify([2,segment.text,segment.voice,segment.route || settings.defaultRoute,
+    segment.style || '',connection?.model || settings.model,connection?.provider || '',
+    connection?.api_url || connection?.base_url || '',
+    settings.allowVoiceFallback===true,parameters]);
+}
+
+export function mixerVolume(master, speaker, channels) {
+  const channel=Object.hasOwn(channels,speaker)?channels[speaker]:{}, solo=Object.values(channels).some(c=>c.solo);
+  return Math.max(0,Math.min(1,Number(master ?? 1)*Number(channel.volume ?? 1)*(channel.mute || (solo && !channel.solo)?0:1)));
+}
+
+export function loudnessGain(channels, target=0.12) {
+  let squares=0,peak=0,count=0;
+  for(const samples of channels)for(const sample of samples){squares+=sample*sample;peak=Math.max(peak,Math.abs(sample));count++;}
+  const rms=count?Math.sqrt(squares/count):0;
+  return rms>0.0001?Math.max(0.25,Math.min(4,target/rms,peak?0.95/peak:4)):1;
+}
+
+export function castExport(config) {
+  const clean=castImport({format:'choir-cast',version:1,fixed:config.fixed,casts:config.casts});
+  return {format:'choir-cast',version:1,...clean};
+}
+
+export function castImport(raw) {
+  if(raw?.format!=='choir-cast' || raw.version!==1 || !Array.isArray(raw.fixed) || !raw.casts || typeof raw.casts!=='object' || Array.isArray(raw.casts))throw new Error('Expected a Choir cast export (version 1).');
+  const clean=actor=>{
+    if(!actor || typeof actor.speaker!=='string' || typeof actor.voice!=='string' || typeof actor.style!=='string')throw new Error('Invalid imported cast row.');
+    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
+  };
+  return {fixed:raw.fixed.map(clean),casts:Object.fromEntries(Object.entries(raw.casts).map(([route,actors])=>{
+    if(!Array.isArray(actors) || actors.length>500 || !/^(gemini|native:[\w.-]+)$/.test(route))throw new Error('Invalid imported cast provider.');
+    return [route,actors.map(clean)];
+  }))};
 }
 
 export function speechSourceUnits(transcript) {
@@ -452,8 +519,10 @@ export function fastClassifyPlan(transcript, config) {
 
   const findSpeakerInTag = (tagText) => {
     for (const cand of candidates) {
-      const esc = cand.speaker.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-      if (new RegExp('\\b' + esc + '\\b', 'i').test(tagText)) return cand;
+      for(const name of [cand.speaker,...(cand.aliases || [])]){
+        const esc = name.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+        if (new RegExp('\\b' + esc + '\\b', 'i').test(tagText)) return cand;
+      }
     }
     return null;
   };
