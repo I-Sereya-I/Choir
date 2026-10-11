@@ -1396,6 +1396,7 @@ test('Settings changes (checkboxes and dropdowns) auto-persist globally and acro
     $('useFastClassifier').dispatchEvent(new dom.window.Event('change'));
     await tick();
 
+    await until(() => $('saveState').textContent === 'Saved automatically');
     // Verify global settings store was updated
     const globalSaved = store.get('settings:global');
     assert.ok(globalSaved, 'Global settings should be saved');

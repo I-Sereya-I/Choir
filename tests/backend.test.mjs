@@ -17,6 +17,19 @@ test('Jev proxy options are clone-safe and cancellation discards a late response
   assert.equal(h.sent.filter(item=>item.message.result || item.message.error).length,0);
 });
 
+test('Freesound keeps AbortSignal local and ignores a proxy result after cancellation',async()=>{
+ let release,options;
+ const h=await harness(null,async(url,input)=>{
+  assert.match(url,/freesound.org/);assert.ok(!('signal' in input));structuredClone(input);options=input;
+  return new Promise(resolve=>release=resolve);
+ });
+ h.send('freesound',{apiKey:'test-freesound-key',query:'door'});
+ await new Promise(resolve=>setTimeout(resolve,0));assert.ok(options);
+ h.send('cancel',{});release({status:200,body:JSON.stringify({results:[{id:1,previews:{'preview-hq-mp3':'https://freesound.test/door.mp3'}}]})});
+ await new Promise(resolve=>setTimeout(resolve,10));
+ assert.equal(h.sent.filter(item=>item.message.result || item.message.error).length,0);
+});
+
 test('Jev errors stop by default and never bill the LLM',async()=>{
   let calls=0;
   const h=await harness(async()=>{calls++;throw Error('Unexpected LLM');},async()=>{throw Error('The object cannot be cloned');});
