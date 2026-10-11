@@ -69,7 +69,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
           onBackend?.({namespace:'choir',id:message.id,error:'Planner timed out while waiting for response.'});return;
         }
         let result;
-        if(message.action==='ping')result={version:'1.0.17',ready:true};
+        if(message.action==='ping')result={version:'1.0.18',ready:true};
         else if(message.action==='testPlanner')result={model:'gpt-text-test',provider:'openai',response:'READY'};
         else if(message.action==='plan' && (message.input.transcript.trim().startsWith('Long narration') || message.input.transcript.trim().startsWith('"Welcome."')))result=validatePlan({segments:speechSourceUnits(message.input.transcript).map(unit=>({
           speaker:unit.kind==='dialogue'?'Traveler':'Narrator',text:unit.text,
@@ -88,7 +88,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   try {
     let cleanup=await setup(ctx);
     const $=name=>root.querySelector(`[data-et="${name}"]`) || settingsRoot.querySelector(`[data-et="${name}"]`);
-    assert.equal(minimalFooter.querySelector('button').textContent,'▶ Play Choir');
+    assert.match(minimalFooter.querySelector('button').textContent,/Play Choir/);
     assert.match($('planner').textContent,/GPT planner · openai · gpt-text-test/);
     $('planner').value='planner-a';$('testPlanner').click();await until(()=>$('status').textContent.includes('Planner test passed'));
     assert.equal(requests.find(request=>request.action==='testPlanner').input.connectionId,'planner-a');
@@ -106,7 +106,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.ok(root.querySelector('[data-et="fixed"]'));
     // Drawer roots can be detached when the user is looking at the story.
     root.remove();
-    messageActions.querySelector('button').click();await until(()=>$('status').textContent.includes('Playback finished'));
+    $('key').value = 'test-key'; messageActions.querySelector('button').click();await until(()=>$('status').textContent.includes('Playback finished'));
     assert.equal(audios.length,2);audios.length=0;
     assert.match(messageActions.textContent,/Playback finished/);
     assert.match(minimalFooter.textContent,/Playback finished/);
@@ -234,4 +234,704 @@ test('older hosts show a visible settings diagnostic rather than disappearing',a
     assert.equal(mount.querySelector('button').textContent,'Open Choir settings');
     cleanup();assert.equal(root.children.length,0);assert.equal(mount.children.length,0);
   } finally {globalThis.document=previous;dom.window.close();}
+});
+
+
+test('pipelined playback begins playing section 1 while subsequent sections are still being planned', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  let onBackend;
+  const store = new Map(), requests = [], audios = [];
+  const message = {
+    id: 'message-multi',
+    chat_id: 'chat-multi',
+    name: 'Mira',
+    is_user: false,
+    content: Array.from({length: 12}, (_, i) => `Sentence ${i}. "Quote ${i}."\n`).join(''),
+    extra: {}
+  };
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; audios.push(this); }
+    play() { this.paused = false; setTimeout(() => this.onended?.(), 10); return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = FakeAudio;
+  globalThis.fetch = async (url) => {
+    if (url.endsWith('/tts/synthesize')) return new Response(new Uint8Array([1, 2]), {headers: {'Content-Type': 'audio/mpeg'}});
+    if (url.includes('/providers')) return new Response(JSON.stringify({providers: []}), {headers: {'Content-Type': 'application/json'}});
+    if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}, {id: 'Zephyr', name: 'Zephyr', gender: 'female'}]}), {headers: {'Content-Type': 'application/json'}});
+    return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
+  };
+  const messageActions = dom.window.document.createElement('div');
+  const root = dom.window.document.createElement('div');
+  const ctx = {
+    registerDomDecorator: options => options.render(messageActions, {scope: 'message:message-multi:bubble:footer'}),
+    settings: {
+      get: async key => store.get(key) || null,
+      set: async (key, value) => { store.set(key, structuredClone(value)); }
+    },
+    messages: {
+      getRecent: () => [message],
+      getContent: id => id === message.id ? message.content : null
+    },
+    state: {subscribe: () => () => {}},
+    connections: {list: () => []},
+    characters: {get: async () => ({name: 'Mira'})},
+    getActiveChat: () => ({chatId: 'chat-multi', characterId: 'character-a'}),
+    dom: {addStyle: () => () => {}},
+    ui: {
+      registerDrawerTab: () => ({root, activate() {}, destroy() {}}),
+      mount: () => dom.window.document.createElement('div'), registerInputBarAction: () => ({onClick() {}, destroy() {}})
+    },
+    events: {on: () => () => {}},
+    onBackendMessage: fn => { onBackend = fn; return () => null; },
+    sendToBackend: message => {
+      requests.push(message);
+      setTimeout(() => {
+        if (message.action === 'ping') onBackend?.({namespace: 'choir', id: message.id, result: {version: '1.0.18', ready: true}});
+        else if (message.action === 'plan') {
+          const units = speechSourceUnits(message.input.transcript);
+          onBackend?.({namespace: 'choir', id: message.id, result: {segments: units.map(u => ({
+            speaker: u.kind === 'dialogue' ? 'Mira' : 'Narrator',
+            text: u.text,
+            voice: u.kind === 'dialogue' ? 'Zephyr' : 'Charon'
+          }))}});
+        }
+        else if (message.action === 'gemini') onBackend?.({namespace: 'choir', id: message.id, result: {base64: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=', mimeType: 'audio/wav'}});
+      }, 5);
+    }
+  };
+  try {
+    const cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+    $('key').value = 'test-key';
+    messageActions.querySelector('button').click();
+    await until(() => audios.length > 0);
+    const planRequestsWhilePlaying = requests.filter(r => r.action === 'plan').length;
+    assert.ok(planRequestsWhilePlaying >= 1 && planRequestsWhilePlaying <= 3);
+    await until(() => $('status').textContent.includes('Playback finished'));
+    const totalPlanRequests = requests.filter(r => r.action === 'plan').length;
+    assert.equal(totalPlanRequests, 3);
+    assert.ok(audios.length >= 8);
+    cleanup();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});
+
+
+test('auditionVoice synthesizes and plays a voice sample', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  let onBackend;
+  const store = new Map(), requests = [], audios = [];
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; audios.push(this); }
+    play() { this.paused = false; setTimeout(() => this.onended?.(), 5); return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = FakeAudio;
+  globalThis.fetch = async (url, options) => {
+    if (url.includes('/providers')) return new Response(JSON.stringify({providers: []}), {headers: {'Content-Type': 'application/json'}});
+    if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}]}), {headers: {'Content-Type': 'application/json'}});
+    return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
+  };
+  const root = dom.window.document.createElement('div');
+  const ctx = {
+    registerDomDecorator: () => () => {},
+    settings: {
+      get: async key => store.get(key) || null,
+      set: async (key, value) => { store.set(key, structuredClone(value)); }
+    },
+    messages: { getRecent: () => [], getContent: () => null },
+    state: { subscribe: () => () => {} },
+    connections: { list: () => [] },
+    characters: { get: async () => ({name: 'Mira'}) },
+    getActiveChat: () => ({chatId: 'chat-audition', characterId: 'character-a'}),
+    dom: { addStyle: () => () => {} },
+    ui: {
+      registerDrawerTab: () => ({root, activate() {}, destroy() {}}),
+      mount: () => dom.window.document.createElement('div'),
+      registerInputBarAction: () => ({onClick() {}, destroy() {}})
+    },
+    events: { on: () => () => {} },
+    onBackendMessage: fn => { onBackend = fn; return () => null; },
+    sendToBackend: message => {
+      requests.push(message);
+      setTimeout(() => {
+        if (message.action === 'ping') onBackend?.({namespace: 'choir', id: message.id, result: {version: '1.0.18', ready: true}});
+        else if (message.action === 'gemini') {
+          onBackend?.({namespace: 'choir', id: message.id, result: {base64: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=', mimeType: 'audio/wav'}});
+        }
+      }, 5);
+    }
+  };
+  try {
+    const cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+    $('key').value = 'gemini-key-123';
+    $('voicePrompt').value = 'voice_custom_audition';
+    assert.ok($('auditionVoice'));
+    $('auditionVoice').click();
+    await until(() => $('status').textContent.includes('Audition finished'));
+    const geminiReq = requests.find(r => r.action === 'gemini');
+    assert.ok(geminiReq);
+    assert.equal(geminiReq.input.segment.voice, 'voice_custom_audition');
+    assert.equal(geminiReq.input.segment.text, 'Hello! I am your new voice for this story.');
+    assert.equal(audios.length, 1);
+    cleanup();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});
+
+test('autoDesignNPCs setting auto-designs bespoke Gemini voices for new NPCs with graceful fallback', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  let onBackend;
+  const store = new Map(), requests = [], audios = [];
+  let currentMsgId = 'msg-npc-1';
+  const messages = {
+    'msg-npc-1': {
+      id: 'msg-npc-1',
+      chat_id: 'chat-npc',
+      name: 'Mira',
+      is_user: false,
+      content: 'The old blacksmith looked up. "Welcome to my forge," the blacksmith said.',
+      extra: {}
+    },
+    'msg-npc-2': {
+      id: 'msg-npc-2',
+      chat_id: 'chat-npc',
+      name: 'Mira',
+      is_user: false,
+      content: 'The baker smiled warmly. "Fresh bread is ready," the baker said.',
+      extra: {}
+    }
+  };
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; audios.push(this); }
+    play() { this.paused = false; setTimeout(() => this.onended?.(), 5); return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = FakeAudio;
+  globalThis.fetch = async (url) => {
+    if (url.includes('/providers')) return new Response(JSON.stringify({providers: []}), {headers: {'Content-Type': 'application/json'}});
+    if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}, {id: 'Zephyr', name: 'Zephyr', gender: 'female'}]}), {headers: {'Content-Type': 'application/json'}});
+    return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
+  };
+  const messageActions = dom.window.document.createElement('div');
+  const root = dom.window.document.createElement('div');
+  let designVoiceShouldFail = false;
+  const ctx = {
+    registerDomDecorator: options => options.render(messageActions, {scope: 'message:msg-npc-1:bubble:footer'}),
+    settings: {
+      get: async key => store.get(key) || null,
+      set: async (key, value) => { store.set(key, structuredClone(value)); }
+    },
+    messages: {
+      getRecent: () => [messages[currentMsgId]],
+      getContent: id => messages[id]?.content || null
+    },
+    state: { subscribe: () => () => {} },
+    connections: { list: () => [] },
+    characters: { get: async () => ({name: 'Mira'}) },
+    getActiveChat: () => ({chatId: 'chat-npc', characterId: 'character-a'}),
+    dom: { addStyle: () => () => {} },
+    ui: {
+      registerDrawerTab: () => ({root, activate() {}, destroy() {}}),
+      mount: () => dom.window.document.createElement('div'),
+      registerInputBarAction: () => ({onClick() {}, destroy() {}})
+    },
+    events: { on: () => () => {} },
+    onBackendMessage: fn => { onBackend = fn; return () => null; },
+    sendToBackend: message => {
+      requests.push(message);
+      setTimeout(() => {
+        if (message.action === 'ping') onBackend?.({namespace: 'choir', id: message.id, result: {version: '1.0.18', ready: true}});
+        else if (message.action === 'plan') {
+          const units = speechSourceUnits(message.input.transcript);
+          onBackend?.({namespace: 'choir', id: message.id, result: {segments: units.map(u => ({
+            speaker: u.kind === 'dialogue' ? (currentMsgId === 'msg-npc-1' ? 'Blacksmith' : 'Baker') : 'Narrator',
+            text: u.text,
+            voice: 'Charon'
+          }))}});
+        }
+        else if (message.action === 'designVoice') {
+          if (designVoiceShouldFail) {
+            onBackend?.({namespace: 'choir', id: message.id, error: 'Gemini Voice Design rate limited'});
+          } else {
+            onBackend?.({namespace: 'choir', id: message.id, result: {id: 'voice_bespoke_blacksmith', name: 'voice_bespoke_blacksmith', description: message.input.prompt}});
+          }
+        }
+        else if (message.action === 'gemini') {
+          onBackend?.({namespace: 'choir', id: message.id, result: {base64: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=', mimeType: 'audio/wav'}});
+        }
+      }, 5);
+    }
+  };
+  try {
+    let cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+    assert.ok($('autoDesignNPCs'));
+    assert.equal($('autoDesignNPCs').checked, false);
+    
+    // Enable auto-design of NPCs
+    $('autoDesignNPCs').checked = true;
+    $('key').value = 'gemini-key-test';
+    
+    // Plan message 1
+    messageActions.querySelector('button').click();
+    await until(() => $('status').textContent.includes('Playback finished'));
+    
+    // Check that designVoice was called for the Blacksmith NPC
+    const designReq = requests.find(r => r.action === 'designVoice');
+    assert.ok(designReq, 'Expected designVoice request to be made');
+    assert.match(designReq.input.prompt, /Blacksmith/);
+    
+    // Check that NPC voice was updated in extraVoices, casts, and settings
+    assert.match($('extraVoices').value, /voice_bespoke_blacksmith/);
+    const savedConfig = store.get('chat:chat-npc');
+    assert.ok(savedConfig);
+    assert.equal(savedConfig.casts.gemini[0].speaker, 'Blacksmith');
+    assert.equal(savedConfig.casts.gemini[0].voice, 'voice_bespoke_blacksmith');
+
+    // Test graceful fallback: when designVoice throws on newly planned NPC, keep prebuilt voice without failing
+    designVoiceShouldFail = true;
+    requests.length = 0;
+    currentMsgId = 'msg-npc-2';
+    $('latest').click();
+    await until(() => $('status').textContent.includes('Ready:'));
+    
+    assert.ok(requests.some(r => r.action === 'designVoice'));
+    assert.match($('status').textContent, /Ready:/);
+    cleanup();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});
+
+test('character row allows inline voice search and community voice discovery directly on the card', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  const store = new Map(), requests = [];
+  globalThis.fetch = async (url) => {
+    if (url.includes('/providers')) return new Response(JSON.stringify({providers: []}), {headers: {'Content-Type': 'application/json'}});
+    if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}]}), {headers: {'Content-Type': 'application/json'}});
+    return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
+  };
+  const root = dom.window.document.createElement('div');
+  const ctx = {
+    registerDomDecorator: () => () => {},
+    settings: {
+      get: async key => store.get(key) || null,
+      set: async (key, value) => { store.set(key, structuredClone(value)); }
+    },
+    messages: { getRecent: () => [{id: 'msg-1', name: 'Char', content: 'Story text.'}], getContent: () => 'Story text.' },
+    state: { get: () => null, subscribe: () => () => {} },
+    events: { on: () => () => {} },
+    getActiveChat: () => ({chatId: 'chat-search', characterId: 'char-1'}),
+    characters: { get: async () => ({name: 'Nia'}) },
+    dom: { addStyle: () => () => {}, getMessageId: () => null },
+    ui: { registerDrawerTab: () => ({root, activate: () => {}, onActivate: (fn) => { fn(); return () => {}; }, destroy: () => {}}), registerInputBarAction: () => ({onClick(){}, destroy(){}}), createTab: () => ({root, activate: () => {}, onActivate: () => () => {}, destroy: () => {}}), mount: () => null },
+    onBackendMessage: () => () => {},
+    sendToBackend: (msg) => requests.push(msg)
+  };
+  
+  const cleanup = await setup(ctx);
+  await until(() => root.querySelector('[data-et="fixed"]')?.querySelectorAll('.et-card')?.length >= 2);
+  const firstCard = root.querySelector('[data-et="fixed"]').querySelector('.et-card');
+  assert.ok(firstCard);
+  
+  const voiceSearchInput = firstCard.querySelector('input[placeholder*="Filter"]');
+  assert.ok(voiceSearchInput, 'Inline voice search input should exist on character card');
+  
+  // Test local filtering
+  voiceSearchInput.value = 'Charon';
+  voiceSearchInput.dispatchEvent(new dom.window.Event('input'));
+  const voiceSelect = firstCard.querySelector('[data-choir-voice]');
+  const optionTexts = [...voiceSelect.options].map(o => o.textContent);
+  assert.ok(optionTexts.some(t => t.includes('Charon')), 'Charon should match filter');
+  assert.ok(!optionTexts.some(t => t.includes('Zephyr')), 'Zephyr should be filtered out');
+
+  cleanup?.();
+  Object.assign(globalThis, old);
+});
+
+test('detects Fish Audio vs Gemini/Vertex provider and dynamically adapts UI controls, syntax, and libraries', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  const store = new Map();
+  globalThis.fetch = async (url) => {
+    if (url.includes('/tts-connections/providers')) {
+      return new Response(JSON.stringify({providers: [{id: 'fish_audio'}, {id: 'google_vertex_tts'}]}), {headers: {'Content-Type': 'application/json'}});
+    }
+    if (url.includes('/tts-connections') && !url.includes('/voices')) {
+      return new Response(JSON.stringify({data: [
+        {id: 'conn-fish', name: 'Fish TTS Profile', provider: 'fish_audio', model: 's2.1-pro'},
+        {id: 'conn-vertex', name: 'Vertex Profile', provider: 'google_vertex_tts', model: 'gemini-3.8-flash-tts'}
+      ]}), {headers: {'Content-Type': 'application/json'}});
+    }
+    if (url.includes('/voices')) {
+      if (url.includes('conn-fish')) {
+        return new Response(JSON.stringify({voices: [{id: 'fish-voice-1', name: 'Fish Star', gender: 'female'}]}), {headers: {'Content-Type': 'application/json'}});
+      }
+      return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}]}), {headers: {'Content-Type': 'application/json'}});
+    }
+    return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
+  };
+  const root = dom.window.document.createElement('div');
+  const ctx = {
+    registerDomDecorator: () => () => {},
+    settings: {
+      get: async key => store.get(key) || null,
+      set: async (key, value) => { store.set(key, structuredClone(value)); }
+    },
+    messages: { getRecent: () => [], getContent: () => '' },
+    state: { get: () => null, subscribe: () => () => {} },
+    events: { on: () => () => {} },
+    getActiveChat: () => ({chatId: 'chat-prov', characterId: 'char-1'}),
+    characters: { get: async () => ({name: 'Nia'}) },
+    dom: { addStyle: () => () => {}, getMessageId: () => null },
+    ui: {
+      registerDrawerTab: () => ({root, activate: () => {}, onActivate: (fn) => { fn(); return () => {}; }, destroy: () => {}}),
+      registerInputBarAction: () => ({onClick(){}, destroy(){}}),
+      mount: () => null
+    },
+    onBackendMessage: () => () => {},
+    sendToBackend: () => {}
+  };
+  
+  const cleanup = await setup(ctx);
+  const $ = name => root.querySelector(`[data-et="${name}"]`);
+  await until(() => $('fixed')?.querySelectorAll('.et-card')?.length >= 2);
+
+  // 1. Initially mode is gemini
+  assert.equal($('batchGeminiWrap').hidden, false, 'Batch Gemini should be visible in Gemini mode');
+  assert.equal($('voiceDesignBox').hidden, false, 'Gemini voice design should be visible');
+  
+  // 2. Switch to Fish Audio native connection
+  $('mode').value = 'native';
+  $('mode').dispatchEvent(new dom.window.Event('change'));
+  $('connection').value = 'conn-fish';
+  $('connection').dispatchEvent(new dom.window.Event('change'));
+  await until(() => $('batchGeminiWrap').hidden && $('fixed')?.querySelector('input[placeholder*="Fish"]'));
+  
+  assert.equal($('batchGeminiWrap').hidden, true, 'Batch Gemini turns should be hidden when Fish Audio connection is selected');
+  assert.equal($('voiceDesignBox').hidden, true, 'Gemini voice design should be hidden when Fish Audio connection is selected');
+  
+  // Verify character card controls adapted to Fish Audio
+  const firstCard = $('fixed').querySelector('.et-card');
+  const searchInput = firstCard.querySelector('input[placeholder*="Fish"]');
+  assert.ok(searchInput, 'Character card input placeholder should mention Fish library');
+  const searchBtn = firstCard.querySelector('button[title*="Fish"]');
+  assert.ok(searchBtn && !searchBtn.hidden, 'Search button should be visible for Fish Audio');
+  const designBtn = firstCard.querySelector('button[title*="Design"]');
+  assert.ok(designBtn && designBtn.hidden, 'Design button should be hidden for Fish Audio');
+
+  // 3. Switch to Vertex native connection
+  $('connection').value = 'conn-vertex';
+  $('connection').dispatchEvent(new dom.window.Event('change'));
+  await until(() => !$('batchGeminiWrap').hidden);
+
+  assert.equal($('batchGeminiWrap').hidden, false, 'Batch Gemini should be visible for Vertex');
+  assert.equal($('voiceDesignBox').hidden, false, 'Voice design should be visible for Vertex');
+
+  cleanup?.();
+  Object.assign(globalThis, old);
+});
+
+test('opens Fish Audio voice library overlay modal with avatars, audio preview, and voice selection', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  const store = new Map();
+  const audioPlays = [];
+  class MockAudio {
+    constructor(src) { this.src = src; this.paused = true; }
+    play() { audioPlays.push(this.src); this.paused = false; return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = MockAudio;
+
+  globalThis.fetch = async (url) => {
+    if (url.includes('/tts-connections/providers')) {
+      return new Response(JSON.stringify({providers: [{id: 'fish_audio'}]}), {headers: {'Content-Type': 'application/json'}});
+    }
+    if (url.includes('/tts-connections') && !url.includes('/voices')) {
+      return new Response(JSON.stringify({data: [
+        {id: 'conn-fish', name: 'Fish TTS Profile', provider: 'fish_audio', model: 's2.1-pro'}
+      ]}), {headers: {'Content-Type': 'application/json'}});
+    }
+    if (url.includes('/voices')) {
+      return new Response(JSON.stringify({voices: [{id: 'default-fish-1', name: 'Default Fish'}]}), {headers: {'Content-Type': 'application/json'}});
+    }
+    return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
+  };
+  const root = dom.window.document.createElement('div');
+  const requests = [];
+  const ctx = {
+    registerDomDecorator: () => () => {},
+    settings: {
+      get: async key => store.get(key) || null,
+      set: async (key, value) => { store.set(key, structuredClone(value)); }
+    },
+    messages: { getRecent: () => [], getContent: () => '' },
+    state: { get: () => null, subscribe: () => () => {} },
+    events: { on: () => () => {} },
+    getActiveChat: () => ({chatId: 'chat-modal', characterId: 'char-1'}),
+    characters: { get: async () => ({name: 'Nia'}) },
+    dom: { addStyle: () => () => {}, getMessageId: () => null },
+    ui: {
+      registerDrawerTab: () => ({root, activate: () => {}, onActivate: (fn) => { fn(); return () => {}; }, destroy: () => {}}),
+      registerInputBarAction: () => ({onClick(){}, destroy(){}}),
+      mount: () => null
+    },
+    onBackendMessage: () => () => {},
+    sendToBackend: (msg) => {
+      requests.push(msg);
+      if (msg.action === 'searchVoices') {
+        setTimeout(() => {
+          dom.window.dispatchEvent(new dom.window.CustomEvent('backend-reply', {detail: msg}));
+          // Mock response back
+          const reply = {
+            namespace: 'choir',
+            id: msg.id,
+            result: {
+              query: msg.input.query,
+              results: [
+                {
+                  id: '0327fdb5da9e4fd782899a8058c8ae2b',
+                  name: 'Epic Narrator',
+                  description: 'Deep authoritative documentary voice',
+                  coverImage: 'https://public-platform.r2.fish.audio/coverimage/0327fdb5da9e4fd782899a8058c8ae2b',
+                  sampleAudio: 'https://platform.r2.fish.audio/task/sample1.mp3',
+                  author: 'Max N',
+                  tags: ['narration', 'deep', 'calm']
+                }
+              ]
+            }
+          };
+          globalThis.__onBackend?.(reply);
+        }, 10);
+      }
+    }
+  };
+
+  // Capture onBackendMessage
+  ctx.onBackendMessage = (fn) => { globalThis.__onBackend = fn; return () => {}; };
+
+  const cleanup = await setup(ctx);
+  const $ = name => root.querySelector(`[data-et="${name}"]`);
+  await until(() => $('fixed')?.querySelectorAll('.et-card')?.length >= 2);
+
+  // Switch to Fish Audio
+  $('mode').value = 'native';
+  $('connection').value = 'conn-fish';
+  $('connection').dispatchEvent(new dom.window.Event('change'));
+  await until(() => $('fixed')?.querySelector('input[placeholder*="Fish"]'));
+
+  // Click 🔍 on the character card
+  const firstCard = $('fixed').querySelector('.et-card');
+  const searchBtn = firstCard.querySelector('button[title*="Fish"]');
+  assert.ok(searchBtn, 'Search button on card exists');
+  searchBtn.click();
+
+  // Modal overlay should be rendered in document.body
+  await until(() => dom.window.document.querySelector('.et-modal-overlay'));
+  const modal = dom.window.document.querySelector('.et-modal-overlay');
+  assert.ok(modal, 'Modal overlay should be open');
+  assert.match(modal.textContent, /Fish Audio Voice Library/);
+
+  // Wait for mock search results to populate
+  await until(() => modal.querySelector('.et-voice-card'));
+  const voiceCard = modal.querySelector('.et-voice-card');
+  assert.ok(voiceCard, 'Voice card should be rendered in modal');
+  assert.match(voiceCard.textContent, /Epic Narrator/);
+  assert.match(voiceCard.textContent, /by Max N/);
+
+  // Check cover image
+  const img = voiceCard.querySelector('img');
+  assert.ok(img, 'Voice cover image element should exist');
+  assert.equal(img.src, 'https://public-platform.r2.fish.audio/coverimage/0327fdb5da9e4fd782899a8058c8ae2b');
+
+  // Test Listen audio preview
+  const listenBtn = voiceCard.querySelector('button[textContent*="Listen"], button');
+  const listenBtnEl = [...voiceCard.querySelectorAll('button')].find(b => b.textContent.includes('Listen'));
+  assert.ok(listenBtnEl, 'Listen preview button should exist');
+  listenBtnEl.click();
+  assert.ok(audioPlays.includes('https://platform.r2.fish.audio/task/sample1.mp3'), 'Audio sample should play');
+
+  // Test Use Voice button
+  const useBtn = [...voiceCard.querySelectorAll('button')].find(b => b.textContent.includes('Use Voice'));
+  assert.ok(useBtn, 'Use Voice button should exist');
+  useBtn.click();
+
+  // Modal should close
+  await until(() => !dom.window.document.querySelector('.et-modal-overlay'));
+  assert.ok(!dom.window.document.querySelector('.et-modal-overlay'), 'Modal should close after selection');
+
+  // Selected voice should be assigned to the character card
+  const voiceSelect = firstCard.querySelector('[data-choir-voice]');
+  assert.equal(voiceSelect.value, '0327fdb5da9e4fd782899a8058c8ae2b', 'Voice should be assigned to character');
+
+  cleanup?.();
+  Object.assign(globalThis, old);
+});
+
+test('fast classifier setting resolves speech plan locally in 0ms without sending plan RPC', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  const requests = [], audios = [];
+  const message = {
+    id: 'message-fc',
+    chat_id: 'chat-fc',
+    name: 'Mira',
+    is_user: false,
+    content: 'The valley was quiet and peaceful.',
+    extra: {}
+  };
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; audios.push(this); }
+    play() { this.paused = false; setTimeout(() => this.onended?.(), 2); return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = FakeAudio;
+  globalThis.fetch = async () => new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}], data: []}), {headers: {'Content-Type': 'application/json'}});
+
+  const messageActions = dom.window.document.createElement('div');
+  const root = dom.window.document.createElement('div');
+  const ctx = {
+    registerDomDecorator: options => options.render(messageActions, {scope: 'message:message-fc:bubble:footer'}),
+    settings: {
+      get: async () => ({useFastClassifier: true, mode: 'gemini', casts: {}, fixed: [{speaker: 'Narrator', voice: 'Charon', style: ''}], voices: [{id: 'Charon'}]}),
+      set: async () => {}
+    },
+    messages: {
+      getRecent: () => [message],
+      getContent: id => id === message.id ? message.content : null
+    },
+    state: {subscribe: () => () => {}},
+    connections: {list: () => []},
+    characters: {get: async () => ({name: 'Mira'})},
+    getActiveChat: () => ({chatId: 'chat-fc', characterId: 'character-a'}),
+    dom: {addStyle: () => () => {}},
+    ui: {
+      registerDrawerTab: () => ({root, activate() {}, destroy() {}}),
+      mount: () => dom.window.document.createElement('div'),
+      registerInputBarAction: () => ({onClick() {}, destroy() {}})
+    },
+    events: {on: () => () => {}},
+    onBackendMessage: () => () => null,
+    sendToBackend: msg => {
+      requests.push(msg);
+      if (msg.action === 'ping') onBackend?.({namespace: 'choir', id: msg.id, result: {ready: true}});
+      if (msg.action === 'gemini') onBackend?.({namespace: 'choir', id: msg.id, result: {base64: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=', mimeType: 'audio/wav'}});
+    }
+  };
+  let onBackend;
+  ctx.onBackendMessage = fn => { onBackend = fn; return () => null; };
+
+  try {
+    const cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+    $('key').value = 'test-key';
+    messageActions.querySelector('button').click();
+    await until(() => audios.length > 0 || $('status').textContent.includes('Speech plan ready'));
+    // Zero plan RPC requests because fastClassifyPlan handled it locally!
+    assert.equal(requests.filter(r => r.action === 'plan').length, 0);
+    cleanup();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});
+
+test('plannerMode toggles Jev System 1 inputs directly in Speech & Planner section', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  const requests = [];
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; }
+    play() { return Promise.resolve(); }
+    pause() {}
+  }
+  globalThis.Audio = FakeAudio;
+  globalThis.fetch = async () => new Response(JSON.stringify({voices: [{id: 'Charon'}], data: []}), {headers: {'Content-Type': 'application/json'}});
+
+  const root = dom.window.document.createElement('div');
+  let onBackend;
+  const ctx = {
+    registerDomDecorator: () => () => {},
+    settings: {
+      get: async () => ({mode: 'gemini', plannerMode: 'llm', casts: {}, fixed: [{speaker: 'Narrator', voice: 'Charon', style: ''}], voices: [{id: 'Charon'}]}),
+      set: async () => {}
+    },
+    messages: { getRecent: () => [], getContent: () => null },
+    state: { subscribe: () => () => {} },
+    connections: { list: () => [] },
+    characters: { get: async () => ({name: 'Mira'}) },
+    getActiveChat: () => ({chatId: 'chat-test', characterId: 'char-1'}),
+    dom: { addStyle: () => () => {} },
+    ui: {
+      registerDrawerTab: () => ({root, activate() {}, destroy() {}}),
+      mount: () => dom.window.document.createElement('div'),
+      registerInputBarAction: () => ({onClick() {}, destroy() {}})
+    },
+    events: { on: () => () => {} },
+    onBackendMessage: fn => { onBackend = fn; return () => null; },
+    sendToBackend: msg => {
+      requests.push(msg);
+      if (msg.action === 'ping') onBackend?.({namespace: 'choir', id: msg.id, result: {ready: true}});
+      if (msg.action === 'testPlanner') onBackend?.({namespace: 'choir', id: msg.id, result: {provider: 'TypeSafe AI', model: 'Jev System 1', response: 'READY · 18ms'}});
+    }
+  };
+
+  try {
+    const cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+
+    // Initially in LLM mode
+    assert.equal($('plannerMode').value, 'llm');
+    assert.equal($('llmPlannerBox').hidden, false);
+    assert.equal($('jevPlannerBox').hidden, true);
+
+    // Switch to Jev System 1
+    $('plannerMode').value = 'jev';
+    $('plannerMode').dispatchEvent(new dom.window.Event('change'));
+    assert.equal($('llmPlannerBox').hidden, true);
+    assert.equal($('jevPlannerBox').hidden, false);
+
+    // Enter Jev key and test planner
+    $('jevKey').value = 'test-jev-key';
+    $('testPlanner').click();
+    await until(() => $('status').textContent.includes('Planner test passed') && $('status').textContent.includes('Jev System 1'));
+    const testReq = requests.find(r => r.action === 'testPlanner');
+    assert.ok(testReq);
+    assert.equal(testReq.input.plannerMode, 'jev');
+    assert.equal(testReq.input.jevApiKey, 'test-jev-key');
+
+    cleanup?.();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
 });

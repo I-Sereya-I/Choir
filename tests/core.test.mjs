@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan} from '../src/core.js';
 
 test('Gemini batches preserve turn metadata and split on third speaker or provider change',()=>{
   const turns=['Narrator','Alice','Narrator','Bob','Alice'].map((speaker,i)=>({speaker,voice:speaker==='Narrator'?'Charon':speaker==='Alice'?'Kore':'Puck',text:'Turn '+i,style:'Soft',route:'gemini'}));
@@ -204,4 +204,139 @@ test('default planning sections keep ordinary requests small and preserve every 
   const sections=planningSections(text);
   assert.equal(sections.length,10);assert.equal(sections.join(''),text);
   assert.ok(sections.every(section=>speechSourceUnits(section).length<=8 && section.length<=1200));
+});
+
+test('stripAudioTags and validatePlan allowing inline tags like <sigh> or [whispers] in segment text without failing transcript equality',()=>{
+  assert.equal(stripAudioTags('Hello <sigh> world! [whispers]').trim().replace(/\s+/g, ' '), 'Hello world!');
+  assert.equal(stripAudioTags('<gasp> Oh no! <laugh> [shouting] Stop! </pause>').trim().replace(/\s+/g, ' '), 'Oh no! Stop!');
+  const c=config();
+  const plan=validatePlan({
+    segments:[
+      {speaker:'Narrator',voice:'Charon',text:'<sigh> Hello world.'},
+      {speaker:'Alice',voice:'Kore',text:'Wait! [whispers] Are you sure? <gasp>'}
+    ]
+  },'Hello world. Wait! Are you sure?',c);
+  assert.equal(plan.segments[0].text,'<sigh> Hello world.');
+  assert.equal(plan.segments[1].text,'Wait! [whispers] Are you sure? <gasp>');
+});
+
+test('validatePlan preserving voicePrompt on newly cast NPCs',()=>{
+  const c=config();
+  const plan=validatePlan({
+    segments:[
+      {speaker:'Narrator',voice:'Charon',text:'He entered.'},
+      {speaker:'Blacksmith',voice:'Fenrir',text:'Welcome to my forge.',voicePrompt:'Gruff Scottish blacksmith, deep gravelly timbre'}
+    ]
+  },'He entered. Welcome to my forge.',c);
+  assert.equal(plan.npcs.length,1);
+  assert.equal(plan.npcs[0].speaker,'Blacksmith');
+  assert.equal(plan.npcs[0].voice,'Fenrir');
+  assert.equal(plan.npcs[0].voicePrompt,'Gruff Scottish blacksmith, deep gravelly timbre');
+
+  // Also test preservation when raw.newNPCs is provided
+  const c2=config();
+  const plan2=validatePlan({
+    segments:[
+      {speaker:'Narrator',voice:'Charon',text:'He looked around.'},
+      {speaker:'Merchant',voice:'Puck',text:'Looking to buy?'}
+    ],
+    newNPCs:[
+      {name:'Merchant',voice:'Puck',voicePrompt:'Fast-talking traveling merchant, nasal high pitch'}
+    ]
+  },'He looked around. Looking to buy?',c2);
+  assert.equal(plan2.npcs.length,1);
+  assert.equal(plan2.npcs[0].speaker,'Merchant');
+  assert.equal(plan2.npcs[0].voicePrompt,'Fast-talking traveling merchant, nasal high pitch');
+});
+
+test('stripAudioTags strips Fish Audio natural language bracket and parenthetical emotion tags', () => {
+  assert.equal(stripAudioTags('[whispering, nervously] Hello!'), 'Hello!');
+  assert.equal(stripAudioTags('[laughs warmly] That is great.'), 'That is great.');
+  assert.equal(stripAudioTags('(happy) Good morning.'), 'Good morning.');
+  assert.equal(stripAudioTags('[sigh: deep] Finally.'), 'Finally.');
+});
+
+test('transcriptFromMessage filters HUD status blocks, metadata, and divider lines', () => {
+  const message = `Time: Tuesday, October 14, 07:45 AM (Autumn)
+Location: Living Room, Subsidized Apartment 402
+Costume: White dress shirt, black trousers, black socks
+Posture: Sitting on the edge of the sofa, leaning forward
+Nearby Races: Cat Girl (Nekomusume)
+
+Approved
+
+Response
+---------
+Chapter 1: Cohabitation Clause
+
+A warm weight dropped across Jay's lap before he could reach his second sock.
+
+"Nnnh... you're late, Jay-kun," Nia purred.`;
+
+  const clean = transcriptFromMessage(message);
+  assert.ok(!clean.includes('Time:'));
+  assert.ok(!clean.includes('Location:'));
+  assert.ok(!clean.includes('Costume:'));
+  assert.ok(!clean.includes('Approved'));
+  assert.ok(!clean.includes('Chapter 1'));
+  assert.ok(clean.includes("A warm weight dropped across Jay's lap"));
+  assert.ok(clean.includes("Nia purred"));
+});
+
+test('fastClassifyPlan resolves pure narration immediately without calling planner', () => {
+  const c = config();
+  const text = 'The castle gates swung open as the dawn mist cleared from the valley.';
+  const plan = fastClassifyPlan(text, c);
+  assert.ok(plan);
+  assert.equal(plan.segments.length, 1);
+  assert.equal(plan.segments[0].speaker, 'Narrator');
+  assert.equal(plan.segments[0].text, text);
+});
+
+test('fastClassifyPlan resolves 1-on-1 character dialogue directly in 0ms', () => {
+  const c = config(); // Narrator (Charon), User (Puck), Alice (Kore)
+  const text = 'Alice leaned forward. "Are you ready?" She waited for an answer. "We should leave soon."';
+  const plan = fastClassifyPlan(text, c);
+  assert.ok(plan);
+  assert.equal(plan.segments.length, 4);
+  assert.equal(plan.segments[0].speaker, 'Narrator');
+  assert.equal(plan.segments[1].speaker, 'Alice');
+  assert.equal(plan.segments[1].voice, 'Kore');
+  assert.equal(plan.segments[2].speaker, 'Narrator');
+  assert.equal(plan.segments[3].speaker, 'Alice');
+});
+
+test('fastClassifyPlan uses dialogue tag attribution and detects emotion style', () => {
+  const c = config();
+  c.fixed.push({ speaker: 'Bob', voice: 'Puck', route: 'gemini', style: '' });
+  c.voices.push({ id: 'Puck', route: 'gemini', gender: 'male' });
+  const text = '"Good morning," Alice smiled. Bob whispered, "Keep your voice down."';
+  const plan = fastClassifyPlan(text, c);
+  assert.ok(plan);
+  assert.equal(plan.segments[0].speaker, 'Alice');
+  assert.equal(plan.segments[0].style, 'cheerful');
+  assert.equal(plan.segments[2].speaker, 'Bob');
+  assert.equal(plan.segments[2].style, 'whispering');
+});
+
+test('fastClassifyPlan returns null on ambiguous multi-character dialogue without tags', () => {
+  const c = config();
+  c.fixed.push({ speaker: 'Bob', voice: 'Puck', route: 'gemini', style: '' });
+  c.voices.push({ id: 'Puck', route: 'gemini', gender: 'male' });
+  const text = '"Who is there?" + "\n" + "I am not sure."';
+  const plan = fastClassifyPlan(text, c);
+  assert.equal(plan, null); // Falls back to LLM/Jev
+});
+
+test('transcriptFromMessage strips markdown headers like # Approved, ## Response, and ### Chapter headers', () => {
+  const message = `# Approved
+
+## Response
+
+### Chapter 4: Batter and Boundaries
+
+The countertop had never seen this much purposeful flurry.`;
+
+  const clean = transcriptFromMessage(message);
+  assert.equal(clean, 'The countertop had never seen this much purposeful flurry.');
 });

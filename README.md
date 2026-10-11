@@ -15,7 +15,7 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? Update Choir to **1.0.17**, restart it, then reload. Choir removes tracker/status/state blocks, collapsible details panels, HTML comments, and HTML panels marked with tracker/stats/hud classes or IDs before planning and speech. Nested and unfinished metadata blocks are handled. Ordinary narration remains spoken. Older recordings containing removed metadata need regeneration; Play Choir on the message automatically plans/records fresh audio when its saved speech text no longer matches.
+Already installed? Update Choir to **1.0.18**, restart it, then reload. Choir pipelines multi-section planning and playback to start speaking immediately, and decouples speech synthesis into an asynchronous worker pool for seamless playback. Choir removes tracker/status/state blocks, collapsible details panels, HTML comments, and HTML panels marked with tracker/stats/hud classes or IDs before planning and speech. Nested and unfinished metadata blocks are handled. Ordinary narration remains spoken. Older recordings containing removed metadata need regeneration; Play Choir on the message automatically plans/records fresh audio when its saved speech text no longer matches.
 
 ## Install locally
 

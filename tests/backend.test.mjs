@@ -29,7 +29,7 @@ async function harness(generate, cors, provider, deadline, stream) {
   let handler;const sent=[];let wake;
   const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider};
   vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate,rawStream:stream},connections:{get:async()=>connection,list:async()=>[connection]},cors},
-    console,Map,Set,AbortController,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView});
+    console,Map,Set,AbortController,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView,fetch:globalThis.fetch});
   return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
     result:()=>sent.some(item=>item.message.result || item.message.error)?Promise.resolve(sent.findLast(item=>item.message.result || item.message.error)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
 }
@@ -83,7 +83,7 @@ test('empty planner responses produce an actionable error',async()=>{
 test('backend readiness check replies without making an LLM or TTS request',async()=>{
   const h=await harness(()=>{throw new Error('Should not call planner');},()=>{throw new Error('Should not call TTS');});
   h.send('ping',{});
-  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.0.17');
+  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.0.18');
 });
 
 test('prose-only planner responses expose a useful diagnostic after retry',async()=>{
@@ -122,4 +122,441 @@ test('a stalled planner test reports its model and cancels generation at the dea
   assert.equal(limit,60000);expire();
   const result=await h.result();assert.match(result.message.error,/Waiting for a short LLM test response/);
   assert.match(result.message.error,/gemini-flash-text/);assert.ok(signal.aborted);
+});
+
+test('designVoice creates a custom Gemini voice from a natural language prompt',async()=>{
+  let request;
+  const h=await harness(null,async(url,options)=>{
+    request={url,options};
+    return {status:200,body:JSON.stringify({name:'voices/voice_test_123',voice:{id:'voice_test_123'}})};
+  });
+  h.send('designVoice',{apiKey:'key-test',prompt:'Gruff dwarf blacksmith'});
+  const result=await h.result();
+  assert.equal(result.message.result.id,'voice_test_123');
+  assert.equal(result.message.result.description,'Gruff dwarf blacksmith');
+  assert.equal(request.url,'https://generativelanguage.googleapis.com/v1beta/voices');
+  assert.equal(request.options.headers['x-goog-api-key'],'key-test');
+  assert.deepEqual(JSON.parse(request.options.body),{type:'prompted',prompt:'Gruff dwarf blacksmith',store:true});
+});
+
+test('designVoice handles missing API key or empty prompt',async()=>{
+  const h=await harness();
+  h.send('designVoice',{apiKey:'',prompt:'Gruff dwarf'});
+  assert.match((await h.result()).message.error,/Enter a Gemini API key/);
+
+  const h2=await harness();
+  h2.send('designVoice',{apiKey:'key',prompt:''});
+  assert.match((await h2.result()).message.error,/Describe the voice to design/);
+});
+
+test('backend retry fallback when custom voice_ returns 404',async()=>{
+  const calls=[];
+  const h=await harness(null,async(url,options)=>{
+    calls.push({url,options,body:JSON.parse(options.body)});
+    if(calls.length===1) {
+      return {status:404,body:JSON.stringify({error:{message:'Voice voices/voice_dwarf_abc not found',status:'NOT_FOUND'}})};
+    }
+    return {status:200,body:JSON.stringify({candidates:[{content:{parts:[{inlineData:{data:'ZmFsbGJhY2s=',mimeType:'audio/wav'}}]}}]})};
+  });
+  h.send('gemini',{
+    apiKey:'test-key',
+    model:'gemini-3.8-flash-tts',
+    segment:{text:'Halt!',voice:'voice_dwarf_abc',gender:'male',style:'Stern'}
+  });
+  const result=await h.result();
+  assert.equal(result.message.result.base64,'ZmFsbGJhY2s=');
+  assert.equal(calls.length,2);
+  assert.equal(calls[0].body.generationConfig.speechConfig.voiceConfig.voice,'voice_dwarf_abc');
+  assert.equal(calls[1].body.generationConfig.speechConfig.voiceConfig.voice,'Charon');
+
+  // Test female voice falling back to Kore
+  const femaleCalls=[];
+  const h2=await harness(null,async(url,options)=>{
+    femaleCalls.push({url,options,body:JSON.parse(options.body)});
+    if(femaleCalls.length===1) {
+      return {status:404,body:JSON.stringify({error:{message:'Voice not found'}})};
+    }
+    return {status:200,body:JSON.stringify({candidates:[{content:{parts:[{inlineData:{data:'a29yZQ==',mimeType:'audio/wav'}}]}}]})};
+  });
+  h2.send('gemini',{
+    apiKey:'test-key',
+    model:'gemini-3.8-flash-tts',
+    segment:{text:'Greetings.',voice:'voice_female_elf',gender:'female',style:'Gentle'}
+  });
+  const result2=await h2.result();
+  assert.equal(result2.message.result.base64,'a29yZQ==');
+  assert.equal(femaleCalls.length,2);
+  assert.equal(femaleCalls[0].body.generationConfig.speechConfig.voiceConfig.voice,'voice_female_elf');
+  assert.equal(femaleCalls[1].body.generationConfig.speechConfig.voiceConfig.voice,'Kore');
+});
+
+test('fishaudio synthesizes speech with Authorization header and emotion tag formatting', async () => {
+  let request;
+  const h = await harness(null, async (url, options) => {
+    request = { url, options };
+    return { status: 200, body: 'bXAzLWF1ZGlv' };
+  });
+  h.send('fishaudio', {
+    apiKey: 'fish-secret-123',
+    model: 's2.1-pro',
+    segment: { text: 'Watch out!', voice: 'voice-ref-456', style: 'shouting in alarm' }
+  });
+  const result = await h.result();
+  assert.equal(result.message.result.base64, 'bXAzLWF1ZGlv');
+  assert.equal(result.message.result.mimeType, 'audio/mpeg');
+  assert.equal(request.url, 'https://api.fish.audio/v1/tts');
+  assert.equal(request.options.headers.Authorization, 'Bearer fish-secret-123');
+  assert.equal(request.options.headers.model, 's2.1-pro');
+  const body = JSON.parse(request.options.body);
+  assert.equal(body.text, '[shouting in alarm] Watch out!');
+  assert.equal(body.reference_id, 'voice-ref-456');
+  assert.equal(body.format, 'mp3');
+});
+
+test('fishaudio handles missing API key or empty segment', async () => {
+  const h = await harness();
+  h.send('fishaudio', { apiKey: '', segment: { text: 'Hello.' } });
+  assert.match((await h.result()).message.error, /Enter a Fish Audio API key/);
+
+  const h2 = await harness();
+  h2.send('fishaudio', { apiKey: 'key', segment: { text: '' } });
+  assert.match((await h2.result()).message.error, /Invalid speech chunk/);
+});
+
+test('searchVoices searches community voice models and parses items', async () => {
+  let request;
+  const h = await harness(null, async (url, options) => {
+    request = { url, options };
+    return {
+      status: 200,
+      body: JSON.stringify({
+        items: [
+          { _id: '0f1de066bb6c4d03933aad3d0169cd0f', title: 'Natsuki', description: 'Cute tsundere voice' },
+          { _id: 'a6e0107fbef440cdb955646fb58cfe5a', title: 'Natsuki Subaru', description: 'Confident isekai guy' }
+        ]
+      })
+    };
+  });
+  h.send('searchVoices', { query: 'natsuki', limit: 5 });
+  const result = await h.result();
+  assert.equal(result.message.result.query, 'natsuki');
+  assert.equal(result.message.result.results.length, 2);
+  assert.equal(result.message.result.results[0].name, 'Natsuki');
+  assert.equal(result.message.result.results[0].id, '0f1de066bb6c4d03933aad3d0169cd0f');
+  assert.match(request.url, /api\.fish\.audio\/model\?title=natsuki/);
+});
+
+test('searchVoices handles empty query or network failure', async () => {
+  const h = await harness();
+  h.send('searchVoices', { query: '' });
+  assert.match((await h.result()).message.error, /Enter a character or voice name/);
+
+  const h2 = await harness(null, async () => ({ status: 500, body: 'Internal error' }));
+  h2.send('searchVoices', { query: 'glados' });
+  assert.match((await h2.result()).message.error, /Voice search HTTP 500/);
+});
+
+
+import { classifyWithJev, planWithJev } from '../src/backend.js';
+
+test('classifyWithJev calls API with proper payload, auth header and choices, returning candidate strings', async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  try {
+    globalThis.fetch = async (url, options) => {
+      request = { url, options, body: JSON.parse(options.body) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: ['Alice', 'Bob'] })
+      };
+    };
+    const items = [
+      { text: '"Hello"', context: 'Alice said' },
+      { text: '"Hi there"', context: 'Bob replied' }
+    ];
+    const candidates = ['Alice', 'Bob', 'Charlie'];
+    const result = await classifyWithJev({
+      items,
+      candidates,
+      apiKey: 'test-jev-key'
+    });
+    assert.deepEqual(result, ['Alice', 'Bob']);
+    assert.equal(request.url, 'https://api.typesafe.ai/v1/classify');
+    assert.equal(request.options.headers.Authorization, 'Bearer test-jev-key');
+    assert.deepEqual(request.body, {
+      inputs: [
+        { text: '"Hello"', context: 'Alice said' },
+        { text: '"Hi there"', context: 'Bob replied' }
+      ],
+      choices: ['Alice', 'Bob', 'Charlie']
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('classifyWithJev supports custom endpoint and handles various API response formats', async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  try {
+    globalThis.fetch = async (url, options) => {
+      request = { url, options };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ classifications: [{ choice: 'Guard' }] })
+      };
+    };
+    const result = await classifyWithJev({
+      items: [{ text: '"Halt!"' }],
+      candidates: ['Guard'],
+      apiKey: 'Bearer existing-token',
+      endpoint: 'https://custom.api.endpoint/v1/classify'
+    });
+    assert.deepEqual(result, ['Guard']);
+    assert.equal(request.url, 'https://custom.api.endpoint/v1/classify');
+    assert.equal(request.options.headers.Authorization, 'Bearer existing-token');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('classifyWithJev validates required apiKey, choices, and handles network failure', async () => {
+  await assert.rejects(
+    () => classifyWithJev({ items: [{ text: '"test"' }], candidates: ['Alice'], apiKey: '' }),
+    /Enter a Jev API key/
+  );
+  await assert.rejects(
+    () => classifyWithJev({ items: [{ text: '"test"' }], candidates: [], apiKey: 'key' }),
+    /Provide at least one candidate choice/
+  );
+  const emptyRes = await classifyWithJev({ items: [], candidates: ['Alice'], apiKey: 'key' });
+  assert.deepEqual(emptyRes, []);
+
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: { message: 'Invalid API key' } })
+    });
+    await assert.rejects(
+      () => classifyWithJev({ items: [{ text: '"test"' }], candidates: ['Alice'], apiKey: 'bad-key' }),
+      /Jev classification failed: Jev classification HTTP 401: Invalid API key/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('planWithJev classifies dialogue speakers and emotion tags into valid speech plan segments', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    globalThis.fetch = async (url, options) => {
+      const body = JSON.parse(options.body);
+      calls.push({ url, body });
+      if (calls.length === 1) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: ['Alice', 'Bob'] })
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: ['cheerful', 'whispering'] })
+      };
+    };
+
+    const jevConfig = {
+      voices: [{ id: 'Charon' }, { id: 'Kore' }],
+      fixed: [
+        { speaker: 'Narrator', voice: 'Charon', style: '' },
+        { speaker: 'Persona', voice: 'Charon', style: '' },
+        { speaker: 'Alice', voice: 'Kore', style: '' }
+      ],
+      npcs: [{ speaker: 'Bob', voice: 'Charon', style: '' }],
+      useStyle: true
+    };
+    const transcript = 'The room fell quiet. "Good morning!" said Alice. "Keep your voice down," Bob whispered.';
+    const plan = await planWithJev({
+      transcript,
+      config: jevConfig,
+      apiKey: 'jev-secret-test'
+    });
+
+    assert.ok(plan.segments);
+    assert.equal(calls.length, 2);
+    // Persona must be excluded from candidate choices
+    assert.deepEqual(calls[0].body.choices, ['Alice', 'Bob']);
+    assert.deepEqual(calls[1].body.choices, ['neutral', 'cheerful', 'whispering', 'angry', 'sad', 'sigh']);
+
+    // Check segments attribution and emotion styles
+    const aliceSeg = plan.segments.find(s => s.text === '"Good morning!"');
+    assert.ok(aliceSeg, 'Alice dialogue segment found');
+    assert.equal(aliceSeg.speaker, 'Alice');
+    assert.equal(aliceSeg.voice, 'Kore');
+    assert.equal(aliceSeg.style, 'cheerful');
+
+    const bobSeg = plan.segments.find(s => s.text === '"Keep your voice down,"');
+    assert.ok(bobSeg, 'Bob dialogue segment found');
+    assert.equal(bobSeg.speaker, 'Bob');
+    assert.equal(bobSeg.voice, 'Charon');
+    assert.equal(bobSeg.style, 'whispering');
+
+    // Narration segments
+    const narrSeg = plan.segments.find(s => s.text === 'The room fell quiet.');
+    assert.ok(narrSeg, 'Narrator segment found');
+    assert.equal(narrSeg.speaker, 'Narrator');
+    assert.equal(narrSeg.voice, 'Charon');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('planWithJev handles pure narration without making classification calls', async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalled = false;
+  try {
+    globalThis.fetch = async () => {
+      fetchCalled = true;
+      throw new Error('Should not be called');
+    };
+    const transcript = 'The sun set over the distant mountains. All was calm and peaceful.';
+    const plan = await planWithJev({
+      transcript,
+      config,
+      apiKey: 'jev-key'
+    });
+    assert.equal(fetchCalled, false);
+    assert.equal(plan.segments.length, 1);
+    assert.equal(plan.segments[0].speaker, 'Narrator');
+    assert.equal(plan.segments[0].text, transcript);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('backend RPC handler supports action planJev and planWithJev', async () => {
+  const calls = [];
+  const corsHandler = async (url, options) => {
+    calls.push({ url, options, body: JSON.parse(options.body) });
+    return {
+      status: 200,
+      body: JSON.stringify({ choices: calls.length % 2 === 1 ? ['Hero'] : ['sigh'] })
+    };
+  };
+
+  const jevConfig = {
+    voices: [{ id: 'Charon' }, { id: 'Kore' }],
+    fixed: [
+      { speaker: 'Narrator', voice: 'Charon', style: '' },
+      { speaker: 'Hero', voice: 'Kore', style: '' }
+    ],
+    npcs: [],
+    useStyle: true
+  };
+
+  const h = await harness(null, corsHandler);
+  h.send('planJev', {
+    transcript: 'He looked back. "Farewell," sighed Hero.',
+    config: jevConfig,
+    apiKey: 'rpc-jev-key'
+  });
+  const res = await h.result();
+  assert.ok(res.message.result);
+  const heroSeg = res.message.result.segments.find(s => s.text === '"Farewell,"');
+  assert.equal(heroSeg.speaker, 'Hero');
+  assert.equal(heroSeg.style, 'sigh');
+
+  // Test action alias planWithJev
+  const h2 = await harness(null, corsHandler);
+  h2.send('planWithJev', {
+    transcript: 'He looked back. "Farewell," sighed Hero.',
+    config: jevConfig,
+    apiKey: 'rpc-jev-key'
+  });
+  const res2 = await h2.result();
+  assert.ok(res2.message.result);
+});
+
+test('action plan attempts Jev when useJev and jevApiKey are configured, succeeding without LLM', async () => {
+  let llmCalled = false;
+  const generate = async () => {
+    llmCalled = true;
+    return { content: '{"segments":[]}' };
+  };
+  const corsHandler = async (url, options) => {
+    return {
+      status: 200,
+      body: JSON.stringify({ choices: ['Hero'] })
+    };
+  };
+  const jevConfig = {
+    voices: [{ id: 'Charon' }, { id: 'Kore' }],
+    fixed: [
+      { speaker: 'Narrator', voice: 'Charon', style: '' },
+      { speaker: 'Hero', voice: 'Kore', style: '' }
+    ],
+    npcs: [],
+    useStyle: true,
+    useJev: true,
+    jevApiKey: 'auto-jev-key'
+  };
+
+  const h = await harness(generate, corsHandler);
+  h.send('plan', {
+    transcript: '"I am ready," said Hero.',
+    config: jevConfig
+  });
+  const res = await h.result();
+  assert.ok(res.message.result);
+  assert.equal(llmCalled, false, 'LLM should not be called when Jev succeeds');
+  const heroSeg = res.message.result.segments.find(s => s.text === '"I am ready,"');
+  assert.equal(heroSeg.speaker, 'Hero');
+});
+
+test('action plan falls back to standard LLM if Jev classification fails', async () => {
+  let llmCalled = false;
+  const generate = async () => {
+    llmCalled = true;
+    return { content: JSON.stringify({ segments: [{ speaker: 'Narrator', unit_ids: [0, 1] }] }) };
+  };
+  const corsHandler = async () => {
+    return { status: 500, body: JSON.stringify({ error: { message: 'Jev service unavailable' } }) };
+  };
+  const jevConfig = {
+    voices: [{ id: 'Charon' }],
+    fixed: [{ speaker: 'Narrator', voice: 'Charon', style: '' }],
+    npcs: [],
+    useStyle: true,
+    useJev: true,
+    jevApiKey: 'failing-jev-key'
+  };
+
+  const h = await harness(generate, corsHandler);
+  h.send('plan', {
+    transcript: '"Hello," whispered a voice.',
+    config: jevConfig
+  });
+  const res = await h.result();
+  assert.ok(res.message.result);
+  assert.equal(llmCalled, true, 'LLM planner should be invoked as fallback');
+});
+
+test('testPlanner tests Jev when plannerMode is jev', async () => {
+  let request;
+  const h = await harness(null, async (url, options) => {
+    request = { url, options };
+    return { status: 200, body: JSON.stringify({ choices: ['Alice'] }) };
+  });
+  h.send('testPlanner', { plannerMode: 'jev', jevApiKey: 'test-jev-key' });
+  const result = await h.result();
+  assert.equal(result.message.result.provider, 'TypeSafe AI');
+  assert.equal(result.message.result.model, 'Jev System 1');
+  assert.match(result.message.result.response, /READY/);
+  assert.equal(request.options.headers.Authorization, 'Bearer test-jev-key');
 });
