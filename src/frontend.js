@@ -223,6 +223,7 @@ export async function setup(ctx) {
       <label class="et-check"><input data-et="muteNarrator" type="checkbox"> Mute narrator (dialogue only)</label>
       <label class="et-check" hidden><input data-et="enableSfx" type="checkbox" checked> Sound effects (Foley cues)</label>
       <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show section play buttons</label>
+      <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
 
@@ -355,7 +356,7 @@ export async function setup(ctx) {
   const voiceCatalogues=new Map();
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
   const defaults = () => ({mode:'native',model:'gemini-3.8-flash-tts',planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:false,concurrency:1,plannerTokens:8192,
-    prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,sectionButtons:false,connectionMode:'several',singleVoices:{},
+    prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
     extraVoices:'',useStyle:true,auto:false,muteNarrator:false,enableSfx:true,freesoundApiKey:'',autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1/classify',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
@@ -367,7 +368,7 @@ export async function setup(ctx) {
   };
   let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged;
   // Keep the launcher unobtrusive on every load, including existing expanded preferences.
-  let mixerState={master:1,channels:{},x:20,y:80,...await ctx.settings.get('ui:mixer').catch(()=>null),collapsed:true};
+  const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),...(savedMixer||{}),collapsed:true};
   // Solo is no longer exposed; old solo preferences must not silently mute other voices.
   for(const channel of Object.values(mixerState.channels))delete channel.solo;
   const mixer=document.createElement('section');mixer.className='choir-mixer';mixer.dataset.choirMixer='';mixer.setAttribute('aria-label','Choir voice mixer');
@@ -414,6 +415,9 @@ export async function setup(ctx) {
     const doc=root?.ownerDocument || (typeof document!=='undefined'?document:null);
     const view=doc?.defaultView || (typeof window!=='undefined'?window:null);
     if(!doc || !view)return;
+    const isEnabled = Boolean(config?.enableMixer || mixerState.enabled);
+    mixer.hidden = !isEnabled;
+    if(!isEnabled)return;
     mixerState.x=Math.max(0,Math.min(Number(mixerState.x)||0,Math.max(0,(view?.innerWidth || 1024)-mixer.offsetWidth-10)));
     mixerState.y=Math.max(0,Math.min(Number(mixerState.y)||0,Math.max(0,(view?.innerHeight || 768)-mixer.offsetHeight-10)));
     mixer.style.left=`${mixerState.x}px`;mixer.style.top=`${mixerState.y}px`;
@@ -492,7 +496,9 @@ export async function setup(ctx) {
       const part=(activePlayback?.chunk ?? 0)+1;control.slider.title=`${currentSpeaker || 'Current block'}${part>1?` · part ${part}`:''}`;control.slider.setAttribute('aria-valuetext',`${clock(seconds)} of ${clock(duration)}${part>1?`, part ${part}`:''}`);
     }
   }
-  $('showMixer').onclick=()=>{mixerState.collapsed=false;positionMixer();persistMixer();};positionMixer();
+  $('showMixer').onclick=()=>{config.enableMixer=true;if($('enableMixer'))$('enableMixer').checked=true;mixerState.enabled=true;mixerState.collapsed=false;positionMixer();persistMixer();scheduleSettingsSave();};
+  if($('enableMixer'))$('enableMixer').onchange=()=>{config.enableMixer=$('enableMixer').checked;mixerState.enabled=config.enableMixer;positionMixer();scheduleSettingsSave();persistMixer();};
+  positionMixer();
   function status(text,error=false) {
     if(disposed)return;
     for(const name of ['status','statusActions']) {$(name).textContent=text;$(name).classList.toggle('et-error',error);}
@@ -534,7 +540,7 @@ export async function setup(ctx) {
   }
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
-  const preferenceFields=['mode','model','planner','connection','connectionMode','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','useStyle','auto','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','freesoundApiKey'];
+  const preferenceFields=['mode','model','planner','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','useStyle','auto','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','freesoundApiKey'];
   let settingsWriteQueue=null,pendingSettings=null,autosaveTimer=null,settingsEdit=0;const retentionPolicies=new Map();
   function saveState(text,error=false){if(disposed)return;$('saveState').textContent=text;$('saveState').classList.toggle('et-error',error);}
   async function persistConfig(targetChat=chatId,value=config,inherit=false){
@@ -1081,7 +1087,7 @@ export async function setup(ctx) {
       mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,decisionConnection:$('decisionConnection')?$('decisionConnection').value:(config.decisionConnection||''),
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,concurrency:Number($('concurrency').value),
-      prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,
+      prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
       extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean($('muteNarrator')?.checked),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,plannerMode:$('plannerMode')?$('plannerMode').value:(config.plannerMode||'llm'),useFastClassifier:$('plannerMode')?($('plannerMode').value==='heuristic'||Boolean($('useFastClassifier')?.checked)):Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
   }
   function casting(c=config) {
@@ -1176,6 +1182,7 @@ export async function setup(ctx) {
     $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;
     if($('muteNarrator'))$('muteNarrator').checked=Boolean(config.muteNarrator);
     if($('enableSfx'))$('enableSfx').checked=config.enableSfx!==false;
+    if($('enableMixer'))$('enableMixer').checked=Boolean(config.enableMixer);
     if($('freesoundApiKey'))$('freesoundApiKey').value=config.freesoundApiKey||'';$('batchGemini').checked=config.batchGemini;$('concurrency').value=config.concurrency;$('autoDesignNPCs').checked=Boolean(config.autoDesignNPCs);
     if($('plannerMode'))$('plannerMode').value=(config.plannerMode==='heuristic'||config.useFastClassifier)?'heuristic':(config.plannerMode || (config.useJev ? 'jev' : 'llm'));
     if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);
@@ -1951,6 +1958,7 @@ export async function setup(ctx) {
   }
   async function renderSectionControls(entry){
     const version=++entry.version,targetChat=chatId,content=ctx.messages.getContent(entry.messageId);
+    if(entry.controls)entry.controls.hidden=!Boolean(config?.sectionButtons);
     entry.details.hidden=!config?.sectionButtons;entry.list.replaceChildren();if(entry.details.hidden)return;
     let source,segments;
     if(planSource?.chatId===targetChat && planSource.messageId===entry.messageId && planSource.content===content){source=planSource;segments=plan.segments;}
@@ -1962,7 +1970,7 @@ export async function setup(ctx) {
     if(segments?.length)appendSectionButtons(entry.list,source,segments,entry.messageId);
     else {const label=document.createElement('span');label.textContent='Plan this message to show its sections.';entry.list.append(label);}
   }
-  function refreshSectionControls(){for(const entry of messageSections)void renderSectionControls(entry).catch(error=>{if(!disposed)status(`Section controls unavailable: ${error.message}`,true);});}
+  function refreshSectionControls(){for(const entry of messageSections){if(entry.controls)entry.controls.hidden=!Boolean(config?.sectionButtons);void renderSectionControls(entry).catch(error=>{if(!disposed)status(`Section controls unavailable: ${error.message}`,true);});}}
   const decorateMessage=(target,context={})=>{
     const messageId=context.messageId || ctx.dom.getMessageId?.(context.node || target) || context.scope?.match(/^message:(.*):(?:bubble|minimal):footer$/)?.[1] || context.scope?.split(':')[1];
     if(!messageId)return;
@@ -1973,7 +1981,8 @@ export async function setup(ctx) {
     let statuses=messageStatuses.get(messageId);if(!statuses){statuses=new Set();messageStatuses.set(messageId,statuses);}statuses.add(progress);
     const sections=document.createElement('details');sections.hidden=true;sections.style.cssText='font:12px system-ui;max-width:100%';
     const summary=document.createElement('summary');summary.textContent='Sections';summary.style.cursor='pointer';const sectionList=document.createElement('div');sectionList.style.cssText='display:flex;flex-wrap:wrap;gap:4px;padding-top:5px';sections.append(summary,sectionList);
-    const entry={messageId,details:sections,list:sectionList,version:0};messageSections.add(entry);void renderSectionControls(entry);
+    const entry={messageId,details:sections,list:sectionList,controls,version:0};messageSections.add(entry);void renderSectionControls(entry);
+    controls.hidden=!Boolean(config?.sectionButtons);
     button.onclick=()=>run(()=>playMessage(messageId));controls.append(button,progress,sections);target.append(controls);
     return ()=>{entry.version++;messageSections.delete(entry);controls.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
   };
