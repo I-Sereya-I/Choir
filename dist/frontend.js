@@ -31,7 +31,7 @@ function normalizeVoiceCatalogue(catalogue) {
 
 function transcriptFromMessage(value) {
   // Remove complete metadata panels before unwrapping ordinary story markup.
-  let text=String(value || '').replace(/<!--[\s\S]*?(?:-->|$)/g,' ');
+  let text=String(value || '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/<!--[\s\S]*?(?:-->|$)/g,' ');
   const tags=/<\/?([a-z][\w-]*)\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
   const metadata=/^(?:think|thinking|reasoning|analysis|redacted_thinking|tracker|stats|status|state|details|script|style|(?:loom|tool|function|ext_tracker)(?:[_-][\w-]+)?)$/i;
   const ranges=[];let block=null,match;
@@ -50,14 +50,14 @@ function transcriptFromMessage(value) {
   if(block)ranges.push([block.start,text.length]);
   for(const [start,end] of ranges.reverse())text=text.slice(0,start)+' '+text.slice(end);
 
-  const hudKeys = 'Time|Date|Location|Place|Setting|Costume|Outfit|Clothing|Posture|Position|' +
-    'Nearby(?:\\s+Races?)?|Races?|Health|HP|MP|SP|Stamina|Mana|Stats?|Status|State|' +
+    const hudKeys = 'Time|Date|Location|Place|Setting|Costume|Outfit|Clothing|Posture|Position|' +
+    'Nearby(?:[ \t]+Races?)?|Races?|Health|HP|MP|SP|Stamina|Mana|Stats?|Status|State|' +
     'Mood|Affection|Love|Trust|Favor|Lust|Arousal|Karma|Gold|Money|Cash|Coins|' +
     'Inventory|Items?|Equipment|Weapons?|Armor|Objective|Quest|Goals?|Targets?|' +
-    'Weather|Environment|Temperature|Atmosphere|Context|Scene|System(?:\\s+Note)?|OOC|Summary';
+    'Weather|Environment|Temperature|Atmosphere|Context|Scene|System(?:[ \t]+Note)?|OOC|Summary';
 
-  const sysHeaders = 'Approved|Denied|Confirmed|Acknowledged|Response|Output|Roleplay\\s+Response|' +
-    'Status\\s+Window|Character\\s+Sheet|Attributes?|Stats?\\s+Screen';
+  const sysHeaders = 'Approved|Denied|Confirmed|Acknowledged|Response|Output|Roleplay[ \t]+Response|' +
+    'Status[ \t]+Window|Character[ \t]+Sheet|Attributes?|Stats?[ \t]+Screen';
 
   return text
     .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
@@ -71,10 +71,10 @@ function transcriptFromMessage(value) {
     .replace(/^[ \t]*[-=_~*]{3,}[ \t]*$/gm, '')
     .replace(/^[ \t]*\|.*\|[ \t]*$/gm, '')
     .replace(/\[(?:OOC|System|Note|Author'?s?\s*Note|A\/N|AI\s*Note)[\s:][^\]]*\]/gi, '')
-    .replace(new RegExp(`^[ \\t]*(?!["“])(?:${hudKeys})\\s*:[^\\n]*$`, 'gim'), '')
-    .replace(new RegExp(`^[ \\t]*(?:${sysHeaders})\\b[.:\\s]*$`, 'gim'), '')
-    .replace(/^[ \t]*(?:Chapter|Act|Episode|Scene)\s+\d+[:\s][^\n]*$/gim, '')
-    .replace(/^[ \t]*#{1,6}\s+/gm, '')
+    .replace(new RegExp(`^[ \t]*(?:#{1,6}[ \t]*)?(?!["“])(?:${hudKeys})[ \t]*:[^\n]*$`, 'gim'), '')
+    .replace(new RegExp(`^[ \\t]*(?:#{1,6}[ \\t]*)?(?:${sysHeaders})\\b[.: \\t]*$`, 'gim'), '')
+    .replace(/^[ \t]*(?:#{1,6}[ \t]*)?(?:Chapter|Act|Episode|Scene|Part|Book|Volume)[ \t]+(?:\d+|[IVXLCDM]+|[A-Za-z]+)(?:[ \t]*[:\-.—–][^\n]*|[ \t]+[^\n]*)?$/gim, '')
+    .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
     .replace(/\*|`/g, '')
     .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')

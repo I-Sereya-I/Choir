@@ -327,3 +327,16 @@ test('fastClassifyPlan returns null on ambiguous multi-character dialogue withou
   const plan = fastClassifyPlan(text, c);
   assert.equal(plan, null); // Falls back to LLM/Jev
 });
+
+test('transcriptFromMessage strips markdown headers like # Approved, ## Response, and ### Chapter headers', () => {
+  const message = `# Approved
+
+## Response
+
+### Chapter 4: Batter and Boundaries
+
+The countertop had never seen this much purposeful flurry.`;
+
+  const clean = transcriptFromMessage(message);
+  assert.equal(clean, 'The countertop had never seen this much purposeful flurry.');
+});
