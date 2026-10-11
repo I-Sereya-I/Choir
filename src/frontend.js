@@ -20,27 +20,21 @@ export async function setup(ctx) {
     description:'Cast and play your story with multiple voices',keywords:['tts','audio','choir','voices','narrator']});
   const root=document.createElement('div');
   tab.root.append(root);
-  const settingsTab=ctx.ui.registerSettingsTab?.({id:'choir',title:'Choir',shortName:'Choir',iconSvg:CHOIR_ICON_SVG,
-    description:'Configure Choir speech providers, narrator, persona and character voices',
-    keywords:['tts','speech','choir','voices','narrator','persona','characters'],position:'bottom'});
   const placementUnsubs=[];
-  if(settingsTab) {
-    placementUnsubs.push(settingsTab.onActivate(()=>settingsTab.root.replaceChildren(root)));
-    if(tab.onActivate)placementUnsubs.push(tab.onActivate(()=>tab.root.replaceChildren(root)));
-  }
+  if(tab.onActivate)placementUnsubs.push(tab.onActivate(()=>tab.root.replaceChildren(root)));
   // Lumiverse's extension Settings button specifically requires this mount point.
   const settingsMount=ctx.ui.mount?.('settings_extensions');
   if(settingsMount) {
     const card=document.createElement('div');card.style.padding='12px';
     const title=document.createElement('h3');title.textContent='Choir';
-    const text=document.createElement('p');text.textContent='Configure speech providers and the voices of your narrator, persona, main characters and NPCs.';
+    const text=document.createElement('p');text.textContent='Configure speech providers and the voices of your narrator, persona, main characters and NPCs in the extension drawer.';
     const open=document.createElement('button');open.type='button';open.textContent='Open Choir settings';
-    open.onclick=()=>{(settingsTab || tab).activate();};
+    open.onclick=()=>{tab.activate();};
     card.append(title,text,open);settingsMount.replaceChildren(card);
   }
   const cleanupPlacements=()=>{
     placementUnsubs.splice(0).forEach(fn=>fn());settingsMount?.replaceChildren();
-    root.remove();settingsTab?.destroy();tab.destroy();
+    root.remove();tab.destroy();
   };
   if (!ctx.settings || !ctx.messages?.getRecent || !ctx.messages?.getContent || !ctx.state) {
     const message=document.createElement('p');message.setAttribute('role','alert');
@@ -2410,7 +2404,7 @@ const paragraphAudioCache = new Map();
       if ($('muteNarrator')) $('muteNarrator').checked = Boolean(muted);
       scheduleSettingsSave();if(plan)renderPreview();void flushSettings().catch(()=>{});
     },
-    openDrawer: () => (settingsTab || tab)?.activate(),
+    openDrawer: () => tab?.activate(),
     stop: () => stop(true),
     planParagraph: (text, speaker) => {
       const cap = capture();

@@ -101,7 +101,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.ok(!characterVoices.some(label=>label.includes('Puck · Male')));
     $('key').value='session-key';
     settingsMount.querySelector('button').click();
-    assert.ok(settingsRoot.querySelector('[data-et="fixed"]'));
+    assert.ok(root.querySelector('[data-et="fixed"]'));
     assert.equal($('key').value,'session-key');
     placementListeners.get('drawer')();
     assert.ok(root.querySelector('[data-et="fixed"]'));
@@ -222,7 +222,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     active='chat-b';listeners.get('chat.active')();await tick();await tick();
     assert.match($('npcs').textContent,/No NPCs/);
     cleanup();assert.equal(root.children.length,0);assert.equal(listeners.size,0);assert.equal(events.size,0);
-    assert.equal(settingsRoot.children.length,0);assert.equal(settingsMount.children.length,0);assert.equal(placementListeners.size,0);
+    assert.equal(settingsMount.children.length,0);assert.equal(placementListeners.size,0);
   } finally {Object.assign(globalThis,old);dom.window.close();}
 });
 
