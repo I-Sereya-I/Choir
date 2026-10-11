@@ -500,7 +500,7 @@ export async function setup(ctx) {
         <label class="et-check" style="align-self:end"><input data-et="batchGemini" type="checkbox" checked> Batch Gemini turns (2 speakers)</label>
       </div>
       <label class="et-check" style="margin-top:10px"><input data-et="autoDesignNPCs" type="checkbox"> Auto-design custom voices for new NPCs (Gemini)</label>
-      <label style="margin-top:10px">Additional Gemini voices (ID | description)<textarea data-et="extraVoices" rows="2" placeholder="voice_id | description"></textarea></label>
+      <label style="margin-top:10px">Additional voices & community models (ID | description)<textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
       <div style="margin-top:10px;padding:8px 10px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;background:rgba(128,128,128,0.03)">
         <label style="font-weight:600">Design Voice with Prompt (Gemini)</label>
         <div style="display:flex;gap:6px;margin-top:4px">
@@ -620,7 +620,10 @@ export async function setup(ctx) {
     if(!nativeConnections.some(c=>c.id===connectionId))throw new Error('Select an available TTS connection for this speaker.');
     const data=await api(`/tts-connections/${encodeURIComponent(connectionId)}/voices`).then(response=>response.json());
     if(data.error && !data.voices?.length)throw new Error(data.error);
-    const catalogue=normalizeVoiceCatalogue(data.voices || []);
+    const extra=String(config.extraVoices || '').split('\n').filter(s=>s.trim()).map(line=>{
+      const [id,...desc]=line.split('|');return {id:id.trim(),name:id.trim(),description:desc.join('|').trim()};
+    });
+    const catalogue=normalizeVoiceCatalogue([...new Map([...(data.voices || []), ...extra].map(v=>[v.id,v])).values()]);
     if(!catalogue.length)throw new Error('This TTS connection returned no voices. Configure its voice catalogue in Lumiverse.');
     voiceCatalogues.set(route,catalogue);return catalogue;
   }
@@ -788,17 +791,17 @@ export async function setup(ctx) {
   }
   async function loadVoices(version=loadVersion) {
     voiceCatalogues.clear();
+    const extra=String(config.extraVoices || '').split('\n').filter(s=>s.trim()).map(line=>{
+      const [id,...description]=line.split('|');return {id:id.trim(),name:id.trim(),description:description.join('|').trim()};
+    });
     if(config.mode==='gemini') {
-      const extra=String(config.extraVoices || '').split('\n').filter(s=>s.trim()).map(line=>{
-        const [id,...description]=line.split('|');return {id:id.trim(),name:id.trim(),description:description.join('|').trim()};
-      });
       voices=[...new Map([...GEMINI_VOICES,...extra].map(v=>[v.id,v])).values()];
     } else if(config.connection) {
       const response=await api(`/tts-connections/${encodeURIComponent(config.connection)}/voices`);
       const data=await response.json();if(disposed || version!==loadVersion)return;
-      voices=data.voices || [];
+      voices=[...new Map([...(data.voices || []), ...extra].map(v=>[v.id,v])).values()];
       if(!voices.length)throw new Error('This connection returned no voices. Configure its voice catalogue in Lumiverse.');
-    } else {voices=[];}
+    } else {voices=[...extra];}
     voices=normalizeVoiceCatalogue(voices);
     voiceCatalogues.set(scope(config),voices);
     if(!voiceCatalogues.has('gemini'))voiceCatalogues.set('gemini',normalizeVoiceCatalogue(GEMINI_VOICES));
