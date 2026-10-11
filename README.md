@@ -4,7 +4,7 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.4-blue.svg)](https://github.com/patatasbravasch-arch/Choir)
+[![Version](https://img.shields.io/badge/version-1.1.4-blue.svg)](https://github.com/japolino/Choir)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
 [![Tests](https://img.shields.io/badge/tests-125%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -42,7 +42,7 @@ Advanced **Max characters per request** controls the TTS chunk size: a whole num
 ### From GitHub
 
 1. In Lumiverse, open **Extensions -> Add -> Install from source**.
-2. Enter `https://github.com/patatasbravasch-arch/Choir` and select the `main` branch.
+2. Enter `https://github.com/japolino/Choir` and select the `main` branch.
 3. Enable **Choir** in your extension list.
 
 ### Local copy
