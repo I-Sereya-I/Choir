@@ -953,14 +953,14 @@ export async function setup(ctx) {
       </div>
     </details>
 
-    <details data-et="planDetails"><summary data-et="planSummary">Speech plan</summary>
+    <details data-et="planDetails" hidden><summary data-et="planSummary">Speech plan</summary>
     <div data-et="preview"></div>
     <details>
       <summary>Edit attribution JSON</summary>
       <textarea data-et="planJson" rows="6" spellcheck="false" style="margin-top:8px"></textarea>
       <button data-et="apply" style="margin-top:8px">Apply JSON</button>
     </details></details>
-    <details><summary>Import / export cast</summary><p>Exports include routes and preferences, never credentials. Imported routes must exist on this host.</p>
+    <details hidden><summary>Import / export cast</summary><p>Exports include routes and preferences, never credentials. Imported routes must exist on this host.</p>
       <textarea data-et="castJson" aria-label="Cast JSON"></textarea><button data-et="exportCast">Export cast</button><button data-et="importCast">Validate and import cast</button>
     </details>
     <details><summary>Recent messages &amp; saved audio</summary>
