@@ -793,6 +793,7 @@ export async function setup(ctx) {
     .ensemble-tts details[open] summary{margin-bottom:10px}
     .ensemble-tts .et-message{display:flex;gap:10px;align-items:center;justify-content:space-between}
     .ensemble-tts .et-btn-group{display:flex;gap:6px;align-items:center}
+    .choir-mixer[hidden],.choir-mixer.cm-hidden{display:none !important}
     .choir-mixer{--cm-accent:#c4b5fd;--cm-muted:#a6afc2;--cm-line:#ffffff12;position:fixed;z-index:10000;display:flex;flex-direction:column;box-sizing:border-box;max-width:calc(100vw - 24px);max-height:min(560px,calc(100dvh - 24px));overflow:hidden;background:linear-gradient(150deg,#1d2435,#121824 65%);color:#f1f3fa;border:1px solid #ffffff1c;box-shadow:0 16px 48px #0007,0 2px 8px #0004;font:13px/1.4 system-ui,sans-serif;color-scheme:dark;isolation:isolate}
     .choir-mixer *{box-sizing:border-box}
     .choir-mixer button{appearance:none;cursor:pointer;border:0;background:transparent;color:inherit;padding:0;font:inherit;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;transition:background .15s,color .15s}
@@ -1115,12 +1116,12 @@ export async function setup(ctx) {
     const doc=root?.ownerDocument || (typeof document!=='undefined'?document:null);
     const view=doc?.defaultView || (typeof window!=='undefined'?window:null);
     if(!doc || !view)return;
-    const isEnabled = Boolean(config?.enableMixer || mixerState.enabled);
-    mixer.hidden = !isEnabled;
-    if(!isEnabled)return;
     mixerState.x=Math.max(0,Math.min(Number(mixerState.x)||0,Math.max(0,(view?.innerWidth || 1024)-mixer.offsetWidth-10)));
     mixerState.y=Math.max(0,Math.min(Number(mixerState.y)||0,Math.max(0,(view?.innerHeight || 768)-mixer.offsetHeight-10)));
     mixer.style.left=`${mixerState.x}px`;mixer.style.top=`${mixerState.y}px`;
+    const isEnabled = Boolean(config?.enableMixer);
+    mixer.hidden = !isEnabled;
+    mixer.style.display = isEnabled ? 'flex' : 'none';
   }
   let suppressMixerClick=false;
   collapse.onclick=event=>{if(suppressMixerClick && event.detail!==0){suppressMixerClick=false;return;}suppressMixerClick=false;mixerState.collapsed=!mixerState.collapsed;positionMixer();persistMixer();};
@@ -2035,6 +2036,7 @@ export async function setup(ctx) {
     if(previous)await restoreSavedPlan(previous);
     if(version!==loadVersion || disposed)return;
     saveState(saved?'Saved settings restored':preferences?'Connection preferences restored':'Changes save automatically');
+    positionMixer();
     renderMessages();status(plan?'Saved speech plan restored.':id?'Ready. Set your persona name and choose voices. Changes save automatically.':'Open a chat to begin.');
   }
   async function persistPlan(){
@@ -2658,8 +2660,9 @@ export async function setup(ctx) {
   }
   async function renderSectionControls(entry){
     const version=++entry.version,targetChat=chatId,content=ctx.messages.getContent(entry.messageId);
-    if(entry.controls)entry.controls.hidden=!Boolean(config?.sectionButtons);
-    entry.details.hidden=!config?.sectionButtons;entry.list.replaceChildren();if(entry.details.hidden)return;
+    const isSecEnabled=Boolean(config?.sectionButtons);
+    if(entry.controls){entry.controls.hidden=!isSecEnabled;entry.controls.style.display=isSecEnabled?'flex':'none';}
+    entry.details.hidden=!isSecEnabled;entry.list.replaceChildren();if(entry.details.hidden)return;
     let source,segments;
     if(planSource?.chatId===targetChat && planSource.messageId===entry.messageId && planSource.content===content){source=planSource;segments=plan.segments;}
     else {
@@ -2670,7 +2673,7 @@ export async function setup(ctx) {
     if(segments?.length)appendSectionButtons(entry.list,source,segments,entry.messageId);
     else {const label=document.createElement('span');label.textContent='Plan this message to show its sections.';entry.list.append(label);}
   }
-  function refreshSectionControls(){for(const entry of messageSections){if(entry.controls)entry.controls.hidden=!Boolean(config?.sectionButtons);void renderSectionControls(entry).catch(error=>{if(!disposed)status(`Section controls unavailable: ${error.message}`,true);});}}
+  function refreshSectionControls(){const isSecEnabled=Boolean(config?.sectionButtons);for(const entry of messageSections){if(entry.controls){entry.controls.hidden=!isSecEnabled;entry.controls.style.display=isSecEnabled?'flex':'none';}void renderSectionControls(entry).catch(error=>{if(!disposed)status(`Section controls unavailable: ${error.message}`,true);});}}
   const decorateMessage=(target,context={})=>{
     const messageId=context.messageId || ctx.dom.getMessageId?.(context.node || target) || context.scope?.match(/^message:(.*):(?:bubble|minimal):footer$/)?.[1] || context.scope?.split(':')[1];
     if(!messageId)return;
@@ -2682,7 +2685,9 @@ export async function setup(ctx) {
     const sections=document.createElement('details');sections.hidden=true;sections.style.cssText='font:12px system-ui;max-width:100%';
     const summary=document.createElement('summary');summary.textContent='Sections';summary.style.cursor='pointer';const sectionList=document.createElement('div');sectionList.style.cssText='display:flex;flex-wrap:wrap;gap:4px;padding-top:5px';sections.append(summary,sectionList);
     const entry={messageId,details:sections,list:sectionList,controls,version:0};messageSections.add(entry);void renderSectionControls(entry);
-    controls.hidden=!Boolean(config?.sectionButtons);
+    const isSecEnabled=Boolean(config?.sectionButtons);
+    controls.hidden=!isSecEnabled;
+    controls.style.display=isSecEnabled?'flex':'none';
     button.onclick=()=>run(()=>playMessage(messageId));controls.append(button,progress,sections);target.append(controls);
     return ()=>{entry.version++;messageSections.delete(entry);controls.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
   };
