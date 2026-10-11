@@ -899,7 +899,7 @@ export async function setup(ctx) {
     <div class="et-grid">
       <label hidden>Voice connections<select data-et="connectionMode"><option value="several">Several TTS · per character</option><option value="one">One TTS · whole cast</option></select></label>
       <label hidden>Default TTS connection<select data-et="mode"><option value="native">Lumiverse TTS</option><option value="gemini">Gemini 3.8 (style metadata)</option></select></label>
-      <label>Planner engine<select data-et="plannerMode"><option value="llm">Standard LLM Connection</option><option value="jev">Jev System 1 (TypeSafe AI)</option></select></label>
+      <label>Planner engine<select data-et="plannerMode"><option value="llm">Standard LLM Connection</option><option value="jev">Jev System 1 (TypeSafe AI)</option><option value="heuristic">Heuristic (0ms fast path)</option></select></label>
     </div>
     <div data-et="gemini" hidden class="et-grid" style="margin-top:10px">
       <label>Gemini model<select data-et="model"><option>gemini-3.8-flash-tts</option><option>gemini-3.8-flash-lite-tts</option></select></label>
@@ -914,17 +914,16 @@ export async function setup(ctx) {
     </div>
     <div data-et="jevPlannerBox" hidden class="et-grid" style="margin-top:10px">
       <label>Decision connection<select data-et="decisionConnection"><option value="">Default Decision connection</option></select></label>
-      <label class="et-check" style="align-self:end"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
       <input data-et="jevKey" type="hidden">
       <input data-et="jevEndpoint" type="hidden">
     </div>
     <div class="et-row" style="margin-top:10px;flex-wrap:wrap;gap:12px">
-      <label class="et-check"><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
+      <label class="et-check" hidden><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
       <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
       <label class="et-check"><input data-et="muteNarrator" type="checkbox"> Mute narrator (dialogue only)</label>
-      <label class="et-check"><input data-et="enableSfx" type="checkbox" checked> Sound effects (Foley cues)</label>
+      <label class="et-check" hidden><input data-et="enableSfx" type="checkbox" checked> Sound effects (Foley cues)</label>
       <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show section play buttons</label>
-      <label class="et-check"><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
+      <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
 
     <details>
@@ -935,6 +934,7 @@ export async function setup(ctx) {
         <label>Max characters per request<input data-et="chunk" type="number" min="80" max="2000" value="1800"></label>
         <label>Planner output tokens<input data-et="plannerTokens" type="number" min="1024" max="32768" step="1024" value="8192"></label>
         <label>Prefetch passages<input data-et="prefetch" type="number" min="0" max="4" value="1"></label>
+        <label class="et-check"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
         <label class="et-check"><input data-et="normalizeLoudness" type="checkbox" checked> Match passage loudness</label>
         <label class="et-check"><input data-et="allowVoiceFallback" type="checkbox"> Allow one Gemini custom voice fallback to Kore/Charon</label>
         <label>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
@@ -1111,7 +1111,9 @@ export async function setup(ctx) {
     collapse.innerHTML=collapsed?ICON_SOUND:ICON_CLOSE;
     collapse.setAttribute('aria-label',collapsed?'Open Choir voice mixer':'Collapse Choir voice mixer');
     collapse.setAttribute('aria-expanded',String(!collapsed));collapse.title=collapsed?'Choir voice mixer · click to open, drag to move':'Collapse voice mixer';
-    const view=document.defaultView;
+    const doc=root?.ownerDocument || (typeof document!=='undefined'?document:null);
+    const view=doc?.defaultView || (typeof window!=='undefined'?window:null);
+    if(!doc || !view)return;
     mixerState.x=Math.max(0,Math.min(Number(mixerState.x)||0,Math.max(0,(view?.innerWidth || 1024)-mixer.offsetWidth-10)));
     mixerState.y=Math.max(0,Math.min(Number(mixerState.y)||0,Math.max(0,(view?.innerHeight || 768)-mixer.offsetHeight-10)));
     mixer.style.left=`${mixerState.x}px`;mixer.style.top=`${mixerState.y}px`;
@@ -1124,26 +1126,29 @@ export async function setup(ctx) {
   mixerHeader.addEventListener('pointermove',event=>{if(!drag)return;const dx=event.clientX-drag.x,dy=event.clientY-drag.y;if(!drag.moved && Math.hypot(dx,dy)<5)return;drag.moved=true;mixerState.x=drag.left+dx;mixerState.y=drag.top+dy;positionMixer();});
   const endDrag=()=>{if(drag){suppressMixerClick=drag.moved;drag=null;persistMixer();}};
   mixerHeader.addEventListener('pointerup',endDrag);mixerHeader.addEventListener('pointercancel',endDrag);
-  const resizeMixer=()=>positionMixer();document.defaultView?.addEventListener('resize',resizeMixer);
-  unsubs.push(()=>{document.defaultView?.removeEventListener('resize',resizeMixer);mixer.remove();audioContext?.close().catch(()=>{});});
+  const docWin=root?.ownerDocument?.defaultView || (typeof window!=='undefined'?window:null);
+  const resizeMixer=()=>positionMixer();docWin?.addEventListener('resize',resizeMixer);
+  unsubs.push(()=>{docWin?.removeEventListener('resize',resizeMixer);mixer.remove();audioContext?.close().catch(()=>{});});
   function renderMixer(){
-    const focused=document.activeElement,focusLabel=channelsRoot.contains(focused)?focused.getAttribute('aria-label'):null,scrollTop=channelsRoot.scrollTop;
+    const doc=root?.ownerDocument || (typeof document!=='undefined'?document:null);
+    if(!doc)return;
+    const focused=doc.activeElement,focusLabel=channelsRoot.contains(focused)?focused.getAttribute('aria-label'):null,scrollTop=channelsRoot.scrollTop;
     updateNextControls();
     channelsRoot.replaceChildren();speakerLabel.replaceChildren();
-    if(currentSpeaker){const prefix=document.createElement('span');prefix.className='cm-sr-only';prefix.textContent='Speaking: ';speakerLabel.append(prefix,document.createTextNode(currentSpeaker));}else speakerLabel.textContent='Ready to play';
+    if(currentSpeaker){const prefix=doc.createElement('span');prefix.className='cm-sr-only';prefix.textContent='Speaking: ';speakerLabel.append(prefix,doc.createTextNode(currentSpeaker));}else speakerLabel.textContent='Ready to play';
     const speakers=new Set([...(config?.fixed || []),...(config?.casts?.[scope(config)] || []),...(plan?.segments || [])].map(s=>s.speaker));channelCount.textContent=String(speakers.size);
     for(const speaker of speakers){
       const channel=Object.hasOwn(mixerState.channels,speaker)?mixerState.channels[speaker]:{volume:1,mute:false};Object.defineProperty(mixerState.channels,speaker,{value:channel,writable:true,enumerable:true,configurable:true});
-      const row=document.createElement('div');row.className='cm-channel';row.dataset.speaker=speaker;row.dataset.noVoice=String(speakerExcluded(speaker));
-      row.setAttribute('aria-current',String(currentSpeaker===speaker));const name=document.createElement('span');name.className='cm-channel-name';name.textContent=speaker;name.title=speaker;
-      const head=document.createElement('div');head.className='cm-channel-head';
-      const dot=document.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
-      const readout=document.createElement('span');readout.className='cm-percent';readout.setAttribute('aria-hidden','true');head.append(dot,name,readout);
-      const controls=document.createElement('div');controls.className='cm-channel-controls';
-      const volume=document.createElement('input');volume.type='range';volume.min='0';volume.max='1';volume.step='0.01';volume.value=channel.volume;volume.setAttribute('aria-label',`${speaker} volume`);
+      const row=doc.createElement('div');row.className='cm-channel';row.dataset.speaker=speaker;row.dataset.noVoice=String(speakerExcluded(speaker));
+      row.setAttribute('aria-current',String(currentSpeaker===speaker));const name=doc.createElement('span');name.className='cm-channel-name';name.textContent=speaker;name.title=speaker;
+      const head=doc.createElement('div');head.className='cm-channel-head';
+      const dot=doc.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
+      const readout=doc.createElement('span');readout.className='cm-percent';readout.setAttribute('aria-hidden','true');head.append(dot,name,readout);
+      const controls=doc.createElement('div');controls.className='cm-channel-controls';
+      const volume=doc.createElement('input');volume.type='range';volume.min='0';volume.max='1';volume.step='0.01';volume.value=channel.volume;volume.setAttribute('aria-label',`${speaker} volume`);
       showVolume(volume,readout,channel.volume);volume.oninput=()=>{channel.volume=Number(volume.value);showVolume(volume,readout,channel.volume);applyVolume();};volume.onchange=persistMixer;
-      const silent=document.createElement('button');silent.type='button';silent.className='cm-toggle';silent.dataset.kind='silent';silent.textContent=channel.mute?'✓ Silent':'Silent';silent.setAttribute('aria-label',`${speaker} silent`);silent.setAttribute('aria-pressed',String(Boolean(channel.mute)));silent.title='Mute playback. Audio can still be generated and cached.';silent.onclick=()=>{channel.mute=!channel.mute;applyVolume();renderMixer();persistMixer();};
-      const noVoice=document.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.textContent=speakerExcluded(speaker)?'✓ No voice':'No voice';noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='Skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));controls.append(volume,silent,noVoice);row.append(head,controls);
+      const silent=doc.createElement('button');silent.type='button';silent.className='cm-toggle';silent.dataset.kind='silent';silent.textContent=channel.mute?'✓ Silent':'Silent';silent.setAttribute('aria-label',`${speaker} silent`);silent.setAttribute('aria-pressed',String(Boolean(channel.mute)));silent.title='Mute playback. Audio can still be generated and cached.';silent.onclick=()=>{channel.mute=!channel.mute;applyVolume();renderMixer();persistMixer();};
+      const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.textContent=speakerExcluded(speaker)?'✓ No voice':'No voice';noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='Skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));controls.append(volume,silent,noVoice);row.append(head,controls);
       channelsRoot.append(row);
     }
     positionMixer();
@@ -1274,10 +1279,12 @@ export async function setup(ctx) {
   root.addEventListener('input',autoSaveEvent);
   for(const name of autosaveFields)$(name)?.addEventListener('change',autoSaveEvent);
   root.addEventListener('change',event=>{if(event.target.hasAttribute('data-choir-persist'))autoSaveEvent(event);});
+  const docRoot=root?.ownerDocument || (typeof document!=='undefined'?document:null);
+  const viewRoot=docRoot?.defaultView || (typeof window!=='undefined'?window:null);
   const saveOnLeave=()=>{void flushSettings().catch(()=>{});void persistMixer();};
-  document.defaultView?.addEventListener('pagehide',saveOnLeave);
-  const saveOnHidden=()=>{if(document.visibilityState==='hidden')saveOnLeave();};document.addEventListener('visibilitychange',saveOnHidden);
-  unsubs.push(()=>{root.removeEventListener('input',autoSaveEvent);root.removeEventListener('change',autoSaveEvent);document.defaultView?.removeEventListener('pagehide',saveOnLeave);document.removeEventListener('visibilitychange',saveOnHidden);clearTimeout(autosaveTimer);});
+  viewRoot?.addEventListener('pagehide',saveOnLeave);
+  const saveOnHidden=()=>{if(docRoot?.visibilityState==='hidden')saveOnLeave();};docRoot?.addEventListener('visibilitychange',saveOnHidden);
+  unsubs.push(()=>{root.removeEventListener('input',autoSaveEvent);root.removeEventListener('change',autoSaveEvent);viewRoot?.removeEventListener('pagehide',saveOnLeave);docRoot?.removeEventListener('visibilitychange',saveOnHidden);clearTimeout(autosaveTimer);});
 
   function rpc(action,input,signal,timeoutMs=185000,onProgress) {
     if (signal?.aborted) return Promise.reject(abortError());
@@ -1524,7 +1531,7 @@ export async function setup(ctx) {
     const header=document.createElement('div');header.className='et-cast-header';
     const heading=document.createElement('strong'),edit=document.createElement('button');edit.type='button';edit.className='et-btn-subtle';edit.dataset.choirEdit='';
     const editor=document.createElement('div');editor.className='et-grid et-cast-editor';editor.dataset.choirCastEditor='';editor.id=`choir-cast-editor-${++castEditorId}`;editor.hidden=!open;edit.setAttribute('aria-controls',editor.id);
-    const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;name.style.display='none';editor.prepend(name);
+    const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;name.style.display='none';name.dataset.choirPersist='';editor.prepend(name);
     const refreshHeading=()=>{const speaker=name.value.trim() || 'Character';heading.textContent=speaker;edit.textContent=editor.hidden?'Edit':'Done';edit.setAttribute('aria-label',editor.hidden?`Edit ${speaker}`:`Close ${speaker} editor`);edit.setAttribute('aria-expanded',String(!editor.hidden));};
     if(!reserved){
       const delBtn=document.createElement('button');delBtn.type='button';delBtn.className='et-btn-subtle';delBtn.title='Remove character';delBtn.setAttribute('aria-label','Remove character');delBtn.innerHTML=ICON_CLOSE;
@@ -1775,7 +1782,7 @@ export async function setup(ctx) {
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,concurrency:Number($('concurrency').value),
       prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,
-      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean($('muteNarrator')?.checked),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,plannerMode:$('plannerMode')?$('plannerMode').value:(config.plannerMode||'llm'),useFastClassifier:$('useFastClassifier')?$('useFastClassifier').checked:false,useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
+      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean($('muteNarrator')?.checked),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,plannerMode:$('plannerMode')?$('plannerMode').value:(config.plannerMode||'llm'),useFastClassifier:$('plannerMode')?($('plannerMode').value==='heuristic'||Boolean($('useFastClassifier')?.checked)):Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
   }
   function casting(c=config) {
     const routeActor=actor=>c.connectionMode==='one'?{...actor,route:scope(c),voice:singleVoice(actor,c)}:actor;
@@ -1788,7 +1795,8 @@ export async function setup(ctx) {
     const selected=c.singleVoices?.[scope(c)];
     if(selected && Object.hasOwn(selected,actor.speaker))return selected[actor.speaker];
     const voice=!actor.route || actor.route===scope(c)?actor.voice:'';
-    return (voiceCatalogues.get(scope(c)) || []).some(v=>v.id===voice)?voice || '':'';
+    if(scope(c)==='gemini')return actor.voice || '';
+    return (voiceCatalogues.get(scope(c)) || []).some(v=>v.id===voice)?voice || '':(actor.voice || '');
   }
   function rememberPlanCast(result){
     const previous=config.casts[scope(config)] || [];
@@ -1812,9 +1820,12 @@ export async function setup(ctx) {
     if(c.mode==='native' && !nativeConnections.some(v=>v.id===c.connection))throw new Error('Select an existing Lumiverse TTS connection.');
   }
   function updatePlannerVisibility() {
-    const isJev=$('plannerMode')?.value==='jev';
-    if($('llmPlannerBox'))$('llmPlannerBox').hidden=isJev && !$('allowLlmFallback').checked;
+    const mode=$('plannerMode')?.value || 'llm';
+    const isJev=mode==='jev';
+    const isHeuristic=mode==='heuristic';
+    if($('llmPlannerBox'))$('llmPlannerBox').hidden=isHeuristic || (isJev && !$('allowLlmFallback')?.checked);
     if($('jevPlannerBox'))$('jevPlannerBox').hidden=!isJev;
+    if(isHeuristic && $('useFastClassifier'))$('useFastClassifier').checked=true;
   }
   function updateProviderVisibility() {
     const activeProvider=detectProvider(config);
@@ -1866,7 +1877,7 @@ export async function setup(ctx) {
     if($('muteNarrator'))$('muteNarrator').checked=Boolean(config.muteNarrator);
     if($('enableSfx'))$('enableSfx').checked=config.enableSfx!==false;
     if($('freesoundApiKey'))$('freesoundApiKey').value=config.freesoundApiKey||'';$('batchGemini').checked=config.batchGemini;$('concurrency').value=config.concurrency;$('autoDesignNPCs').checked=Boolean(config.autoDesignNPCs);
-    if($('plannerMode'))$('plannerMode').value=config.plannerMode || (config.useJev ? 'jev' : 'llm');
+    if($('plannerMode'))$('plannerMode').value=(config.plannerMode==='heuristic'||config.useFastClassifier)?'heuristic':(config.plannerMode || (config.useJev ? 'jev' : 'llm'));
     if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);
     if($('jevKey'))$('jevKey').value=config.jevApiKey||'';
     if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';

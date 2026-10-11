@@ -17,6 +17,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   let onBackend,active='chat-a';const listeners=new Map(),events=new Map(),store=new Map(),requests=[],audios=[];
   const message={id:'message-a',chat_id:'chat-a',name:'Mira',is_user:false,content:'The hall fell silent. Hello, stranger. Welcome.',extra:{}};
   const nativeRequests=[];
+  store.set('settings:global', { mode: 'gemini', connectionMode: 'one' });
   let blockAudio=false;
   class FakeAudio {
     constructor(url){this.url=url;this.paused=true;audios.push(this);}
@@ -88,8 +89,6 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   try {
     let cleanup=await setup(ctx);
     const $=name=>(root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`)) || settingsRoot.querySelector(`[data-et="${name}"]`);
-    $('mode').value='gemini';$('mode').dispatchEvent(new dom.window.Event('change'));
-    $('connectionMode').value='one';$('connectionMode').dispatchEvent(new dom.window.Event('change'));await tick();
     assert.match(minimalFooter.querySelector('button').title,/Play Choir/);
     assert.match($('planner').textContent,/GPT planner · openai · gpt-text-test/);
     $('planner').value='planner-a';$('testPlanner').click();await until(()=>$('status').textContent.includes('Planner test passed'));
@@ -490,6 +489,7 @@ test('autoDesignNPCs setting auto-designs bespoke Gemini voices for new NPCs wit
     // Enable auto-design of NPCs (requires Gemini mode)
     $('mode').value = 'gemini';
     $('mode').dispatchEvent(new dom.window.Event('change'));
+    await tick();
     $('autoDesignNPCs').checked = true;
     $('key').value = 'gemini-key-test';
     
@@ -627,6 +627,7 @@ test('detects Fish Audio vs Gemini/Vertex provider and dynamically adapts UI con
   // 1. In Gemini mode
   $('mode').value = 'gemini';
   $('mode').dispatchEvent(new dom.window.Event('change'));
+  await until(() => !$('voiceDesignBox').hidden);
   assert.equal($('batchGeminiWrap').hidden, true, 'Mixer uses individual passages in Gemini mode');
   assert.equal($('voiceDesignBox').hidden, false, 'Gemini voice design should be visible');
   
@@ -950,7 +951,7 @@ test('muteNarrator skips narrator synthesis and badges preview cards', async () 
   globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
   globalThis.document = dom.window.document;
   globalThis.Blob = class { constructor(parts, opts) { this.parts = parts; this.type = opts?.type; } };
-  globalThis.URL = { createObjectURL: () => 'blob:test-choir', revokeObjectURL: () => {} };
+  globalThis.URL = class extends (old.URL || URL) { static createObjectURL() { return 'blob:test-choir'; } static revokeObjectURL() {} };
 
   const requests = [], nativeRequests = [];
   class FakeAudio {
@@ -1107,7 +1108,7 @@ test('__CHOIR_API__ companion bridge exposes controls and handles paragraph play
   globalThis.dispatchEvent = dom.window.dispatchEvent.bind(dom.window);
   globalThis.CustomEvent = dom.window.CustomEvent;
   globalThis.Blob = class { constructor(parts, opts) { this.parts = parts; this.type = opts?.type; } };
-  globalThis.URL = { createObjectURL: () => 'blob:test-choir', revokeObjectURL: () => {} };
+  globalThis.URL = class extends (old.URL || URL) { static createObjectURL() { return 'blob:test-choir'; } static revokeObjectURL() {} };
 
   const nativeRequests = [];
   class FakeAudio {
@@ -1223,7 +1224,7 @@ test('Foley SFX detects cues from text, queries Freesound and intersperses SFX p
   globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
   globalThis.document = dom.window.document;
   globalThis.Blob = class { constructor(parts, opts) { this.parts = parts; this.type = opts?.type; } };
-  globalThis.URL = { createObjectURL: () => 'blob:test-choir', revokeObjectURL: () => {} };
+  globalThis.URL = class extends (old.URL || URL) { static createObjectURL() { return 'blob:test-choir'; } static revokeObjectURL() {} };
 
   const nativeRequests = [];
   const audiosPlayed = [];
@@ -1355,7 +1356,7 @@ test('Settings changes (checkboxes and dropdowns) auto-persist globally and acro
   globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
   globalThis.document = dom.window.document;
   globalThis.Blob = class { constructor(parts, opts) { this.parts = parts; this.type = opts?.type; } };
-  globalThis.URL = { createObjectURL: () => 'blob:test-choir', revokeObjectURL: () => {} };
+  globalThis.URL = class extends (old.URL || URL) { static createObjectURL() { return 'blob:test-choir'; } static revokeObjectURL() {} };
 
   globalThis.fetch = async (url) => {
     if (url.includes('/providers')) return new Response(JSON.stringify({ providers: [{ id: 'gemini', capabilities: { parameters: {} } }] }));
@@ -1448,7 +1449,7 @@ test('playParagraph uses attributed character voice when speaker is provided or 
   globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
   globalThis.document = dom.window.document;
   globalThis.Blob = class { constructor(parts, opts) { this.parts = parts; this.type = opts?.type; } };
-  globalThis.URL = { createObjectURL: () => 'blob:test-choir', revokeObjectURL: () => {} };
+  globalThis.URL = class extends (old.URL || URL) { static createObjectURL() { return 'blob:test-choir'; } static revokeObjectURL() {} };
 
   const requests = [];
   class FakeAudio {
