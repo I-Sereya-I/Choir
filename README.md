@@ -42,7 +42,7 @@ Advanced **Max characters per request** controls the TTS chunk size: a whole num
 ### From GitHub
 
 1. In Lumiverse, open **Extensions -> Add -> Install from source**.
-2. Enter `https://github.com/japolino/Choir` and select the `main` branch.
+2. Enter `https://github.com/patatasbravasch-arch/Choir` and select the `main` branch.
 3. Enable **Choir** in your extension list.
 
 ### Local copy
