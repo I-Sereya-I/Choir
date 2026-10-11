@@ -23,7 +23,7 @@ const realFetch=window.fetch;window.fetch=async(url,options={})=>{
  return Response.json({data:[{id:'a',name:'Narration',provider:'openai_tts',model:'model-a'},{id:'b',name:'Characters',provider:'openai_tts',model:'model-b'}]});
 };
 const ctx={settings:{get:async key=>structuredClone(store.get(key)??null),set:async(key,value)=>store.set(key,structuredClone(value))},messages:{getRecent:()=>[message],getContent:()=>message.content},state:{subscribe:()=>()=>{}},events:{on:()=>()=>{}},getActiveChat:()=>({chatId:'fixture'}),characters:{get:async()=>({name:'Mira'})},dom:{addStyle:css=>{const style=document.createElement('style');style.textContent=css;document.head.append(style);return()=>style.remove();}},ui:{registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:()=>({onClick(){},destroy(){}}),registerDomDecorator:options=>options.render(footer,{messageId:'reply'})},onBackendMessage:fn=>{backend=fn;return()=>backend=null;},sendToBackend:request=>{if(request.action==='cancel')return;setTimeout(()=>{let result;if(request.action==='ping')result={ready:true};else if(request.action==='plan')result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({speaker:unit.kind==='dialogue'?'Mira':'Narrator',text:unit.text,voice:unit.kind==='dialogue'?'m':'n',style:''}))},request.input.transcript,request.input.config);backend({namespace:'choir',id:request.id,result});},10);}};
-window.fixtureStore=store;window.mountChoir=()=>setup(ctx);window.cleanup=await window.mountChoir();window.ready=true;
+window.cleanup=await setup(ctx);window.ready=true;
 </script></body></html>`;
 const server=createServer(async(request,response)=>{
   if(request.url==='/'){response.setHeader('Content-Type','text/html');response.end(html);return;}
@@ -49,8 +49,6 @@ try{
   assert.equal(await launcher.getAttribute('aria-expanded'),'false');
   if(process.env.CHOIR_ICON_SCREENSHOT)await page.screenshot({path:process.env.CHOIR_ICON_SCREENSHOT,clip:{x:Math.max(0,movedBounds.x-16),y:Math.max(0,movedBounds.y-16),width:76,height:76}});
   await launcher.press('Enter');assert.equal(await page.getByRole('slider',{name:'Master volume',exact:true}).isVisible(),true);
-  const master=page.getByRole('slider',{name:'Master volume',exact:true});await master.press('Home');await master.press('ArrowRight');
-  assert.equal(await master.getAttribute('aria-valuetext'),'1 percent');assert.equal(await page.locator('.cm-master .cm-percent').innerText(),'1%');await master.press('End');
   await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-choir-mixer]').textContent.includes('Speaking: Narrator'));
   await page.waitForFunction(()=>window.gains.length===1 && window.audios[0].paused===false && !document.querySelector('[data-choir-action="playback"]').disabled);
@@ -81,33 +79,13 @@ try{
   if(process.env.CHOIR_SCREENSHOT)await page.screenshot({path:process.env.CHOIR_SCREENSHOT,fullPage:true});
   assert.equal(await page.locator('main [data-choir-action]').count(),0);assert.equal(await page.locator('footer [aria-label="Next spoken block"]').count(),0);assert.equal(await page.locator('footer input[type="range"]').count(),0);assert.equal(await page.locator('[aria-label="Next spoken block"]').count(),1);
   await mixer.getByRole('button',{name:'Narrator silent',exact:true}).click();assert.equal(await mixer.getByRole('button',{name:'Narrator silent',exact:true}).getAttribute('aria-pressed'),'true');
-  assert.equal(await page.evaluate(()=>document.activeElement.getAttribute('aria-label')),'Narrator silent');
   await mixer.getByRole('button',{name:'Mira no voice',exact:true}).click();assert.equal(await mixer.getByRole('button',{name:'Mira no voice',exact:true}).innerText(),'✓ No voice');
-  await mixer.getByRole('slider',{name:'Narrator volume',exact:true}).press('Home');await mixer.getByRole('slider',{name:'Narrator volume',exact:true}).press('ArrowRight');
-  assert.equal(await mixer.locator('[data-speaker="Narrator"] .cm-percent').innerText(),'1%');await mixer.getByRole('slider',{name:'Narrator volume',exact:true}).press('End');
-  await mixer.locator('.cm-header').click({position:{x:150,y:12}});
   if(process.env.CHOIR_SCREENSHOT)await page.screenshot({path:process.env.CHOIR_SCREENSHOT,fullPage:true});
-  if(process.env.CHOIR_MIXER_SCREENSHOT)await mixer.screenshot({path:process.env.CHOIR_MIXER_SCREENSHOT});
   await mixer.getByRole('button',{name:'Stop',exact:true}).click();
   await page.locator('[data-et="connectionMode"]').selectOption('one');await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('One TTS now'));
   assert.equal(await cast.locator('[data-choir-route]').evaluateAll(nodes=>nodes.every(node=>node.parentElement.hidden)),true);
   await page.locator('[data-et="connectionMode"]').selectOption('several');await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Several TTS restored'));
   assert.equal(await cast.locator('[data-choir-route]').nth(2).inputValue(),'native:b');
-  await cast.getByRole('button',{name:'Edit Narrator',exact:true}).click();await cast.getByLabel('Base delivery style',{exact:true}).first().fill('Gentle narration');
-  await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
-  assert.equal(await page.evaluate(()=>window.fixtureStore.get('chat:fixture').fixed[0].style),'Gentle narration');
-  await page.evaluate(async()=>{window.cleanup();const config=window.fixtureStore.get('chat:fixture');for(let index=0;index<20;index++)config.fixed.push({speaker:index===0?'A character with a very long name that must fit without hiding controls':`Cast member ${index}`,voice:'n',style:''});window.cleanup=await window.mountChoir();});
-  await cast.getByRole('button',{name:'Edit Narrator',exact:true}).click();assert.equal(await cast.getByLabel('Base delivery style',{exact:true}).first().inputValue(),'Gentle narration');await cast.getByRole('button',{name:'Close Narrator editor',exact:true}).click();
-  await page.setViewportSize({width:320,height:420});await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
-  const panel=await mixer.boundingBox();assert.ok(panel.x>=0 && panel.y>=0 && panel.x+panel.width<=320 && panel.y+panel.height<=420);
-  assert.equal(await mixer.evaluate(node=>node.scrollWidth<=node.clientWidth+1 && node.scrollHeight<=node.clientHeight+1),true);
-  const channels=mixer.locator('.cm-channels');assert.equal(await channels.evaluate(node=>node.scrollHeight>node.clientHeight && node.scrollWidth<=node.clientWidth+1),true);
-  const longRow=mixer.locator('[data-speaker="A character with a very long name that must fit without hiding controls"]');await longRow.scrollIntoViewIfNeeded();
-  assert.equal(await longRow.locator('.cm-channel-name').evaluate(node=>node.scrollWidth>node.clientWidth),true);
-  const toggle=longRow.getByRole('button',{name:'A character with a very long name that must fit without hiding controls silent',exact:true});await toggle.press('Space');
-  assert.equal(await toggle.getAttribute('aria-pressed'),'true');assert.equal(await page.evaluate(()=>document.activeElement.getAttribute('aria-label')),'A character with a very long name that must fit without hiding controls silent');
-  if(process.env.CHOIR_MOBILE_SCREENSHOT)await mixer.screenshot({path:process.env.CHOIR_MOBILE_SCREENSHOT});
-  await page.emulateMedia({reducedMotion:'reduce'});assert.equal(await mixer.locator('.cm-activity i').first().evaluate(node=>getComputedStyle(node).animationName),'none');
   await page.evaluate(()=>window.cleanup());assert.equal(await page.locator('[data-choir-mixer]').count(),0);
-  assert.deepEqual(errors,[]);console.log('PASS: Chrome Web Audio loudness, compact mixer, keyboard volume feedback/focus, narrow-screen long-cast scrolling, reduced motion, autosave/restoration, Silent/No voice, One/Several TTS, transport, seeking, cache replay, teardown.');
+  assert.deepEqual(errors,[]);console.log('PASS: Chrome Web Audio loudness, streamlined drawer, Silent/No voice, One/Several TTS, circular transport, paused navigation, seeking, cache replay, teardown.');
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}

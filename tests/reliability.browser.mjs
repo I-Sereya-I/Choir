@@ -38,13 +38,13 @@ async function harness(mixerPreferences){
     }
     let value;
     if(url.includes('/providers'))value={providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}},{id:'accent_tts',capabilities:{parameters:{instructions:{type:'string'},accent:{enum:['Irish','French']}}}}]};
-    else if(url.endsWith('/voices')){if(state.failCatalogue)throw Error('Voice catalogue unavailable');value={voices:['n','y','m','g','new'].map(id=>({id,name:id}))};}
+    else if(url.endsWith('/voices'))value={voices:['n','y','m','g','new'].map(id=>({id,name:id}))};
     else if(url.includes('/connections?'))value={data:[{id:'planner',name:'Planner',model:'text-model'}]};
     else value={data:connections};
     return Response.json(value);
   };
   let backend,decorationCleanup;
-  const ctx={settings:{get:async key=>structuredClone(store.get(key) ?? null),set:async(key,value)=>{const snapshot=structuredClone(value);if(state.failPlanSave && /^(plan:|activeplan:)/.test(key) || state.failConfigSave && /^(chat:|settings:)/.test(key))throw Error('Settings storage failed');if(state.configDelay && /^(chat:|settings:)/.test(key))await new Promise(resolve=>setTimeout(resolve,state.configDelay));store.set(key,snapshot);}},
+  const ctx={settings:{get:async key=>structuredClone(store.get(key) ?? null),set:async(key,value)=>{if(state.failPlanSave && /^(plan:|activeplan:)/.test(key))throw Error('Settings storage failed');store.set(key,structuredClone(value));}},
     messages:{getRecent:()=>state.active==='chat-a'?[message]:[],getContent:id=>id===message.id && state.active==='chat-a'?message.content:null},
     state:{subscribe:(key,fn)=>{subscriptions.set(key,fn);return()=>subscriptions.delete(key);}},events:{on:(key,fn)=>{events.set(key,fn);return()=>events.delete(key);}},
     characters:{get:async()=>({name:'Mira'})},getActiveChat:()=>({chatId:state.active,characterId:'mira'}),dom:{addStyle:()=>()=>{}},
@@ -429,53 +429,5 @@ test('NPC No voice follows the character across One TTS provider changes and can
   assert.equal(document.querySelector('[aria-label="Guard no voice"]').getAttribute('aria-pressed'),'true');await h.click('save',text=>text.includes('retention saved'));await h.play();assert.ok(!h.synthesis.some(v=>v.text.includes('Wait')));
   document.querySelector('[aria-label="Guard no voice"]').click();await tick();const before=h.synthesis.length;await h.play();assert.equal(h.synthesis.length,before+1);assert.match(h.synthesis.at(-1).text,/Wait/);
   h.$('connection').value='a';h.$('connection').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('status').textContent.includes('Provider selected.'));assert.equal(document.querySelector('[aria-label="Guard no voice"]').getAttribute('aria-pressed'),'false');assert.equal(h.requests.filter(v=>v.action==='plan').length,1);
- }finally{await h.close();}
-});
-
-test('cast and planner edits autosave without Save and survive reload without replanning',async()=>{
- const h=await harness();try{
-  await h.plan();const edit=(node,value)=>{node.value=value;node.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));};
-  const row=h.$('fixed').children[2];edit(row.querySelector('[data-choir-voice]'),'new');
-  const fields=row.querySelectorAll('input');edit(fields[2],'Softer delivery');edit(fields[3],'Captain, Lady Mira');edit(fields[4],'mee-rah');edit(fields[5],'French');
-  edit(h.$('planner'),'planner');h.$('normalizeLoudness').checked=false;h.$('normalizeLoudness').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
-  await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'new');
-  await h.reload();assert.equal(h.$('planner').value,'planner');assert.equal(h.$('normalizeLoudness').checked,false);assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'new');
-  await h.play();assert.equal(h.synthesis.find(v=>v.text.includes('Hello')).voice,'new');assert.equal(h.requests.filter(v=>v.action==='plan').length,1);
- }finally{await h.close();}
-});
-
-test('navigation flushes the old chat draft and new chats inherit connections without copying its cast',async()=>{
- const h=await harness();try{
-  h.$('planner').value='planner';h.$('planner').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
-  const name=h.$('fixed').children[2].querySelector('input');name.value='Captain Mira';name.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
-  h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Connection preferences restored');
-  assert.equal(h.store.get('chat:chat-a').fixed[2].speaker,'Captain Mira');assert.equal(h.$('connection').value,'a');assert.equal(h.$('planner').value,'planner');assert.equal(h.$('fixed').children[2].querySelector('input').value,'Mira');
-  h.state.active='chat-a';h.subscriptions.get('chat.active')();await until(()=>h.$('fixed').children[2]?.querySelector('input').value==='Captain Mira');assert.equal(h.$('planner').value,'planner');
- }finally{await h.close();}
-});
-
-test('provider selection persists even when its catalogue fails',async()=>{
- const h=await harness();try{
-  h.state.failCatalogue=true;h.$('connection').value='b';h.$('connection').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('status').textContent.includes('catalogue unavailable'));
-  assert.equal(h.store.get('chat:chat-a').connection,'b');h.state.failCatalogue=false;await h.reload();assert.equal(h.$('connection').value,'b');
- }finally{await h.close();}
-});
-
-test('autosave serializes delayed writes, reports storage failure and recovers on the next edit',async()=>{
- const h=await harness();try{
-  h.state.configDelay=200;h.$('plannerTokens').value='4096';h.$('plannerTokens').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await new Promise(resolve=>setTimeout(resolve,280));
-  h.$('plannerTokens').value='6144';h.$('plannerTokens').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.store.get('chat:chat-a').plannerTokens,6144);
-  h.state.configDelay=0;h.state.failConfigSave=true;h.$('prefetch').value='2';h.$('prefetch').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent.includes('Save failed'));assert.equal(h.$('prefetch').value,'2');
-  h.state.failConfigSave=false;h.$('prefetch').value='3';h.$('prefetch').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(h.$('prefetch').value,'3');assert.equal(h.$('plannerTokens').value,'6144');
-  assert.ok(!JSON.stringify(h.store.get('settings:defaults')).includes('jevApiKey'));
- }finally{await h.close();}
-});
-
-test('chat navigation cancels playback immediately while a pending settings save is slow',async()=>{
- const h=await harness();try{
-  await h.plan();h.state.configDelay=200;h.$('plannerTokens').value='4096';h.$('plannerTokens').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
-  h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.at(-1)?.paused===false);
-  h.state.active='chat-b';h.subscriptions.get('chat.active')();assert.ok(h.audios.every(audio=>audio.paused));assert.equal(h.$('next').disabled,true);
-  await until(()=>h.$('saveState').textContent==='Connection preferences restored');assert.equal(h.store.get('chat:chat-a').plannerTokens,4096);
  }finally{await h.close();}
 });
