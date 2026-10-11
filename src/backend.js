@@ -442,7 +442,9 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(query)}&filter=${encodeURIComponent(filter)}&fields=id,name,duration,previews,tags&sort=score&page_size=5&token=${encodeURIComponent(apiKey)}`;
       let resData;
       if (typeof spindle !== 'undefined' && typeof spindle?.cors === 'function') {
-        const resp = await spindle.cors(url, { method: 'GET', headers: { 'Accept': 'application/json' }, signal: controller.signal });
+        controller.signal.throwIfAborted();
+        const resp = await spindle.cors(url, { method: 'GET', headers: { 'Accept': 'application/json' } });
+        controller.signal.throwIfAborted();
         if (resp.status < 200 || resp.status >= 300) {
           throw new Error(`Freesound HTTP ${resp.status}`);
         }
