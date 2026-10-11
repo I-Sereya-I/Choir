@@ -514,7 +514,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     if (message.action === 'searchVoices') {
       const query = typeof input.query === 'string' ? input.query.trim() : '';
       if (!query) throw new Error('Enter a character or voice name to search.');
-      const limit = Math.min(25, Math.max(1, Number(input.limit) || 10));
+      const limit = Math.min(50, Math.max(1, Number(input.limit) || 20));
       const response = await spindle.cors(`https://api.fish.audio/model?title=${encodeURIComponent(query)}&page_size=${limit}`, {
         method: 'GET', headers: { 'Accept': 'application/json' }
       });
@@ -527,7 +527,13 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       const results = items.map(item => ({
         id: item._id || item.id,
         name: item.title || item.name || item._id,
-        description: (item.description || '').slice(0, 200)
+        description: (item.description || '').slice(0, 300),
+        coverImage: item.cover_image ? `https://public-platform.r2.fish.audio/${item.cover_image}` : (item.author?.avatar ? `https://public-platform.r2.fish.audio/${item.author.avatar}` : null),
+        sampleAudio: item.samples?.[0]?.audio || null,
+        sampleText: item.samples?.[0]?.text || item.default_text || '',
+        author: item.author?.nickname || '',
+        tags: Array.isArray(item.tags) ? item.tags.slice(0, 6) : [],
+        languages: Array.isArray(item.languages) ? item.languages : []
       })).filter(item => item.id);
       send({ result: { query, results } }); return;
     }

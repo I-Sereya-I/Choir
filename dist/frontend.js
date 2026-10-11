@@ -711,6 +711,210 @@ export async function setup(ctx) {
     return response;
   }
   function option(select,value,label) {const node=document.createElement('option');node.value=value;node.textContent=label;select.append(node);}
+  let previewAudio = null;
+  function openVoiceLibraryModal({ onSelect, defaultQuery = '', targetSpeaker = '' }) {
+    if (previewAudio) { try { previewAudio.pause(); } catch {} previewAudio = null; }
+    const overlay = document.createElement('div');
+    overlay.className = 'et-modal-overlay';
+    overlay.dataset.et = 'voiceLibraryModal';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);padding:16px;box-sizing:border-box';
+
+    const dialog = document.createElement('div');
+    dialog.className = 'et-modal-dialog';
+    dialog.style.cssText = 'background:var(--lumiverse-bg-surface,#1e1e24);color:var(--lumiverse-text,#e0e0e0);border-radius:12px;width:100%;max-width:680px;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,0.6);border:1px solid rgba(255,255,255,0.12);overflow:hidden;font-family:inherit';
+
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-bottom:1px solid rgba(255,255,255,0.08)';
+    const titleWrap = document.createElement('div');
+    const title = document.createElement('h3');
+    title.style.cssText = 'margin:0;font-size:1.15em;display:flex;align-items:center;gap:8px';
+    title.textContent = 'Fish Audio Voice Library';
+    const subtitle = document.createElement('div');
+    subtitle.style.cssText = 'font-size:0.8em;opacity:0.7;margin-top:2px';
+    subtitle.textContent = targetSpeaker ? `Select a community voice for ${targetSpeaker}` : 'Search and preview 2M+ community models';
+    titleWrap.append(title, subtitle);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button'; closeBtn.textContent = '✕';
+    closeBtn.style.cssText = 'background:none;border:none;color:inherit;font-size:1.3em;cursor:pointer;padding:4px 8px;border-radius:4px;opacity:0.8';
+    closeBtn.onclick = () => closeModal();
+    header.append(titleWrap, closeBtn);
+
+    const searchSection = document.createElement('div');
+    searchSection.style.cssText = 'padding:14px 20px 8px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid rgba(255,255,255,0.05)';
+    
+    const searchRow = document.createElement('div');
+    searchRow.style.cssText = 'display:flex;gap:8px';
+    const queryInput = document.createElement('input');
+    queryInput.type = 'text'; queryInput.value = defaultQuery;
+    queryInput.placeholder = 'Search character, anime, game, or narrator (e.g. Natsuki, Geralt, Glados)...';
+    queryInput.style.cssText = 'flex:1;padding:8px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(0,0,0,0.25);color:inherit;font-size:0.95em';
+    
+    const searchBtn = document.createElement('button');
+    searchBtn.type = 'button'; searchBtn.className = 'et-btn-primary'; searchBtn.textContent = 'Search';
+    searchBtn.style.cssText = 'padding:8px 18px;white-space:nowrap';
+    searchRow.append(queryInput, searchBtn);
+
+    const pillsRow = document.createElement('div');
+    pillsRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-top:2px';
+    const pills = ['Narration', 'Anime', 'Gaming', 'Calm', 'Male', 'Female', 'Villain'];
+    for (const pill of pills) {
+      const btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'et-btn-subtle';
+      btn.style.cssText = 'font-size:0.78em;padding:2px 8px;border-radius:12px;opacity:0.85';
+      btn.textContent = pill;
+      btn.onclick = () => { queryInput.value = pill.toLowerCase(); doSearch(); };
+      pillsRow.append(btn);
+    }
+    searchSection.append(searchRow, pillsRow);
+
+    const resultsContainer = document.createElement('div');
+    resultsContainer.className = 'et-modal-results';
+    resultsContainer.style.cssText = 'flex:1;overflow-y:auto;padding:12px 20px 20px;display:flex;flex-direction:column;gap:10px';
+
+    dialog.append(header, searchSection, resultsContainer);
+    overlay.append(dialog);
+
+    let activePlayBtn = null;
+    const closeModal = () => {
+      if (previewAudio) { try { previewAudio.pause(); } catch {} previewAudio = null; }
+      overlay.remove();
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') closeModal();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeModal();
+    });
+
+    const doSearch = async () => {
+      const q = queryInput.value.trim();
+      if (!q) return;
+      if (previewAudio) { try { previewAudio.pause(); } catch {} previewAudio = null; }
+      resultsContainer.replaceChildren();
+      const loading = document.createElement('div');
+      loading.style.cssText = 'padding:24px;text-align:center;opacity:0.7';
+      loading.textContent = `Searching community models for "${q}"…`;
+      resultsContainer.append(loading);
+      searchBtn.disabled = true;
+
+      try {
+        const res = await rpc('searchVoices', { query: q, limit: 25 }, null, 15000);
+        resultsContainer.replaceChildren();
+        if (!res?.results?.length) {
+          const empty = document.createElement('div');
+          empty.style.cssText = 'padding:32px 16px;text-align:center;opacity:0.7';
+          empty.textContent = `No voice models found for "${q}". Try another search term.`;
+          resultsContainer.append(empty);
+          return;
+        }
+
+        for (const item of res.results) {
+          const card = document.createElement('div');
+          card.className = 'et-voice-card';
+          card.style.cssText = 'display:flex;gap:14px;align-items:center;padding:12px;border-radius:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);transition:all 0.15s ease';
+
+          const iconWrap = document.createElement('div');
+          iconWrap.style.cssText = 'width:54px;height:54px;border-radius:8px;overflow:hidden;flex-shrink:0;background:rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center;position:relative';
+          if (item.coverImage) {
+            const img = document.createElement('img');
+            img.src = item.coverImage; img.alt = item.name;
+            img.style.cssText = 'width:100%;height:100%;object-fit:cover';
+            img.onerror = () => { img.remove(); iconWrap.textContent = (item.name[0] || 'V').toUpperCase(); iconWrap.style.fontSize = '1.4em'; iconWrap.style.fontWeight = 'bold'; };
+            iconWrap.append(img);
+          } else {
+            iconWrap.textContent = (item.name[0] || 'V').toUpperCase();
+            iconWrap.style.fontSize = '1.4em'; iconWrap.style.fontWeight = 'bold';
+          }
+
+          const info = document.createElement('div');
+          info.style.cssText = 'flex:1;min-width:0';
+          const nameEl = document.createElement('div');
+          nameEl.style.cssText = 'font-weight:600;font-size:1.02em;display:flex;align-items:center;gap:6px';
+          nameEl.textContent = item.name;
+          if (item.author) {
+            const authorSpan = document.createElement('span');
+            authorSpan.style.cssText = 'font-size:0.78em;font-weight:normal;opacity:0.6';
+            authorSpan.textContent = `by ${item.author}`;
+            nameEl.append(authorSpan);
+          }
+
+          const descEl = document.createElement('div');
+          descEl.style.cssText = 'font-size:0.83em;opacity:0.8;margin:3px 0 5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.35';
+          descEl.textContent = item.description || 'Community voice model';
+
+          const tagsEl = document.createElement('div');
+          tagsEl.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap';
+          for (const t of (item.tags || [])) {
+            const tagBadge = document.createElement('span');
+            tagBadge.style.cssText = 'font-size:0.72em;padding:1px 6px;border-radius:4px;background:rgba(255,255,255,0.06);opacity:0.75';
+            tagBadge.textContent = `#${t}`;
+            tagsEl.append(tagBadge);
+          }
+          info.append(nameEl, descEl, tagsEl);
+
+          const actions = document.createElement('div');
+          actions.style.cssText = 'display:flex;flex-direction:column;gap:6px;align-items:flex-end;flex-shrink:0';
+
+          const listenBtn = document.createElement('button');
+          listenBtn.type = 'button'; listenBtn.className = 'et-btn-subtle';
+          listenBtn.style.cssText = 'font-size:0.85em;padding:4px 10px;white-space:nowrap';
+          listenBtn.textContent = '▶ Listen';
+          listenBtn.onclick = () => {
+            if (previewAudio) {
+              try { previewAudio.pause(); } catch {}
+              const wasCurrent = activePlayBtn === listenBtn;
+              if (activePlayBtn) activePlayBtn.textContent = '▶ Listen';
+              previewAudio = null; activePlayBtn = null;
+              if (wasCurrent) return;
+            }
+            if (item.sampleAudio) {
+              const audio = new Audio(item.sampleAudio);
+              previewAudio = audio; activePlayBtn = listenBtn;
+              listenBtn.textContent = '⏸ Pause';
+              audio.play().catch(() => { listenBtn.textContent = '▶ Listen'; });
+              audio.onended = () => { listenBtn.textContent = '▶ Listen'; activePlayBtn = null; previewAudio = null; };
+              audio.onerror = () => { listenBtn.textContent = '▶ Listen'; activePlayBtn = null; previewAudio = null; };
+            } else {
+              status(`No pre-recorded sample for "${item.name}".`);
+            }
+          };
+
+          const selectBtn = document.createElement('button');
+          selectBtn.type = 'button'; selectBtn.className = 'et-btn-primary';
+          selectBtn.style.cssText = 'font-size:0.85em;padding:5px 12px;white-space:nowrap';
+          selectBtn.textContent = 'Use Voice';
+          selectBtn.onclick = () => {
+            closeModal();
+            onSelect(item);
+          };
+
+          actions.append(listenBtn, selectBtn);
+          card.append(iconWrap, info, actions);
+          resultsContainer.append(card);
+        }
+      } catch (err) {
+        resultsContainer.replaceChildren();
+        const errEl = document.createElement('div');
+        errEl.className = 'et-error'; errEl.style.cssText = 'padding:16px;text-align:center';
+        errEl.textContent = `Search failed: ${err.message}`;
+        resultsContainer.append(errEl);
+      } finally {
+        searchBtn.disabled = false;
+      }
+    };
+
+    searchBtn.onclick = doSearch;
+    queryInput.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } };
+
+    document.body.append(overlay);
+    try { queryInput.focus(); } catch {}
+    if (defaultQuery) doSearch();
+  }
+
   function makeRow(actor,container,reserved=false) {
     const row=document.createElement('div');row.className='et-card et-grid';
     const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;
@@ -759,30 +963,27 @@ export async function setup(ctx) {
     searchCommBtn.type='button';searchCommBtn.className='et-btn-subtle';
     searchCommBtn.title='Search Fish Audio community models';searchCommBtn.textContent='🔍';
     searchCommBtn.style.cssText='padding:2px 8px';
-    const doRowSearch=()=>run(async()=>{
-      const q=voiceSearchInput.value.trim();
-      if(!q)throw new Error('Enter a character or voice name to search.');
-      searchCommBtn.disabled=true;searchCommBtn.textContent='…';
-      try {
-        const res=await rpc('searchVoices',{query:q,limit:10},null,15000);
-        if(!res?.results?.length)throw new Error(`No community voices found for "${q}".`);
-        for(const item of res.results) {
-          const entry=`${item.id} | ${item.name}${item.description ? ` · ${item.description}` : ''}`;
-          const existing=String(config.extraVoices || '').trim();
-          if(!existing.includes(item.id)) {
-            config.extraVoices=existing?`${existing}\n${entry}`:entry;
-            $('extraVoices').value=config.extraVoices;
+    const doRowSearch=()=>{
+      openVoiceLibraryModal({
+        targetSpeaker: name.value || 'Character',
+        defaultQuery: voiceSearchInput.value.trim() || name.value.trim() || 'narrator',
+        onSelect: async (item) => {
+          const entry = `${item.id} | ${item.name}${item.description ? ` · ${item.description}` : ''}`;
+          const existing = String(config.extraVoices || '').trim();
+          if (!existing.includes(item.id)) {
+            config.extraVoices = existing ? `${existing}\n${entry}` : entry;
+            $('extraVoices').value = config.extraVoices;
           }
-          if(!rowVoices.some(v=>v.id===item.id)) {
-            rowVoices.push({id:item.id,name:item.name,description:item.description});
+          if (!rowVoices.some(v => v.id === item.id)) {
+            rowVoices.push({ id: item.id, name: item.name, description: item.description });
           }
+          searchFilter = ''; voiceSearchInput.value = ''; filterVoices();
+          voice.value = item.id;
+          config = capture(); if (chatId) await ctx.settings.set(settingsKey(chatId), config);
+          status(`Assigned community voice "${item.name}" to ${name.value || 'character'}.`);
         }
-        searchFilter='';voiceSearchInput.value='';filterVoices();
-        voice.value=res.results[0].id;
-        config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),config);
-        status(`Assigned community voice "${res.results[0].name}" to ${name.value || 'character'}.`);
-      } finally {searchCommBtn.disabled=false;searchCommBtn.textContent='🔍';}
-    });
+      });
+    };
     searchCommBtn.onclick=doRowSearch;
     voiceSearchInput.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();if(!searchCommBtn.hidden)doRowSearch();}};
 
@@ -1558,61 +1759,21 @@ export async function setup(ctx) {
       if(token===revision)status('Audition finished.');
     } finally {if(token===revision){controller=null;setBusy(false);}}
   });
-    const doSearchVoices = () => run(async () => {
-    const query = $('voiceSearchQuery')?.value?.trim();
-    if (!query) throw new Error('Enter a character or voice name to search.');
-    $('voiceSearchResults').replaceChildren();
-    const loading = document.createElement('div');
-    loading.style.padding = '8px'; loading.textContent = `Searching for "${query}"…`;
-    $('voiceSearchResults').append(loading);
-    const token = revision, ctrl = new AbortController();
-    try {
-      const res = await rpc('searchVoices', { query, limit: 10 }, ctrl.signal, 15000);
-      if (token !== revision) return;
-      $('voiceSearchResults').replaceChildren();
-      if (!res?.results?.length) {
-        const empty = document.createElement('div');
-        empty.style.padding = '8px'; empty.textContent = `No voices found matching "${query}".`;
-        $('voiceSearchResults').append(empty); return;
+        const doSearchVoices = () => {
+    const query = $('voiceSearchQuery')?.value?.trim() || '';
+    openVoiceLibraryModal({
+      defaultQuery: query || 'narrator',
+      onSelect: async (item) => {
+        const entry = `${item.id} | ${item.name}${item.description ? ` · ${item.description}` : ''}`;
+        const existing = $('extraVoices').value.trim();
+        $('extraVoices').value = existing ? `${existing}\n${entry}` : entry;
+        config = capture();
+        if (chatId) await ctx.settings.set(settingsKey(chatId), config);
+        loadVersion++; await loadVoices();
+        status(`Added "${item.name}" to voice catalogue.`);
       }
-      for (const item of res.results) {
-        const card = document.createElement('div');
-        card.className = 'et-card';
-        card.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;margin:3px 0';
-        const info = document.createElement('div');
-        info.style.cssText = 'overflow:hidden;margin-right:8px';
-        const title = document.createElement('strong'); title.textContent = item.name;
-        const desc = document.createElement('p');
-        desc.style.cssText = 'margin:2px 0 0;font-size:0.8em;opacity:0.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-        desc.textContent = item.description || item.id;
-        info.append(title, desc);
-        const actions = document.createElement('div');
-        actions.className = 'et-btn-group';
-        const addBtn = document.createElement('button');
-        addBtn.type = 'button'; addBtn.className = 'et-btn-subtle'; addBtn.textContent = '+ Add to cast';
-        addBtn.onclick = () => run(async () => {
-          const entry = `${item.id} | ${item.name}${item.description ? ` · ${item.description}` : ''}`;
-          const existing = $('extraVoices').value.trim();
-          $('extraVoices').value = existing ? `${existing}\n${entry}` : entry;
-          config = capture();
-          if (chatId) await ctx.settings.set(settingsKey(chatId), config);
-          loadVersion++; await loadVoices();
-          addBtn.textContent = 'Added ✓'; addBtn.disabled = true;
-          status(`Added "${item.name}" to voice catalogue.`);
-        });
-        actions.append(addBtn);
-        card.append(info, actions);
-        $('voiceSearchResults').append(card);
-      }
-    } catch (e) {
-      if (token !== revision) return;
-      $('voiceSearchResults').replaceChildren();
-      const err = document.createElement('div');
-      err.className = 'et-error'; err.style.padding = '8px';
-      err.textContent = `Search failed: ${e.message}`;
-      $('voiceSearchResults').append(err);
-    }
-  });
+    });
+  };
   $('searchVoicesBtn')?.addEventListener('click', doSearchVoices);
   $('voiceSearchQuery')?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearchVoices(); } });
   $('load').onclick=()=>run(async()=>{config=capture();loadVersion++;await loadProviders();clearPlan();status('Connections and voices reloaded.');});

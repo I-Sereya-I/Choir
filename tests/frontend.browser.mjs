@@ -653,3 +653,142 @@ test('detects Fish Audio vs Gemini/Vertex provider and dynamically adapts UI con
   cleanup?.();
   Object.assign(globalThis, old);
 });
+
+test('opens Fish Audio voice library overlay modal with avatars, audio preview, and voice selection', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  const store = new Map();
+  const audioPlays = [];
+  class MockAudio {
+    constructor(src) { this.src = src; this.paused = true; }
+    play() { audioPlays.push(this.src); this.paused = false; return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = MockAudio;
+
+  globalThis.fetch = async (url) => {
+    if (url.includes('/tts-connections/providers')) {
+      return new Response(JSON.stringify({providers: [{id: 'fish_audio'}]}), {headers: {'Content-Type': 'application/json'}});
+    }
+    if (url.includes('/tts-connections') && !url.includes('/voices')) {
+      return new Response(JSON.stringify({data: [
+        {id: 'conn-fish', name: 'Fish TTS Profile', provider: 'fish_audio', model: 's2.1-pro'}
+      ]}), {headers: {'Content-Type': 'application/json'}});
+    }
+    if (url.includes('/voices')) {
+      return new Response(JSON.stringify({voices: [{id: 'default-fish-1', name: 'Default Fish'}]}), {headers: {'Content-Type': 'application/json'}});
+    }
+    return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
+  };
+  const root = dom.window.document.createElement('div');
+  const requests = [];
+  const ctx = {
+    registerDomDecorator: () => () => {},
+    settings: {
+      get: async key => store.get(key) || null,
+      set: async (key, value) => { store.set(key, structuredClone(value)); }
+    },
+    messages: { getRecent: () => [], getContent: () => '' },
+    state: { get: () => null, subscribe: () => () => {} },
+    events: { on: () => () => {} },
+    getActiveChat: () => ({chatId: 'chat-modal', characterId: 'char-1'}),
+    characters: { get: async () => ({name: 'Nia'}) },
+    dom: { addStyle: () => () => {}, getMessageId: () => null },
+    ui: {
+      registerDrawerTab: () => ({root, activate: () => {}, onActivate: (fn) => { fn(); return () => {}; }, destroy: () => {}}),
+      registerInputBarAction: () => ({onClick(){}, destroy(){}}),
+      mount: () => null
+    },
+    onBackendMessage: () => () => {},
+    sendToBackend: (msg) => {
+      requests.push(msg);
+      if (msg.action === 'searchVoices') {
+        setTimeout(() => {
+          dom.window.dispatchEvent(new dom.window.CustomEvent('backend-reply', {detail: msg}));
+          // Mock response back
+          const reply = {
+            namespace: 'choir',
+            id: msg.id,
+            result: {
+              query: msg.input.query,
+              results: [
+                {
+                  id: '0327fdb5da9e4fd782899a8058c8ae2b',
+                  name: 'Epic Narrator',
+                  description: 'Deep authoritative documentary voice',
+                  coverImage: 'https://public-platform.r2.fish.audio/coverimage/0327fdb5da9e4fd782899a8058c8ae2b',
+                  sampleAudio: 'https://platform.r2.fish.audio/task/sample1.mp3',
+                  author: 'Max N',
+                  tags: ['narration', 'deep', 'calm']
+                }
+              ]
+            }
+          };
+          globalThis.__onBackend?.(reply);
+        }, 10);
+      }
+    }
+  };
+
+  // Capture onBackendMessage
+  ctx.onBackendMessage = (fn) => { globalThis.__onBackend = fn; return () => {}; };
+
+  const cleanup = await setup(ctx);
+  const $ = name => root.querySelector(`[data-et="${name}"]`);
+  await until(() => $('fixed')?.querySelectorAll('.et-card')?.length >= 2);
+
+  // Switch to Fish Audio
+  $('mode').value = 'native';
+  $('connection').value = 'conn-fish';
+  $('connection').dispatchEvent(new dom.window.Event('change'));
+  await until(() => $('fixed')?.querySelector('input[placeholder*="Fish"]'));
+
+  // Click 🔍 on the character card
+  const firstCard = $('fixed').querySelector('.et-card');
+  const searchBtn = firstCard.querySelector('button[title*="Fish"]');
+  assert.ok(searchBtn, 'Search button on card exists');
+  searchBtn.click();
+
+  // Modal overlay should be rendered in document.body
+  await until(() => dom.window.document.querySelector('.et-modal-overlay'));
+  const modal = dom.window.document.querySelector('.et-modal-overlay');
+  assert.ok(modal, 'Modal overlay should be open');
+  assert.match(modal.textContent, /Fish Audio Voice Library/);
+
+  // Wait for mock search results to populate
+  await until(() => modal.querySelector('.et-voice-card'));
+  const voiceCard = modal.querySelector('.et-voice-card');
+  assert.ok(voiceCard, 'Voice card should be rendered in modal');
+  assert.match(voiceCard.textContent, /Epic Narrator/);
+  assert.match(voiceCard.textContent, /by Max N/);
+
+  // Check cover image
+  const img = voiceCard.querySelector('img');
+  assert.ok(img, 'Voice cover image element should exist');
+  assert.equal(img.src, 'https://public-platform.r2.fish.audio/coverimage/0327fdb5da9e4fd782899a8058c8ae2b');
+
+  // Test Listen audio preview
+  const listenBtn = voiceCard.querySelector('button[textContent*="Listen"], button');
+  const listenBtnEl = [...voiceCard.querySelectorAll('button')].find(b => b.textContent.includes('Listen'));
+  assert.ok(listenBtnEl, 'Listen preview button should exist');
+  listenBtnEl.click();
+  assert.ok(audioPlays.includes('https://platform.r2.fish.audio/task/sample1.mp3'), 'Audio sample should play');
+
+  // Test Use Voice button
+  const useBtn = [...voiceCard.querySelectorAll('button')].find(b => b.textContent.includes('Use Voice'));
+  assert.ok(useBtn, 'Use Voice button should exist');
+  useBtn.click();
+
+  // Modal should close
+  await until(() => !dom.window.document.querySelector('.et-modal-overlay'));
+  assert.ok(!dom.window.document.querySelector('.et-modal-overlay'), 'Modal should close after selection');
+
+  // Selected voice should be assigned to the character card
+  const voiceSelect = firstCard.querySelector('[data-choir-voice]');
+  assert.equal(voiceSelect.value, '0327fdb5da9e4fd782899a8058c8ae2b', 'Voice should be assigned to character');
+
+  cleanup?.();
+  Object.assign(globalThis, old);
+});
