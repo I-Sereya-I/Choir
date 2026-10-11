@@ -1,3 +1,7 @@
+<div align="center">
+
+<img src="icon.svg" alt="Choir icon" width="96" />
+
 # Choir
 
 [![Version](https://img.shields.io/badge/version-1.1.4-blue.svg)](https://github.com/patatasbravasch-arch/Choir)
@@ -6,6 +10,9 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, and sound effects.
+
+</div>
+
 
 ## Overview
 
