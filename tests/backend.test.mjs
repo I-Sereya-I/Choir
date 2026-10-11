@@ -4,6 +4,51 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const bundle=readFileSync(new URL('../dist/backend.js',import.meta.url),'utf8');
 const config={voices:[{id:'Charon'},{id:'Kore'}],fixed:[{speaker:'Narrator',voice:'Charon',style:''}],npcs:[],useStyle:true};
+test('Jev proxy options are clone-safe and cancellation discards a late response',async()=>{
+  let release,options;
+  const h=await harness(()=>{throw Error('No LLM fallback');},async(url,input)=>{
+    options=input;assert.ok(!('signal' in input));structuredClone(input);
+    return new Promise(resolve=>release=resolve);
+  });
+  h.send('planJev',{transcript:'"Hello."',apiKey:'jev-secret',config:{...config,useStyle:false}});
+  await new Promise(resolve=>setTimeout(resolve,0));assert.ok(options);
+  h.send('cancel',{});release({status:200,body:JSON.stringify({choices:['Narrator']})});
+  await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(h.sent.filter(item=>item.message.result || item.message.error).length,0);
+});
+
+test('Jev errors stop by default and never bill the LLM',async()=>{
+  let calls=0;
+  const h=await harness(async()=>{calls++;throw Error('Unexpected LLM');},async()=>{throw Error('The object cannot be cloned');});
+  h.send('plan',{transcript:'"Hello."',config:{...config,useJev:true,jevApiKey:'secret'}});
+  assert.match((await h.result()).message.error,/Jev classification failed: The object cannot be cloned/);
+  assert.equal(calls,0);
+  const missing=await harness(async()=>{calls++;});
+  missing.send('plan',{transcript:'"Hello."',config:{...config,useJev:true}});
+  assert.match((await missing.result()).message.error,/Jev API key/);assert.equal(calls,0);
+});
+
+test('an opted-in failed LLM fallback retains both provider errors',async()=>{
+  const h=await harness(async()=>{throw Error('LLM quota exceeded');},async()=>({status:429,body:'Jev quota exhausted'}));
+  h.send('plan',{transcript:'"Hello."',config:{...config,useJev:true,jevApiKey:'secret',allowLlmFallback:true}});
+  const error=(await h.result()).message.error;
+  assert.match(error,/Jev classification HTTP 429: Jev quota exhausted/);assert.match(error,/LLM quota exceeded/);
+});
+
+test('unknown or missing Jev classifications fail rather than attributing to the first character',async()=>{
+  for(const choices of [[],['Unknown']]){
+    const h=await harness(null,async()=>({status:200,body:JSON.stringify({choices})}));
+    h.send('planJev',{transcript:'"Hello."',apiKey:'secret',config});
+    assert.match((await h.result()).message.error,/incomplete or unknown/);
+  }
+});
+
+test('TTS failures never silently switch a custom voice',async()=>{
+  let calls=0;
+  const h=await harness(null,async()=>{calls++;return {status:404,body:'Voice not found'};});
+  h.send('gemini',{apiKey:'secret',model:'gemini-3.8-flash-tts',segment:{text:'Hello.',voice:'voice_missing',style:''}});
+  assert.match((await h.result()).message.error,/HTTP 404/);assert.equal(calls,1);
+});
 test('streaming planner reports activity, keeps reasoning private and uses completed JSON',async()=>{
   let limit,request;
   const content='{"segments":[{"speaker":"Narrator","unit_ids":[0]}]}';
@@ -83,7 +128,7 @@ test('empty planner responses produce an actionable error',async()=>{
 test('backend readiness check replies without making an LLM or TTS request',async()=>{
   const h=await harness(()=>{throw new Error('Should not call planner');},()=>{throw new Error('Should not call TTS');});
   h.send('ping',{});
-  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.0.18');
+  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.1.0');
 });
 
 test('prose-only planner responses expose a useful diagnostic after retry',async()=>{
@@ -149,7 +194,7 @@ test('designVoice handles missing API key or empty prompt',async()=>{
   assert.match((await h2.result()).message.error,/Describe the voice to design/);
 });
 
-test('backend retry fallback when custom voice_ returns 404',async()=>{
+test('explicit custom voice fallback retries once on 404',async()=>{
   const calls=[];
   const h=await harness(null,async(url,options)=>{
     calls.push({url,options,body:JSON.parse(options.body)});
@@ -161,6 +206,7 @@ test('backend retry fallback when custom voice_ returns 404',async()=>{
   h.send('gemini',{
     apiKey:'test-key',
     model:'gemini-3.8-flash-tts',
+    allowVoiceFallback:true,
     segment:{text:'Halt!',voice:'voice_dwarf_abc',gender:'male',style:'Stern'}
   });
   const result=await h.result();
@@ -181,6 +227,7 @@ test('backend retry fallback when custom voice_ returns 404',async()=>{
   h2.send('gemini',{
     apiKey:'test-key',
     model:'gemini-3.8-flash-tts',
+    allowVoiceFallback:true,
     segment:{text:'Greetings.',voice:'voice_female_elf',gender:'female',style:'Gentle'}
   });
   const result2=await h2.result();
@@ -519,7 +566,7 @@ test('action plan attempts Jev when useJev and jevApiKey are configured, succeed
   assert.equal(heroSeg.speaker, 'Hero');
 });
 
-test('action plan falls back to standard LLM if Jev classification fails', async () => {
+test('action plan uses explicitly enabled LLM fallback and retains the Jev diagnostic', async () => {
   let llmCalled = false;
   const generate = async () => {
     llmCalled = true;
@@ -534,7 +581,8 @@ test('action plan falls back to standard LLM if Jev classification fails', async
     npcs: [],
     useStyle: true,
     useJev: true,
-    jevApiKey: 'failing-jev-key'
+    jevApiKey: 'failing-jev-key',
+    allowLlmFallback:true
   };
 
   const h = await harness(generate, corsHandler);
@@ -544,6 +592,7 @@ test('action plan falls back to standard LLM if Jev classification fails', async
   });
   const res = await h.result();
   assert.ok(res.message.result);
+  assert.match(res.message.result.warning,/Jev service unavailable/);
   assert.equal(llmCalled, true, 'LLM planner should be invoked as fallback');
 });
 
