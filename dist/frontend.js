@@ -357,63 +357,124 @@ export async function setup(ctx) {
     message.style.padding='18px';root.append(message);
     return cleanupPlacements;
   }
-  const removeStyle = ctx.dom.addStyle(`
-    .ensemble-tts{padding:18px;max-width:850px;margin:auto;font:inherit;line-height:1.5;color:inherit}
-    .ensemble-tts h2{font-size:1.3em;margin:0 0 8px}.ensemble-tts h3{font-size:1em;margin:22px 0 8px}
-    .ensemble-tts p{opacity:.8;margin:8px 0}.ensemble-tts label{display:grid;gap:5px;font-size:.9em}
-    .ensemble-tts input,.ensemble-tts select,.ensemble-tts textarea{width:100%;box-sizing:border-box;background:rgba(128,128,128,.08);color:inherit;border:1px solid rgba(128,128,128,.4);border-radius:8px;padding:9px;font:inherit}
-    .ensemble-tts select option{background:Canvas;color:CanvasText}.ensemble-tts textarea{resize:vertical;min-height:90px}
-    .ensemble-tts button{background:rgba(128,128,128,.14);color:inherit;border:1px solid rgba(128,128,128,.4);border-radius:8px;padding:8px 12px;cursor:pointer;font:inherit}
-    .ensemble-tts button:disabled{opacity:.45;cursor:wait}.ensemble-tts .et-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+    const removeStyle = ctx.dom.addStyle(`
+    .ensemble-tts{padding:16px;max-width:820px;margin:auto;font:inherit;line-height:1.5;color:inherit}
+    .ensemble-tts .et-header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid rgba(128,128,128,0.2)}
+    .ensemble-tts .et-title-group{display:flex;align-items:center;gap:10px}
+    .ensemble-tts h2{font-size:1.25em;font-weight:600;margin:0;letter-spacing:-0.01em}
+    .ensemble-tts .et-badge{font-size:0.75em;opacity:0.7;text-transform:uppercase;letter-spacing:0.05em;border:1px solid rgba(128,128,128,0.3);padding:2px 6px;border-radius:4px}
+    .ensemble-tts .et-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+    .ensemble-tts h3{font-size:0.95em;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;opacity:0.85;margin:20px 0 8px}
+    .ensemble-tts .et-section-header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:20px 0 8px}
+    .ensemble-tts .et-section-header h3{margin:0}
+    .ensemble-tts label{display:grid;gap:4px;font-size:0.85em;font-weight:500}
+    .ensemble-tts input,.ensemble-tts select,.ensemble-tts textarea{width:100%;box-sizing:border-box;background:rgba(128,128,128,0.06);color:inherit;border:1px solid rgba(128,128,128,0.3);border-radius:6px;padding:7px 10px;font:inherit;font-size:0.95em;transition:border-color 0.15s ease}
+    .ensemble-tts input:focus,.ensemble-tts select:focus,.ensemble-tts textarea:focus{outline:none;border-color:rgba(128,128,128,0.6)}
+    .ensemble-tts select option{background:Canvas;color:CanvasText}
+    .ensemble-tts textarea{resize:vertical;min-height:80px}
+    .ensemble-tts button{background:rgba(128,128,128,0.12);color:inherit;border:1px solid rgba(128,128,128,0.3);border-radius:6px;padding:6px 12px;cursor:pointer;font:inherit;font-size:0.9em;font-weight:500;display:inline-flex;align-items:center;justify-content:center;gap:6px;transition:background 0.15s ease,opacity 0.15s ease}
+    .ensemble-tts button:hover:not(:disabled){background:rgba(128,128,128,0.22)}
+    .ensemble-tts button:disabled{opacity:0.45;cursor:not-allowed}
+    .ensemble-tts .et-btn-primary{background:rgba(128,128,128,0.24);font-weight:600;border-color:rgba(128,128,128,0.5)}
+    .ensemble-tts .et-btn-subtle{font-size:0.8em;padding:3px 8px}
+    .ensemble-tts .et-btn-danger{font-size:0.8em;padding:3px 8px;opacity:0.75}
+    .ensemble-tts .et-btn-danger:hover{opacity:1}
+    .ensemble-tts .et-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
     .ensemble-tts .et-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0}
-    .ensemble-tts .et-check{display:flex;gap:8px;align-items:center}.ensemble-tts .et-check input{width:auto}
-    .ensemble-tts .et-card{padding:12px;border:1px solid rgba(128,128,128,.3);border-radius:10px;margin:10px 0}
-    .ensemble-tts .et-status{white-space:pre-wrap;padding:12px;border-radius:8px;background:rgba(128,128,128,.08)}
-    .ensemble-tts [hidden]{display:none!important}.ensemble-tts .et-error{color:#ef7878}
-    .ensemble-tts .et-transcript{font:inherit;white-space:pre-wrap;max-height:180px;overflow:auto}
-    .ensemble-tts details{margin:10px 0}.ensemble-tts .et-message{display:flex;gap:10px;align-items:center;justify-content:space-between}
+    .ensemble-tts .et-check{display:inline-flex;gap:6px;align-items:center;cursor:pointer;font-size:0.85em}
+    .ensemble-tts .et-check input{width:auto;margin:0;cursor:pointer}
+    .ensemble-tts .et-card{padding:10px 12px;border:1px solid rgba(128,128,128,0.25);border-radius:8px;background:rgba(128,128,128,0.03);margin:8px 0}
+    .ensemble-tts .et-status{white-space:pre-wrap;padding:8px 12px;border-radius:6px;background:rgba(128,128,128,0.08);font-size:0.88em;margin:8px 0}
+    .ensemble-tts [hidden]{display:none!important}
+    .ensemble-tts .et-error{color:#ef7878}
+    .ensemble-tts .et-transcript{font:inherit;white-space:pre-wrap;max-height:160px;overflow:auto;font-size:0.9em;opacity:0.9}
+    .ensemble-tts details{margin:10px 0;border:1px solid rgba(128,128,128,0.2);border-radius:6px;padding:8px 12px}
+    .ensemble-tts details summary{cursor:pointer;font-size:0.88em;font-weight:500;opacity:0.8;user-select:none}
+    .ensemble-tts details[open] summary{margin-bottom:10px}
+    .ensemble-tts .et-message{display:flex;gap:10px;align-items:center;justify-content:space-between}
+    .ensemble-tts .et-btn-group{display:flex;gap:6px;align-items:center}
   `);
   root.innerHTML = `<div class="ensemble-tts">
-    <h2>Choir</h2><p>Your cast, one story. Fixed voices for your leads; LLM casting for everyone else.</p>
+    <div class="et-header">
+      <div class="et-title-group">
+        <h2>Choir</h2>
+        <span class="et-badge">Voices</span>
+      </div>
+      <div class="et-toolbar">
+        <button data-et="play" class="et-btn-primary" disabled>Play plan</button>
+        <button data-et="pause" disabled>Pause</button>
+        <button data-et="stop">Stop</button>
+        <button data-et="latest">Plan latest</button>
+        <button data-et="save" class="et-btn-primary">Save cast</button>
+      </div>
+    </div>
     <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
-    <h3>Speech provider</h3><div class="et-grid">
-      <label>Default TTS for this chat<select data-et="mode"><option value="gemini">Gemini 3.8 · style metadata</option><option value="native">Lumiverse TTS connection</option></select></label>
+    <div class="et-status" data-et="statusActions" hidden></div>
+
+    <div class="et-section-header">
+      <h3>Lead Cast</h3>
+      <button data-et="add" class="et-btn-subtle">+ Add character</button>
+    </div>
+    <div data-et="fixed"></div>
+
+    <div class="et-section-header">
+      <h3>NPC Cast</h3>
+      <button data-et="reset" class="et-btn-subtle">Reset NPCs</button>
+    </div>
+    <div data-et="npcs"></div>
+
+    <div class="et-section-header">
+      <h3>Speech & Planner</h3>
+      <div class="et-row" style="margin:0">
+        <button data-et="testPlanner" class="et-btn-subtle">Test planner</button>
+        <button data-et="load" class="et-btn-subtle">Reload</button>
+      </div>
+    </div>
+    <div class="et-grid">
+      <label>Default TTS connection<select data-et="mode"><option value="gemini">Gemini 3.8 (style metadata)</option><option value="native">Lumiverse TTS</option></select></label>
       <label>Planner LLM connection<select data-et="planner"><option value="">Default LLM connection</option></select></label>
     </div>
-    <div data-et="gemini" class="et-grid" style="margin-top:12px">
-      <label>Gemini TTS model<select data-et="model"><option>gemini-3.8-flash-tts</option><option>gemini-3.8-flash-lite-tts</option></select></label>
-      <label>Gemini API key · this session only<input data-et="key" type="password" autocomplete="off" placeholder="Never saved to settings"></label>
+    <div data-et="gemini" class="et-grid" style="margin-top:10px">
+      <label>Gemini model<select data-et="model"><option>gemini-3.8-flash-tts</option><option>gemini-3.8-flash-lite-tts</option></select></label>
+      <label>Gemini API key<input data-et="key" type="password" autocomplete="off" placeholder="Session key (never saved)"></label>
     </div>
-    <div data-et="native" hidden class="et-grid" style="margin-top:12px">
-      <label>Lumiverse TTS connection<select data-et="connection"></select></label>
-      <label>Style handling<select data-et="styleParam"><option value="">Ignore style (voice only)</option><option value="instructions">instructions (OpenAI mini TTS)</option><option value="instruct">instruct (if supported)</option><option value="prompt">prompt (if supported)</option></select></label>
+    <div data-et="native" hidden class="et-grid" style="margin-top:10px">
+      <label>Lumiverse connection<select data-et="connection"></select></label>
+      <label>Style handling<select data-et="styleParam"><option value="">Ignore style</option><option value="instructions">instructions (OpenAI)</option><option value="instruct">instruct</option><option value="prompt">prompt</option></select></label>
     </div>
-    <details><summary>Advanced provider options</summary><div class="et-grid">
-      <label>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
-      <label>Max characters per speech request<input data-et="chunk" type="number" min="80" max="2000" value="1800"></label>
-      <label><input data-et="batchGemini" type="checkbox" checked> Batch Gemini turns (up to two speakers)</label>
-      <label>Concurrent TTS requests<select data-et="concurrency"><option value="1">1 — sequential</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
-      <label>Planner output budget (tokens)<input data-et="plannerTokens" type="number" min="1024" max="32768" step="1024" value="8192"></label>
-    </div><label style="margin-top:10px">Additional Gemini voices · one ID | description per line<textarea data-et="extraVoices" placeholder="voice_... | warm storyteller"></textarea></label>
-    <p>Other providers reuse your existing Lumiverse connections and credentials. Style support depends on their API. Gemini uses structured style metadata and a separate session key.</p></details>
-    <div class="et-row"><button data-et="load">Reload connections and voices</button><button data-et="testPlanner">Test planner</button></div>
-    <h3>Fixed cast for this chat</h3><p>Name your persona and characters exactly as they appear in the story. Each speaker can use its own TTS connection and voice. Use chat default inherits the default above. Narrator is reserved.</p>
-    <div data-et="fixed"></div><button data-et="add">Add main character</button>
-    <h3>NPC cast</h3><p>The planner selects new NPC voices and reuses their assignments throughout this chat. Gender preferences guide automatic voice selection. To recast an assigned voice with a new preference, select Let LLM choose, save, then plan again. Manual voices take priority.</p>
-    <div data-et="npcs"></div><button data-et="reset">Reset NPC cast for this provider</button>
-    <div class="et-row"><label class="et-check"><input data-et="useStyle" type="checkbox" checked>Use delivery styles</label>
-      <label class="et-check"><input data-et="auto" type="checkbox">Auto-play completed replies</label></div>
-    <label>Keep audio for this chat<select data-et="retention"><option value="session">This session only</option><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option><option value="forever">Until I delete it</option></select></label>
-    <p>Save to apply retention to existing recordings too, measured from when they were recorded. Expired audio is removed when Choir opens or accesses recordings. Session audio disappears when Choir restarts or the page reloads.</p>
-    <div class="et-row"><button data-et="save">Save cast and settings</button><button data-et="latest">Plan latest reply</button>
-      <button data-et="stop">Stop</button><button data-et="pause" disabled>Pause</button></div>
-    <div class="et-status" data-et="statusActions">Open a chat to begin.</div>
-    <h3>Speech plan</h3><div data-et="preview"><p>Plan a reply to review its speakers and styles before playback.</p></div>
-    <button data-et="play" disabled>Play plan</button>
-    <details><summary>Edit plan JSON</summary><p>Keep each segment’s text as an exact consecutive substring. Fixed and existing NPC voices take priority.</p>
-      <textarea data-et="planJson" rows="8" spellcheck="false"></textarea><button data-et="apply">Apply edited plan</button></details>
-    <h3>Recent messages</h3><p>Replay saved audio without another provider request. Recordings are stored on this device. Gender preferences guide automatic casting; manually selected voices take priority.</p><button data-et="deleteChatAudio">Delete all Choir audio for this chat</button><div data-et="messages"></div>
-    <p>Speech requests are grouped where supported. Playback stays in order with concurrent generation. Around 1,800 characters targets roughly two minutes; delivery speed varies. Disable native TTS auto-play to avoid overlapping audio.</p>
+    <div class="et-row" style="margin-top:10px">
+      <label class="et-check"><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
+      <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
+    </div>
+
+    <details>
+      <summary>Advanced Settings</summary>
+      <div class="et-grid" style="margin-top:10px">
+        <label>Audio retention<select data-et="retention"><option value="session">This session only</option><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option><option value="forever">Indefinitely</option></select></label>
+        <label>Concurrent TTS requests<select data-et="concurrency"><option value="1">1 (sequential)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
+        <label>Max characters per request<input data-et="chunk" type="number" min="80" max="2000" value="1800"></label>
+        <label>Planner output tokens<input data-et="plannerTokens" type="number" min="1024" max="32768" step="1024" value="8192"></label>
+        <label>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
+        <label class="et-check" style="align-self:end"><input data-et="batchGemini" type="checkbox" checked> Batch Gemini turns (2 speakers)</label>
+      </div>
+      <label style="margin-top:10px">Additional Gemini voices (ID | description)<textarea data-et="extraVoices" rows="2" placeholder="voice_id | description"></textarea></label>
+    </details>
+
+    <div class="et-section-header">
+      <h3>Active Plan</h3>
+    </div>
+    <div data-et="preview"></div>
+    <details>
+      <summary>Edit JSON</summary>
+      <textarea data-et="planJson" rows="6" spellcheck="false" style="margin-top:8px"></textarea>
+      <button data-et="apply" style="margin-top:8px">Apply JSON</button>
+    </details>
+
+    <div class="et-section-header">
+      <h3>Recent Messages</h3>
+      <button data-et="deleteChatAudio" class="et-btn-danger">Clear chat audio</button>
+    </div>
+    <div data-et="messages"></div>
   </div>`;
   const $ = name => root.querySelector(`[data-et="${name}"]`);
   for(const button of root.querySelectorAll('button'))button.type='button';
@@ -1063,17 +1124,19 @@ export async function setup(ctx) {
     const recent=ctx.messages.getRecent(20).filter(v=>!v.extra?.is_system);
     for(const message of recent) {
       const row=document.createElement('div');row.className='et-card et-message';
-      const name=document.createElement('span');name.textContent=`${message.name || (message.is_user?'You':'Character')} · ${transcriptFromMessage(message.content).slice(0,70)}`;
-      const button=document.createElement('button');button.textContent='Plan';button.onclick=()=>run(()=>prepare(message.id));row.append(name,button);$('messages').append(row);
-      const replay=document.createElement('button');replay.textContent='Replay';replay.onclick=()=>run(()=>replayRecording(message.id));row.append(replay);
-      const removeAudio=document.createElement('button');removeAudio.textContent='Delete audio';removeAudio.onclick=()=>run(async()=>{
+      const name=document.createElement('span');name.style.cssText='overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:8px;font-size:0.9em';
+      name.textContent=`${message.name || (message.is_user?'You':'Character')} · ${transcriptFromMessage(message.content).slice(0,70)}`;
+      const actions=document.createElement('div');actions.className='et-btn-group';
+      const button=document.createElement('button');button.type='button';button.className='et-btn-subtle';button.textContent='Plan';button.onclick=()=>run(()=>prepare(message.id));actions.append(button);
+      const replay=document.createElement('button');replay.type='button';replay.className='et-btn-subtle';replay.textContent='Replay';replay.onclick=()=>run(()=>replayRecording(message.id));actions.append(replay);
+      const removeAudio=document.createElement('button');removeAudio.type='button';removeAudio.className='et-btn-danger';removeAudio.textContent='Delete audio';removeAudio.onclick=()=>run(async()=>{
         const targetChat=chatId,key=recordingKey(targetChat,message.id);
         stop(false);status('Deleting saved audio…');
         await recordingStore('delete',key);
         if(await recordingStore('get',key))throw new Error('Audio deletion did not complete. Stop playback and try again.');
         if(chatId===targetChat){replay.disabled=true;removeAudio.textContent='Audio deleted';status('Saved audio deleted for this message. Play plan will generate new audio.');}
-      });row.append(removeAudio);
-      for(const button of row.querySelectorAll('button'))button.type='button';
+      });actions.append(removeAudio);
+      row.append(name,actions);$('messages').append(row);
     }
   }
   $('deleteChatAudio').onclick=()=>run(async()=>{
