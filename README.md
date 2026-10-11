@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="icon.svg" alt="Choir icon" width="96" />
+<img src="assets/logo.svg" alt="Choir icon" width="96" />
 
 # Choir
 
