@@ -14,9 +14,6 @@
     </linearGradient>
   </defs>
 
-  <!-- Dark Background (Remove or set fill="none" for transparent background) -->
-  <rect width="100%" height="100%" fill="#000000"/>
-
   <g transform="translate(15, 10)">
     <!-- 4-Point Accent Sparkle Star -->
     <path fill="url(#starGradient)" d="
