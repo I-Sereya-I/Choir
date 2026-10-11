@@ -511,6 +511,17 @@ export async function setup(ctx) {
       </div>
     </details>
 
+        <details style="margin-top:10px">
+      <summary>Search Community Voices (2M+ models)</summary>
+      <div style="margin-top:8px">
+        <div style="display:flex;gap:6px">
+          <input data-et="voiceSearchQuery" placeholder="Search voices (e.g. Natsuki, Geralt, Glados, Narrator...)" style="flex:1">
+          <button data-et="searchVoicesBtn" type="button" class="et-btn-primary" style="white-space:nowrap">Search</button>
+        </div>
+        <div data-et="voiceSearchResults" style="margin-top:8px;max-height:220px;overflow:auto;display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+    </details>
+
     <div class="et-section-header">
       <h3>Active Plan</h3>
     </div>
@@ -747,8 +758,8 @@ export async function setup(ctx) {
   }
   function setBusy(value) {
     busy=value;
-    for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','apply','auto'])$(name).disabled=value;
-    for (const name of ['model','planner','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','key','planJson','retention'])$(name).disabled=value;
+    for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','searchVoicesBtn','add','reset','mode','connection','apply','auto'])$(name).disabled=value;
+    for (const name of ['model','planner','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','voiceSearchQuery','useStyle','key','planJson','retention'])$(name).disabled=value;
     $('play').disabled=value || !plan;
     $('batchGemini').disabled=value;$('concurrency').disabled=value;$('autoDesignNPCs').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
@@ -1335,6 +1346,63 @@ export async function setup(ctx) {
       if(token===revision)status('Audition finished.');
     } finally {if(token===revision){controller=null;setBusy(false);}}
   });
+    const doSearchVoices = () => run(async () => {
+    const query = $('voiceSearchQuery')?.value?.trim();
+    if (!query) throw new Error('Enter a character or voice name to search.');
+    $('voiceSearchResults').replaceChildren();
+    const loading = document.createElement('div');
+    loading.style.padding = '8px'; loading.textContent = `Searching for "${query}"…`;
+    $('voiceSearchResults').append(loading);
+    const token = revision, ctrl = new AbortController();
+    try {
+      const res = await rpc('searchVoices', { query, limit: 10 }, ctrl.signal, 15000);
+      if (token !== revision) return;
+      $('voiceSearchResults').replaceChildren();
+      if (!res?.results?.length) {
+        const empty = document.createElement('div');
+        empty.style.padding = '8px'; empty.textContent = `No voices found matching "${query}".`;
+        $('voiceSearchResults').append(empty); return;
+      }
+      for (const item of res.results) {
+        const card = document.createElement('div');
+        card.className = 'et-card';
+        card.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 10px;margin:3px 0';
+        const info = document.createElement('div');
+        info.style.cssText = 'overflow:hidden;margin-right:8px';
+        const title = document.createElement('strong'); title.textContent = item.name;
+        const desc = document.createElement('p');
+        desc.style.cssText = 'margin:2px 0 0;font-size:0.8em;opacity:0.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        desc.textContent = item.description || item.id;
+        info.append(title, desc);
+        const actions = document.createElement('div');
+        actions.className = 'et-btn-group';
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button'; addBtn.className = 'et-btn-subtle'; addBtn.textContent = '+ Add to cast';
+        addBtn.onclick = () => run(async () => {
+          const entry = `${item.id} | ${item.name}${item.description ? ` · ${item.description}` : ''}`;
+          const existing = $('extraVoices').value.trim();
+          $('extraVoices').value = existing ? `${existing}\n${entry}` : entry;
+          config = capture();
+          if (chatId) await ctx.settings.set(settingsKey(chatId), config);
+          loadVersion++; await loadVoices();
+          addBtn.textContent = 'Added ✓'; addBtn.disabled = true;
+          status(`Added "${item.name}" to voice catalogue.`);
+        });
+        actions.append(addBtn);
+        card.append(info, actions);
+        $('voiceSearchResults').append(card);
+      }
+    } catch (e) {
+      if (token !== revision) return;
+      $('voiceSearchResults').replaceChildren();
+      const err = document.createElement('div');
+      err.className = 'et-error'; err.style.padding = '8px';
+      err.textContent = `Search failed: ${e.message}`;
+      $('voiceSearchResults').append(err);
+    }
+  });
+  $('searchVoicesBtn')?.addEventListener('click', doSearchVoices);
+  $('voiceSearchQuery')?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearchVoices(); } });
   $('load').onclick=()=>run(async()=>{config=capture();loadVersion++;await loadProviders();clearPlan();status('Connections and voices reloaded.');});
   for(const name of ['mode','connection'])$(name).onchange=()=>run(async()=>{
     stop(false);clearPlan();config=capture();loadVersion++;setFields();await loadVoices();

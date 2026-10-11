@@ -493,6 +493,26 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       }
       send({result:{base64:response.body,mimeType:'audio/mpeg'}}); return;
     }
+    if (message.action === 'searchVoices') {
+      const query = typeof input.query === 'string' ? input.query.trim() : '';
+      if (!query) throw new Error('Enter a character or voice name to search.');
+      const limit = Math.min(25, Math.max(1, Number(input.limit) || 10));
+      const response = await spindle.cors(`https://api.fish.audio/model?title=${encodeURIComponent(query)}&page_size=${limit}`, {
+        method: 'GET', headers: { 'Accept': 'application/json' }
+      });
+      if (controller.signal.aborted) return;
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`Voice search HTTP ${response.status}. Check network connection.`);
+      }
+      const data = JSON.parse(response.body);
+      const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+      const results = items.map(item => ({
+        id: item._id || item.id,
+        name: item.title || item.name || item._id,
+        description: (item.description || '').slice(0, 200)
+      })).filter(item => item.id);
+      send({ result: { query, results } }); return;
+    }
     if (message.action === 'gemini') {
       if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Gemini API key for this session.');
       const segment = input.segment;

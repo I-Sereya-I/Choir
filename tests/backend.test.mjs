@@ -222,3 +222,36 @@ test('fishaudio handles missing API key or empty segment', async () => {
   h2.send('fishaudio', { apiKey: 'key', segment: { text: '' } });
   assert.match((await h2.result()).message.error, /Invalid speech chunk/);
 });
+
+test('searchVoices searches community voice models and parses items', async () => {
+  let request;
+  const h = await harness(null, async (url, options) => {
+    request = { url, options };
+    return {
+      status: 200,
+      body: JSON.stringify({
+        items: [
+          { _id: '0f1de066bb6c4d03933aad3d0169cd0f', title: 'Natsuki', description: 'Cute tsundere voice' },
+          { _id: 'a6e0107fbef440cdb955646fb58cfe5a', title: 'Natsuki Subaru', description: 'Confident isekai guy' }
+        ]
+      })
+    };
+  });
+  h.send('searchVoices', { query: 'natsuki', limit: 5 });
+  const result = await h.result();
+  assert.equal(result.message.result.query, 'natsuki');
+  assert.equal(result.message.result.results.length, 2);
+  assert.equal(result.message.result.results[0].name, 'Natsuki');
+  assert.equal(result.message.result.results[0].id, '0f1de066bb6c4d03933aad3d0169cd0f');
+  assert.match(request.url, /api\.fish\.audio\/model\?title=natsuki/);
+});
+
+test('searchVoices handles empty query or network failure', async () => {
+  const h = await harness();
+  h.send('searchVoices', { query: '' });
+  assert.match((await h.result()).message.error, /Enter a character or voice name/);
+
+  const h2 = await harness(null, async () => ({ status: 500, body: 'Internal error' }));
+  h2.send('searchVoices', { query: 'glados' });
+  assert.match((await h2.result()).message.error, /Voice search HTTP 500/);
+});
