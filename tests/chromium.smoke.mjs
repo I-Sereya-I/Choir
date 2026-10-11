@@ -36,6 +36,11 @@ try{
   browser=await chromium.launch({headless:true,channel:process.env.CHOIR_BROWSER_CHANNEL || 'chrome',args:['--disable-crash-reporter']});
   const page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',error=>errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.ready);
+  assert.equal(await page.getByText('Guided setup',{exact:true}).count(),0);
+  const cast=page.locator('[data-et="fixed"]');assert.equal(await cast.locator('[data-choir-cast-editor]').first().isVisible(),false);
+  const narratorBounds=await cast.locator('.et-card').first().boundingBox();assert.ok(narratorBounds.height<55);
+  await cast.getByRole('button',{name:'Edit Narrator',exact:true}).click();assert.equal(await cast.getByLabel('Speaker name',{exact:true}).first().isVisible(),true);
+  await cast.getByRole('button',{name:'Close Narrator editor',exact:true}).click();assert.equal(await cast.locator('[data-choir-cast-editor]').first().isVisible(),false);
   const launcher=page.getByRole('button',{name:'Open Choir voice mixer',exact:true});
   const iconBounds=await launcher.boundingBox();assert.equal(Math.round(iconBounds.width),44);assert.equal(Math.round(iconBounds.height),44);
   assert.equal(await page.getByRole('slider',{name:'Master volume',exact:true}).isVisible(),false);
@@ -61,6 +66,17 @@ try{
   const before=await page.evaluate(()=>window.calls.length);await page.locator('[data-et="play"]').click();
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
   assert.equal(await page.evaluate(()=>window.calls.length),before);
+  await page.locator('[data-et="play"]').click();await page.waitForFunction(()=>!document.querySelector('[data-et="pause"]').disabled);
+  await page.locator('[data-et="pause"]').click();
+  const mixer=page.locator('[data-choir-mixer]'),seek=mixer.getByRole('slider',{name:'Seek in current spoken block',exact:true});
+  await seek.press('Home');for(let step=0;step<4;step++)await seek.press('ArrowRight');assert.ok(Math.abs(await page.evaluate(()=>window.audios.at(-1).currentTime)-0.4)<0.02);
+  const oldAudioCount=await page.evaluate(()=>window.audios.length);await mixer.getByRole('button',{name:'Next spoken block',exact:true}).click();
+  await page.waitForFunction(count=>window.audios.length===count+1 && document.querySelector('[data-et="pause"]').textContent==='Resume',oldAudioCount);
+  assert.equal(await page.evaluate(()=>window.audios.at(-1).paused),true);assert.equal(await mixer.locator('[aria-current="true"]').getAttribute('data-speaker'),'Mira');
+  await mixer.getByRole('button',{name:'Previous spoken block',exact:true}).click();
+  await page.waitForFunction(count=>window.audios.length===count+2 && document.querySelector('[data-et="pause"]').textContent==='Resume',oldAudioCount);
+  assert.equal(await mixer.locator('[aria-current="true"]').getAttribute('data-speaker'),'Narrator');assert.equal(await page.evaluate(()=>window.calls.length),before);
+  if(process.env.CHOIR_SCREENSHOT)await page.screenshot({path:process.env.CHOIR_SCREENSHOT,fullPage:true});
   await page.evaluate(()=>window.cleanup());assert.equal(await page.locator('[data-choir-mixer]').count(),0);
-  assert.deepEqual(errors,[]);console.log('PASS: Chrome Web Audio loudness, mixer, drag, pause, cached replay, teardown.');
+  assert.deepEqual(errors,[]);console.log('PASS: Chrome Web Audio loudness, compact cast editors, circular previous/next, paused navigation, seeking, mixer, drag, cached replay, teardown.');
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}

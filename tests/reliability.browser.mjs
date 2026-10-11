@@ -28,12 +28,12 @@ async function harness(mixerPreferences){
   const connections=[{id:'a',name:'Narration provider',provider:'openai_tts',model:'model-a'},{id:'b',name:'Character provider',provider:'accent_tts',model:'model-b'}];
   globalThis.fetch=async(url,options={})=>{
     if(url.endsWith('/tts/synthesize')){
-      const input=JSON.parse(options.body);synthesis.push(input);
+      const input=JSON.parse(options.body);synthesis.push(input);const requestNumber=synthesis.length;
       if(state.delay)await new Promise((resolve,reject)=>{
         const timeout=setTimeout(resolve,state.delay);
         options.signal.addEventListener('abort',()=>{clearTimeout(timeout);state.aborted++;reject(new DOMException('Stopped','AbortError'));},{once:true});
       });
-      if(input.voice===state.failVoice)return new Response('Provider quota exhausted',{status:429});
+      if(input.voice===state.failVoice || requestNumber===state.failSynthesisAt)return new Response('Provider quota exhausted',{status:429});
       return new Response(new Uint8Array([1,2,3]),{headers:{'Content-Type':'audio/mpeg'}});
     }
     let value;
@@ -271,9 +271,9 @@ test('cancellation during audio decoding never starts the decoded passage',async
   }finally{globalThis.AudioContext=originalContext;await h.close();}
 });
 
-test('guided tests are independent; Jev fallback is off by default and keys never enter saved settings or cast export',async()=>{
+test('connection tests are independent; Jev fallback is off by default and keys never enter saved settings or cast export',async()=>{
   const h=await harness();try{
-    await h.click('guidePlanner',text=>text.includes('Planner test passed'));assert.equal(h.synthesis.length,0);
+    assert.equal(h.$('setupGuide'),null);await h.click('testPlanner',text=>text.includes('Planner test passed'));assert.equal(h.synthesis.length,0);
     await h.click('testTts',text=>text.includes('Audition finished'));assert.equal(h.requests.filter(r=>r.action==='plan').length,0);assert.equal(h.synthesis.length,1);
     h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));h.$('jevKey').value='secret-jev-session';
     await h.click('latest',text=>text.includes('The object cannot be cloned'));assert.equal(h.requests.filter(r=>r.action==='plan').length,0);
@@ -284,5 +284,70 @@ test('guided tests are independent; Jev fallback is off by default and keys neve
     const before=h.store.get('chat:chat-a');h.$('castJson').value=JSON.stringify({...exported,fixed:exported.fixed.map(actor=>({...actor,voice:'missing'}))});
     await h.click('importCast',text=>text.includes('not in the selected'));assert.deepEqual(h.store.get('chat:chat-a'),before);
     h.$('castJson').value=JSON.stringify(exported);await h.click('importCast',text=>text.includes('Cast imported'));assert.equal(h.requests.filter(r=>r.action==='plan').length,1);
+  }finally{await h.close();}
+});
+
+test('compact cast editors retain hidden preferences through save, recasting and reload',async()=>{
+  const h=await harness();try{
+    const row=h.$('fixed').querySelectorAll('.et-card')[2],edit=row.querySelector('[data-choir-edit]'),editor=row.querySelector('[data-choir-cast-editor]');
+    assert.equal(editor.hidden,true);assert.equal(row.querySelector('strong').textContent,'Mira');edit.click();assert.equal(editor.hidden,false);
+    row.querySelector('[data-choir-voice]').value='new';edit.click();assert.equal(editor.hidden,true);
+    await h.plan();await h.click('save',text=>text.includes('retention saved'));const actor=h.store.get('chat:chat-a').fixed[2];
+    assert.equal(actor.voice,'new');assert.equal(actor.route,'native:b');assert.deepEqual(actor.aliases,['Captain']);assert.equal(actor.pronunciation,'Mira: mee-rah');assert.equal(actor.accent,'Irish');
+    await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-cast-editor]')[2].hidden,true);assert.equal(h.requests.filter(r=>r.action==='plan').length,1);
+    await h.play();assert.equal(h.synthesis.find(input=>input.connectionId==='b').voice,'new');
+    h.$('add').click();const added=h.$('fixed').lastElementChild;assert.equal(added.querySelector('[data-choir-cast-editor]').hidden,false);
+    const name=added.querySelector('input');name.value='Echo';name.dispatchEvent(new h.dom.window.Event('input'));assert.equal(added.querySelector('strong').textContent,'Echo');
+  }finally{await h.close();}
+});
+
+test('next skips a whole multi-chunk block; previous reuses audio, paused navigation and seeking preserve position',async()=>{
+  const h=await harness();try{
+    h.message.content='The hall was silent '.repeat(65)+'. "Hello." The door closed.';await h.plan();const planned=h.requests.filter(r=>r.action==='plan').length;h.state.blockAudio=true;
+    h.$('play').click();await until(()=>h.audios.at(-1)?.paused===false && !h.$('next').disabled);assert.equal(h.synthesis.length,1);
+    const first=h.audios[0];h.$('pause').click();assert.equal(first.paused,true);h.$('next').click();
+    await until(()=>h.audios.length===2 && !h.$('next').disabled);assert.equal(h.synthesis[1].voice,'m');assert.equal(h.audios[1].paused,true);assert.equal(h.$('pause').textContent,'Resume');
+    const seek=h.footer.querySelector('[aria-label="Seek in current spoken block"]');seek.value='7.5';seek.dispatchEvent(new h.dom.window.Event('input'));await tick();
+    assert.equal(h.audios[1].currentTime,7.5);assert.equal(h.store.get('position:chat-a').seconds,7.5);assert.equal(h.store.get('position:chat-a').passage,1);assert.equal(h.synthesis.length,2);
+    h.$('previous').click();await until(()=>h.audios.length===3 && !h.$('next').disabled);assert.equal(h.synthesis.length,2);assert.equal(h.audios[2].paused,true);
+    h.$('next').click();await until(()=>h.audios.length===4 && !h.$('next').disabled);assert.equal(h.synthesis.length,2);
+    h.$('pause').click();assert.equal(h.audios[3].paused,false);h.footer.querySelector('[aria-label="Next spoken block"]').click();
+    await until(()=>h.audios.length===5 && h.audios[4].paused===false);assert.equal(h.synthesis.length,3);assert.match(h.synthesis[2].text,/door closed/);
+    h.$('next').click();await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.$('next').disabled,true);assert.equal(h.$('previous').disabled,true);assert.equal(seek.parentElement.hidden,true);
+    assert.equal(h.requests.filter(r=>r.action==='plan').length,planned);
+  }finally{await h.close();}
+});
+
+test('a failed prefetched chunk can be skipped; cancellation disables transport and preserves completed audio',async()=>{
+  const h=await harness();try{
+    h.message.content=Array.from({length:160},(_,index)=>`lantern${index}`).join(' ')+'. "Hello."';h.$('prefetch').value='1';h.state.failSynthesisAt=2;h.state.blockAudio=true;await h.plan();
+    h.$('play').click();await until(()=>h.synthesis.length===2 && h.audios[0]?.paused===false);await tick();h.$('next').click();
+    await until(()=>h.audios.length===2 && h.audios[1].paused===false);assert.equal(h.synthesis[2].voice,'m');assert.equal(h.synthesis.length,3);
+    h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent.includes('Ready.'));assert.ok(h.audios.every(audio=>audio.paused));assert.equal(h.$('next').disabled,true);
+    h.state.active='chat-a';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent.includes('restored'));
+    h.state.failSynthesisAt=null;h.$('play').click();await until(()=>h.audios.length===3 && h.audios[2].paused===false);await tick();assert.equal(h.synthesis.length,4); // only the formerly failed prefetched chunk is new
+  }finally{await h.close();}
+});
+
+test('saved recording playback supports previous, next and seeking without synthesis',async()=>{
+  const h=await harness();try{
+    await h.plan();await h.play();const generated=h.synthesis.length,before=h.audios.length;h.state.blockAudio=true;
+    [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.audios.length===before+1 && !h.$('next').disabled);
+    h.$('next').click();await until(()=>h.audios.length===before+2 && !h.$('next').disabled);assert.match(document.querySelector('[data-choir-mixer]').textContent,/Speaking: Mira/);
+    h.$('previous').click();await until(()=>h.audios.length===before+3 && !h.$('previous').disabled);assert.match(document.querySelector('[data-choir-mixer]').textContent,/Speaking: Narrator/);
+    const seek=h.$('seekHost').querySelector('input');seek.value='9';seek.dispatchEvent(new h.dom.window.Event('input'));assert.equal(h.audios.at(-1).currentTime,9);
+    h.$('stop').click();await tick();assert.equal(h.synthesis.length,generated);assert.equal(h.store.get('position:chat-a').seconds,9);assert.equal(h.$('previous').disabled,true);
+  }finally{await h.close();}
+});
+
+test('previous remains available before a saved resume point and does not reapply the old seek offset',async()=>{
+  const h=await harness();try{
+    await h.plan();await h.play();const generated=h.synthesis.length;h.state.blockAudio=true;h.$('play').click();await until(()=>!h.$('next').disabled);
+    h.$('next').click();await until(()=>document.querySelector('[data-choir-mixer]').textContent.includes('Speaking: Mira') && !h.$('next').disabled);
+    const slider=h.$('seekHost').querySelector('input');slider.value='8';slider.dispatchEvent(new h.dom.window.Event('input'));h.$('stop').click();await tick();await h.reload();
+    h.$('resumePosition').click();await until(()=>h.audios.at(-1)?.paused===false && !h.$('previous').disabled);assert.equal(h.audios.at(-1).currentTime,8);
+    const before=h.audios.length;h.$('previous').click();await until(()=>h.audios.length===before+1 && !h.$('next').disabled);assert.match(document.querySelector('[data-choir-mixer]').textContent,/Speaking: Narrator/);
+    h.$('next').click();await until(()=>h.audios.length===before+2 && !h.$('next').disabled);assert.match(document.querySelector('[data-choir-mixer]').textContent,/Speaking: Mira/);assert.equal(h.audios.at(-1).currentTime,0);
+    assert.equal(h.synthesis.length,generated);assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
   }finally{await h.close();}
 });
