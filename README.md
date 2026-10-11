@@ -1,8 +1,8 @@
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.3-blue.svg)](https://github.com/patatasbravasch-arch/Choir)
+[![Version](https://img.shields.io/badge/version-1.1.4-blue.svg)](https://github.com/patatasbravasch-arch/Choir)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-118%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-125%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, and sound effects.
@@ -21,6 +21,14 @@ Choir separates narration and character dialogue from chat messages, assigns dis
 - **Companion extension bridge.** Exposes `window.__CHOIR_API__` so reading interfaces like Cue Living Novel can request speech turn planning and seamless paragraph playback.
 - **Floating voice mixer.** A draggable sound icon expands into a transport with master and individual speaker volume controls, mute toggles, seeking, and skip buttons.
 - **Passage caching.** Completed audio chunks cache immediately in local IndexedDB. Edits and reloads reuse matching attribution and audio without repurchasing tokens or quota.
+
+### Mixer and saved settings
+
+Click the small draggable speaker icon to open the compact player. Previous and Next move between spoken blocks; the playback bar seeks within the current audio part. **Silent** mutes playback. **No voice** skips that character's playback and new synthesis while retaining text and cached audio.
+
+Cast and connection changes save automatically with Saving / Saved / Save failed feedback. **Save settings** also saves immediately. Each chat retains its cast; new chats inherit connection, planner and playback preferences. Gemini and Jev API keys remain session-only. Saved plans and completed audio survive navigation and provider failures.
+
+Advanced **Max characters per request** controls the TTS chunk size: a whole number from **80 to 2000**, default **1800**. Invalid numeric edits are shown and are not saved.
 
 ## Installation
 
