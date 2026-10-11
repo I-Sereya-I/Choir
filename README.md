@@ -1,6 +1,14 @@
-# Choir 1.1.2 for Lumiverse staging
+# Choir 1.1.3 for Lumiverse staging
 
 An installable Spindle extension for narrated roleplay with multiple voices.
+
+## What's new in 1.1.3
+
+- Playback controls and the seek bar now live only in the floating mixer. Messages keep their compact Play Choir button and optional section menu. The drawer focuses on cast and connections; speech-plan details and saved-audio history start collapsed. Passage selection, Play selected passages, Resume last position and passage synthesis checkboxes are removed. Play in the mixer automatically resumes the saved position; message Play Choir starts that message.
+- Mixer **Silent** mutes playback; audio may still be generated and cached. **No voice** skips the character entirely, including cached playback, without requesting new audio. Text and saved audio remain available, and turning No voice off reuses saved audio. Both controls show checkmarks when enabled. Silent replaces Mute; Solo is removed, and old solo preferences are ignored. Character exclusions are controlled here rather than inside cast editors.
+- **One TTS** uses the selected connection for the whole cast and hides per-character connection fields. **Several TTS** shows those fields and restores saved character routes and voices. Switching modes or the shared connection reuses saved attribution. One TTS remembers voice choices separately for each shared connection. New chats default to One TTS; existing chats retain Several TTS until changed. Cast import/export includes these preferences.
+- No voice choices persist per chat and can be changed during playback. Already dispatched synthesis can finish and be cached; excluded characters are skipped immediately, and no further requests are started for them. Failed requests for a newly excluded character do not prevent other characters from playing. Paused navigation stays paused.
+- Legacy per-passage selection/exclusion controls are retired; character-level No voice now governs exclusions.
 
 ## What's new in 1.1.2
 
@@ -48,7 +56,7 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? Update Choir to **1.1.2**, restart it, then reload. GitHub updates use the repository and branch selected when installing Choir. Choir pipelines multi-section planning and playback and strips tracker/status/state blocks, details panels, HTML comments, and HUD panels. Nested and unfinished metadata blocks are handled. Older recordings containing removed metadata need regeneration. Existing complete recordings can still replay; new playback uses passage caches.
+Already installed? Update Choir to **1.1.3**, restart it, then reload. GitHub updates use the repository and branch selected when installing Choir. Choir pipelines multi-section planning and playback and strips tracker/status/state blocks, details panels, HTML comments, and HUD panels. Nested and unfinished metadata blocks are handled. Older recordings containing removed metadata need regeneration. Existing complete recordings can still replay; new playback uses passage caches.
 
 ## Install locally
 
@@ -93,7 +101,7 @@ The manifest points to the GitHub repository above. Ready-built `dist/` files ar
 4. Choose a **Planner LLM connection**, or leave the field at **Default LLM connection**. The planner must support text generation; it is separate from the TTS model.
 5. Click **Edit** beside each fixed speaker to choose voices and optional preferences. The active persona and main character names are prefilled on first use where available. You can edit the persona name and add additional main characters. `Narrator` is reserved.
 6. Set optional base styles such as “measured storytelling” or “soft French accent.” Leave **Use delivery styles** checked for LLM-generated turn styles.
-7. Click **Save cast and settings**, then **Plan latest reply**, inspect the speech plan, and click **Play plan**.
+7. Click **Save cast and settings**, then **Plan latest reply**, inspect the speech plan, and click **Play in the mixer**.
 
 The 30 standard Gemini voices are included. Under advanced options, you can add extended/custom voice IDs using one `ID | description` per line, then click **Reload connections and voices**. Descriptions help the planner choose suitable NPC voices.
 
@@ -120,7 +128,7 @@ Use **Plan** beside any recent message, or **Plan latest reply**. After validati
 
 The optional JSON editor can correct segment boundaries and speaker attribution. Every segment must copy an exact consecutive substring of the cleaned transcript. The validator rejects invented, rewritten or omitted prose. Existing cast assignments still take priority over a JSON voice suggestion. Styles in this editor are turn styles; base cast styles are added automatically.
 
-**Auto-play completed replies** makes a planner call and starts playback after each successful completed assistant generation in the active chat. Disable Lumiverse's native TTS autoplay to prevent overlapping playback. Browser audio restrictions may require a manual **Play plan** click first.
+**Auto-play completed replies** makes a planner call and starts playback after each successful completed assistant generation in the active chat. Disable Lumiverse's native TTS autoplay to prevent overlapping playback. Browser audio restrictions may require a manual **Play in the mixer** click first.
 
 Changing chat stops active playback and restores that chat's last matching plan. Editing/deleting a message or changing its swipe cancels planning and playback for that message and clears current attribution. **Stop** cancels planning and playback and prevents additional chunks. A proxy request already sent upstream can finish after cancellation; its late result is discarded and may still be billed. Already completed audio stays cached.
 
