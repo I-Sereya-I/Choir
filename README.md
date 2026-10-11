@@ -32,11 +32,11 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? Install this **1.1.0** build, restart Choir, then reload. The changes in this archive must be published to the repository before GitHub's update action can fetch them. Choir pipelines multi-section planning and playback and strips tracker/status/state blocks, details panels, HTML comments, and HUD panels. Nested and unfinished metadata blocks are handled. Older recordings containing removed metadata need regeneration. Existing complete recordings can still replay; new playback uses passage caches.
+Already installed? Update Choir to **1.1.0**, restart it, then reload. GitHub updates use the repository and branch selected when installing Choir. Choir pipelines multi-section planning and playback and strips tracker/status/state blocks, details panels, HTML comments, and HUD panels. Nested and unfinished metadata blocks are handled. Older recordings containing removed metadata need regeneration. Existing complete recordings can still replay; new playback uses passage caches.
 
 ## Install locally
 
-This archive includes ready-built `dist/backend.js` and `dist/frontend.js`; no compilation is needed to install it. It does not modify Lumiverse itself.
+The repository includes ready-built `dist/backend.js` and `dist/frontend.js`; no compilation is needed to install it. It does not modify Lumiverse itself.
 
 1. Extract the archive. The extension folder is named `choir`.
 2. Copy that entire folder into your Lumiverse **configured data directory** under `extensions/choir`. A typical layout is:
