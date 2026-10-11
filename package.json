@@ -1,11 +1,14 @@
 {
   "name": "choir",
-  "version": "1.0.18",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node --test tests/*.test.mjs",
-    "test:ui": "node --test tests/frontend.browser.mjs"
-  }
+    "pretest": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs tests/*.browser.mjs",
+    "test:ui": "node --test tests/*.browser.mjs",
+    "test:chromium": "node scripts/build.mjs && node tests/chromium.smoke.mjs"
+  },
+  "devDependencies": {"jsdom":"26.1.0","fake-indexeddb":"6.2.4"}
 }

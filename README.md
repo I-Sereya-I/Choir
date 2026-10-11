@@ -1,6 +1,23 @@
-# Choir for Lumiverse staging
+# Choir 1.1.0 for Lumiverse staging
 
 An installable Spindle extension for narrated roleplay with multiple voices.
+
+## What's new in 1.1.0
+
+- Jev requests send only plain data through `spindle.cors`. `AbortSignal` stays local because Spindle forwards CORS options through worker messaging. Cancellation discards late proxy results; it cannot revoke an already billed upstream request.
+- **Allow LLM fallback after Jev fails** is off by default. Select its saved LLM connection explicitly before enabling it. The original Jev error remains visible in the plan and persists with it, including when the fallback succeeds. Missing keys and malformed classifications no longer silently choose another planner or the first candidate.
+- Validated attribution is saved per chat/message in extension settings. Returning to a chat or reloading restores the last plan. Saving voice, route, or style changes reuses attribution. Text/swipe edits invalidate attribution; unchanged audio passages remain reusable after the new text is planned.
+- Every completed audio passage is cached immediately, including prefetched audio that has not played yet. Provider failure or cancellation retains those passages. Retry generates only missing or changed synthesis inputs. If IndexedDB fails, audio remains available for the page session and Choir reports the persistence failure.
+- A floating mixer provides master and individual speaker volume, mute, multiple-speaker solo, current-speaker highlighting, pause/resume, collapse/reopen, and a remembered draggable position. Controls work independently of the settings drawer. Individual passage playback replaces Gemini two-speaker batching so each speaker can be mixed and excluded separately.
+- Guided setup has independent planner and short billable TTS tests, automatic persona/character names, and previews beside every voice. The roleplay formatting suggestion is optional; Choir never changes your chat prompt.
+- Cast rows support aliases, pronunciation instructions, accent preferences, exclusions, and provider routing. Accent parameters are sent only when advertised by the provider; enum values are validated. Otherwise accents and pronunciation use supported delivery instructions (or Gemini speech metadata). Providers without either capability cannot apply those preferences.
+- Select passages in the plan to play a subset. Exclude passages or entire characters to skip synthesis while retaining every original word for later. **Resume last position** resumes the saved passage/chunk and time offset, including after reload; edited text starts fresh.
+- The plan shows **Cached**, partial cache counts, or **requires generation**. Default prefetch is one upcoming passage, adjustable from zero to four; concurrency is separately capped at four. TTS requests have no automatic retries. Provider failure stops playback rather than switching providers. Optional Gemini custom-voice fallback is separately enabled and limited to one retry to Kore/Charon. Planner JSON repair has one retry, and slow-section splitting is limited to two splits.
+- Web Audio loudness matching measures passage RMS and peak, applies bounded gain, and preserves the original cached audio. Disable it in Advanced Settings if desired. Silent audio is not amplified. Mixer volume and loudness settings never invalidate the audio cache.
+- Versioned cast JSON import/export includes aliases, routing, exclusions, accents, and pronunciation, and excludes credentials. Imports validate all provider routes and voice catalogues before saving. Connection IDs are host-specific; configure or remap them on the destination host.
+- Message buttons support both `ctx.ui.registerDomDecorator` and the older top-level decorator API, including detached drawers and both message layouts.
+
+Gemini and Jev keys are page-session credentials. Legacy saved Jev keys are removed from settings on first load; that load can still use the key for the current session. Enter it again after reload. Plans persist independently of audio retention; clearing audio does not delete attribution. Audio is device-local IndexedDB data, while plan/cast settings use Lumiverse extension settings.
 
 - Choose narrator/persona/main-character voices yourself, or select **Let LLM choose**. Gemini voice selectors display Male/Female labels and can filter the catalogue by gender. The filter also guides automatic casting; manual voices take priority. Custom/provider voices without metadata are marked Gender unknown. Select Let LLM choose again to apply a changed preference to a previously cast voice.
 - Choir separates narration from double-quoted dialogue locally. An LLM assigns character identities, NPC voices and delivery styles to numbered source pieces; Choir reconstructs the original words without model rewrites.
@@ -15,7 +32,7 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? Update Choir to **1.0.18**, restart it, then reload. Choir pipelines multi-section planning and playback to start speaking immediately, and decouples speech synthesis into an asynchronous worker pool for seamless playback. Choir removes tracker/status/state blocks, collapsible details panels, HTML comments, and HTML panels marked with tracker/stats/hud classes or IDs before planning and speech. Nested and unfinished metadata blocks are handled. Ordinary narration remains spoken. Older recordings containing removed metadata need regeneration; Play Choir on the message automatically plans/records fresh audio when its saved speech text no longer matches.
+Already installed? Install this **1.1.0** build, restart Choir, then reload. The changes in this archive must be published to the repository before GitHub's update action can fetch them. Choir pipelines multi-section planning and playback and strips tracker/status/state blocks, details panels, HTML comments, and HUD panels. Nested and unfinished metadata blocks are handled. Older recordings containing removed metadata need regeneration. Existing complete recordings can still replay; new playback uses passage caches.
 
 ## Install locally
 
@@ -83,47 +100,49 @@ NPC lists are stored independently for Gemini and each native connection. Fixed 
 
 ## Daily use and corrections
 
-Use **Plan** beside any recent message, or **Plan latest reply**. After a plan is accepted, newly cast NPCs are saved for this chat. Replay the current plan without another LLM call. Correct a speaker/voice in the fixed or NPC cast, save, and replan the message to apply the change.
+Use **Plan** beside any recent message, or **Plan latest reply**. After validation, attribution and newly cast NPCs are saved for this chat. These buttons reuse matching attribution without another planner call. Change a voice, provider route, or base style in the cast and save to apply it. Correct attribution through the JSON editor; **Apply JSON** validates and persists the correction. The **Replay** action plays the last saved recording; **Play Choir** uses the current plan and cast and generates only missing audio.
 
 The optional JSON editor can correct segment boundaries and speaker attribution. Every segment must copy an exact consecutive substring of the cleaned transcript. The validator rejects invented, rewritten or omitted prose. Existing cast assignments still take priority over a JSON voice suggestion. Styles in this editor are turn styles; base cast styles are added automatically.
 
 **Auto-play completed replies** makes a planner call and starts playback after each successful completed assistant generation in the active chat. Disable Lumiverse's native TTS autoplay to prevent overlapping playback. Browser audio restrictions may require a manual **Play plan** click first.
 
-Changing chat, editing/deleting a message, or changing its swipe stops the active playback and invalidates the plan. **Stop** cancels the planner, halts playback and prevents further speech chunks. A Gemini request already sent through Lumiverse's CORS proxy can finish upstream after you stop; its result is discarded, and it may still be billed.
+Changing chat stops active playback and restores that chat's last matching plan. Editing/deleting a message or changing its swipe cancels planning and playback for that message and clears current attribution. **Stop** cancels planning and playback and prevents additional chunks. A proxy request already sent upstream can finish after cancellation; its late result is discarded and may still be billed. Already completed audio stays cached.
 
 ## Limits and troubleshooting
 
 - Playback synthesizes one speaker at a time, in transcript order. This supports an arbitrary cast without relying on Gemini's two-speaker dialogue request format. There can be pauses between requests; audio is not generated as one continuous multi-speaker file.
 - Each plan handles up to 30,000 characters and 250 turns. It uses up to 12 recent messages for speaker context. Ambiguous attribution and unnamed NPC identity may need correction.
 - The extension strips presentation markup, code blocks, images and closed thinking blocks before planning. Narration remains spoken.
-- The default chunk size is 350 characters. Larger chunks reduce request count; smaller chunks help with the staging CORS proxy's **30-second request timeout**. This timeout is host-controlled.
-- Planning makes a separate text-model request, with one corrective retry if needed. Playback makes a separate speech request per chunk. Provider quota and billing apply.
+- The default chunk size is 1,800 characters. Larger chunks reduce request count; smaller chunks help with host/provider timeouts. Set the chunk size in Advanced Settings. Changing chunk boundaries may require new audio.
+- New text makes a separate attribution request, with one corrective retry if needed. Slow sections can be split at most twice. Playback makes a speech request only for each uncached included chunk. Provider quota and billing apply.
 - Planning uses the selected LLM connection's model and saved credentials, with chat preset parameters excluded and reasoning disabled for this request. Its output budget defaults to 8,192 tokens; the corrective retry can increase it up to 32,768. Under advanced options, set **Planner output budget** to suit your model's supported limit. Empty responses and output cutoffs produce explicit errors. The planner must be a text-generation model, separately from Gemini TTS.
 - Before planning, Choir checks that its backend replies within eight seconds. If that fails, update/restart Choir in Extensions and reload the page. Planning errors appear both at the top and next to the playback controls.
 - On HTTP 401/403/429 or a timeout, check the key, model access, quota and connection settings. A provider error is shown without silently changing the cast or speaking unvalidated text.
 - Use WAV or MP3 when a browser cannot decode your native provider's output. Gemini WAV is preserved; legacy raw PCM responses are wrapped in WAV.
 - Advanced **Lumiverse API base** defaults to `/api/v1`. Change it if your frontend reaches Lumiverse at a different API URL; session authentication and the server's CORS settings still apply.
-- Cast settings persist per user/chat. Completed recordings persist according to your **Keep audio for this chat** setting (default: until deleted) in browser IndexedDB on this device, scoped to your extension settings and chat/message. Use Replay beside recent messages after reload, without an API key or new synthesis. Edited/swiped messages cannot replay the old recording. Clearing browser site data removes recordings; they do not sync to other devices or appear in native Lumiverse TTS controls. Session-only audio stays in memory until Choir restarts or the page reloads. Only one recording per message is retained; a new completed generation replaces it. If browser storage is unavailable/full, playback continues and reports that audio was not saved. Use Delete audio to remove a recording.
+- Cast and validated attribution settings persist per user/chat/message. Partial and complete audio persist according to **Audio retention** (default: indefinitely) in browser IndexedDB, scoped to the extension namespace and chat/message. Unchanged passage variants remain cached across recasting and text edits until retention expires or you delete audio. Old recordings cannot replay edited text. Clearing browser site data removes recordings; they do not sync to other devices or appear in native Lumiverse TTS controls. Session-only audio is kept until Choir restarts or the page reloads. Storage failure retains a session copy and displays an error. **Delete audio** and **Clear chat audio** remove all passage variants for the selected message/chat.
 
 ## Validation and development
 
-Built against Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. The package passed 40 automated tests, including a DOM integration scenario covering both speech adapters, persistence, a detached drawer, cancellation, message edits and chat switching. Planner tests verify independent output settings, a retry after truncated JSON, clear empty-response errors, and backend readiness replies. Settings navigation preserves the controls and session key when switching between the drawer and settings tab. Older hosts show a visible compatibility explanation. Identifier/permission validation and the raw backend capability scanner from that staging source also passed.
+The original extension targeted Lumiverse `staging` commit `069777a6cc7fef9a735dd9a460d6da0ab9c72b0f` and extension API types `0.6.40`. This update also inspected current staging worker CORS messaging and the frontend decorator API. Automated regression tests cover backend cancellation, clone-safe Jev transport, explicit fallback diagnostics, both speech adapters, detached drawers, saved-plan restoration, recasting, edited/swiped messages during planning and synthesis, chat switching, partial provider failure, storage failure, selection/exclusion, resume, aliases, loudness gains, and cast exchange.
+
+An optional Chrome smoke test uses actual WAV decoding and Web Audio with simulated providers. It checks quiet/loud passage gains, live mute, current-speaker highlighting, drag, pause, cache replay without new synthesis, and teardown. This fixture is not a running Lumiverse installation or a real-provider quality test.
 
 **It has not been installed into your running Lumiverse instance or tested with real provider credentials.** Actual synthesis quality, provider availability and live UI integration still need your first-use check.
 
-The runtime has no package dependencies. To rebuild and run core/backend tests:
+The runtime has no package dependencies. To install development dependencies, rebuild, and run all regression tests:
 
 ```text
-node scripts/build.mjs
+npm ci
 npm test
 ```
 
-For the optional DOM integration test, install `jsdom@26.1.0` and `fake-indexeddb` locally without saving it, then run `npm run test:ui`. Node 24 is the tested development runtime. Sandbox environments that disallow child processes can use `node --test --test-isolation=none` with the test paths instead.
+`npm test` rebuilds both distribution bundles and includes DOM integration tests. `npm run test:ui` runs only DOM tests after a build. For the optional real-browser check, install `playwright@1.62.1` without saving it, have Chrome installed, and run `npm run test:chromium`. Set `CHOIR_BROWSER_CHANNEL` to another supported Chromium channel if needed, and `CHOIR_SCREENSHOT` to save a fixture screenshot. Node 24 is the tested development runtime.
 
 Sources: [Lumiverse staging](https://github.com/prolix-oc/Lumiverse/tree/staging), [Spindle developer documentation](https://docs.lumiverse.chat/), [Google Gemini TTS REST documentation](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation).
 
 
-Named Google voice gender labels follow [Google’s published named voice table](https://docs.cloud.google.com/text-to-speech/docs/chirp3-hd). The names match the [Gemini studio catalogue](https://ai.google.dev/gemini-api/docs/speech-generation). The filter shows an already selected voice even if it differs from the filter, with a warning in its label; select a matching voice or Let LLM choose to recast. Existing recordings retain the voice originally used: delete the audio and plan/play again to record a changed cast.
+Named Google voice gender labels follow [Google’s published named voice table](https://docs.cloud.google.com/text-to-speech/docs/chirp3-hd). The names match the [Gemini studio catalogue](https://ai.google.dev/gemini-api/docs/speech-generation). The filter shows an already selected voice even if it differs from the filter. Saved voice changes reuse attribution and generate only affected passages; **Replay** retains the last recording's voices.
 
 ## Mixed TTS providers
 
