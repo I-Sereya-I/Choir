@@ -144,6 +144,16 @@ function validateCastConfig(config) {
     if (typeof npc.style !== 'string' || npc.style.length > 600) throw new Error('Invalid NPC base style.');
     names.add(name);
   }
+  for (const actor of [...config.fixed, ...config.npcs]) {
+    if (actor.aliases !== undefined && (!Array.isArray(actor.aliases) || actor.aliases.length > 30 || actor.aliases.some(alias=>typeof alias!=='string' || !alias.trim() || alias.length>100))) throw new Error('Aliases must be a list of up to 30 names.');
+    for (const alias of actor.aliases || []) {
+      const key=normalizeName(alias);
+      if(names.has(key))throw new Error(`Conflicting character alias: ${alias}`);
+      names.add(key);
+    }
+    for(const field of ['pronunciation','accent'])if(actor[field] !== undefined && (typeof actor[field]!=='string' || actor[field].length>300))throw new Error(`Invalid ${field} preference.`);
+    if(actor.excluded !== undefined && typeof actor.excluded!=='boolean')throw new Error('Invalid character exclusion.');
+  }
   return config;
 }
 
@@ -152,6 +162,7 @@ function validatePlan(raw, transcript, config) {
   if (!raw || !Array.isArray(raw.segments) || !raw.segments.length) throw new Error('Expected at least one speech segment.');
   const voices = new Set(config.voices.map(v => v.id));
   const cast = new Map([...config.fixed, ...config.npcs].map(v => [normalizeName(v.speaker), {...v}]));
+  const aliases = new Map([...config.fixed, ...config.npcs].flatMap(actor=>(actor.aliases || []).map(alias=>[normalizeName(alias),normalizeName(actor.speaker)])));
   const available=(voice,route)=>config.voices.some(v=>v.id===voice && (v.route || '')===route);
   const checkAutomaticGender=(voice,gender,route)=>{
     const choice=config.voices.find(v=>v.id===voice && (v.route || '')===route);
@@ -188,7 +199,7 @@ function validatePlan(raw, transcript, config) {
       if (!matchOk) throw new Error(`Segment ${index+1} changes or skips the original text. Copy exact consecutive substrings.`);
       cursor = tIdx;
     }
-    const key = normalizeName(segment.speaker);
+    const key = aliases.get(normalizeName(segment.speaker)) || normalizeName(segment.speaker);
     if (!key || key.length > 100) throw new Error(`Segment ${index+1} has an invalid speaker.`);
     let actor = cast.get(key);
     if (!actor) {
@@ -226,6 +237,62 @@ function validatePlan(raw, transcript, config) {
   if (transcript.slice(cursor).trim()) throw new Error('The plan omits the end of the original message.');
   const fixed = new Set(config.fixed.map(v => normalizeName(v.speaker)));
   return {segments, npcs:[...cast.values()].filter(v => !fixed.has(normalizeName(v.speaker)))};
+}
+
+// Persist attribution separately from synthesis choices so recasting is free.
+function attributionPlan(plan, config) {
+  return {segments:plan.segments.map(segment=>{
+    const actor=[...config.fixed,...config.npcs].find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker));
+    const prefix=actor?.style?`${actor.style}. `:'';
+    return {speaker:segment.speaker,text:segment.text,style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style};
+  })};
+}
+
+function restoreAttribution(saved, transcript, config) {
+  const actors=[...config.fixed,...config.npcs];
+  return validatePlan({segments:saved.segments.map(segment=>{
+    const actor=actors.find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker) || (a.aliases || []).some(alias=>normalizeName(alias)===normalizeName(segment.speaker)));
+    const route=actor?.route || config.defaultRoute || '';
+    const catalogue=config.voices.filter(v=>(v.route || '')===route);
+    const voice=actor?.voice || catalogue.find(v=>!actor?.gender || actor.gender==='auto' || v.gender===actor.gender)?.id;
+    return {...segment,voice,route};
+  })},transcript,config);
+}
+
+function passageKey(segment, settings, connection, parameters={}) {
+  return JSON.stringify([2,segment.text,segment.voice,segment.route || settings.defaultRoute,
+    segment.style || '',connection?.model || settings.model,connection?.provider || '',
+    connection?.api_url || connection?.base_url || '',
+    settings.allowVoiceFallback===true,parameters]);
+}
+
+function mixerVolume(master, speaker, channels) {
+  const channel=Object.hasOwn(channels,speaker)?channels[speaker]:{}, solo=Object.values(channels).some(c=>c.solo);
+  return Math.max(0,Math.min(1,Number(master ?? 1)*Number(channel.volume ?? 1)*(channel.mute || (solo && !channel.solo)?0:1)));
+}
+
+function loudnessGain(channels, target=0.12) {
+  let squares=0,peak=0,count=0;
+  for(const samples of channels)for(const sample of samples){squares+=sample*sample;peak=Math.max(peak,Math.abs(sample));count++;}
+  const rms=count?Math.sqrt(squares/count):0;
+  return rms>0.0001?Math.max(0.25,Math.min(4,target/rms,peak?0.95/peak:4)):1;
+}
+
+function castExport(config) {
+  const clean=castImport({format:'choir-cast',version:1,fixed:config.fixed,casts:config.casts});
+  return {format:'choir-cast',version:1,...clean};
+}
+
+function castImport(raw) {
+  if(raw?.format!=='choir-cast' || raw.version!==1 || !Array.isArray(raw.fixed) || !raw.casts || typeof raw.casts!=='object' || Array.isArray(raw.casts))throw new Error('Expected a Choir cast export (version 1).');
+  const clean=actor=>{
+    if(!actor || typeof actor.speaker!=='string' || typeof actor.voice!=='string' || typeof actor.style!=='string')throw new Error('Invalid imported cast row.');
+    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
+  };
+  return {fixed:raw.fixed.map(clean),casts:Object.fromEntries(Object.entries(raw.casts).map(([route,actors])=>{
+    if(!Array.isArray(actors) || actors.length>500 || !/^(gemini|native:[\w.-]+)$/.test(route))throw new Error('Invalid imported cast provider.');
+    return [route,actors.map(clean)];
+  }))};
 }
 
 function speechSourceUnits(transcript) {
@@ -453,8 +520,10 @@ function fastClassifyPlan(transcript, config) {
 
   const findSpeakerInTag = (tagText) => {
     for (const cand of candidates) {
-      const esc = cand.speaker.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-      if (new RegExp('\\b' + esc + '\\b', 'i').test(tagText)) return cand;
+      for(const name of [cand.speaker,...(cand.aliases || [])]){
+        const esc = name.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+        if (new RegExp('\\b' + esc + '\\b', 'i').test(tagText)) return cand;
+      }
     }
     return null;
   };
@@ -518,13 +587,16 @@ function fastClassifyPlan(transcript, config) {
 
 
 async function jevPost(url, headers, payload, signal) {
+  signal?.throwIfAborted();
   if (typeof spindle !== 'undefined' && typeof spindle?.cors === 'function') {
     const res = await spindle.cors(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify(payload),
-      signal
+      // Spindle forwards options through worker postMessage. AbortSignal is not
+      // structured-cloneable there. Cancel locally and discard late results.
+      body: JSON.stringify(payload)
     });
+    signal?.throwIfAborted();
     if (!res) throw new Error('Jev request returned no response.');
     let data;
     try {
@@ -610,9 +682,14 @@ async function classifyWithJev({ items = [], candidates = [], apiKey, endpoint, 
   try {
     data = await jevPost(url, headers, payload, signal);
   } catch (err) {
-    throw new Error(`Jev classification failed: ${err.message}`);
+    if (signal?.aborted) throw err;
+    throw new Error(`Jev classification failed: ${err.message}`, {cause:err});
   }
-  return extractChoices(data);
+  const choices = extractChoices(data);
+  if (choices.length !== items.length || choices.some(choice => !payload.choices.includes(choice))) {
+    throw new Error('Jev returned incomplete or unknown classification choices.');
+  }
+  return choices;
 }
 
 async function planWithJev({ transcript, config, apiKey, endpoint, context = '', signal } = {}) {
@@ -661,7 +738,8 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
       const contextStart = Math.max(0, u.start - 300);
       const contextEnd = Math.min(transcript.length, u.end + 300);
       const localContext = transcript.slice(contextStart, contextEnd);
-      const fullContext = context ? `${context.slice(-1000)}\n${localContext}` : localContext;
+      const castAliases=allCast.filter(actor=>actor.aliases?.length).map(actor=>`${actor.speaker}: ${(actor.aliases || []).join(', ')}`).join('; ');
+      const fullContext = [castAliases?`Character aliases: ${castAliases}`:'',context.slice(-1000),localContext].filter(Boolean).join('\n');
       return { text: u.text, context: fullContext };
     });
 
@@ -683,7 +761,8 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
           endpoint: ep,
           signal
         });
-      } catch {
+      } catch (error) {
+        if(signal?.aborted)throw error;
         emotionChoices = [];
       }
     }
@@ -765,10 +844,11 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   const timer = setTimeout(() => { send({error:message.action==='plan' || message.action==='testPlanner' || message.action==='planJev' || message.action==='planWithJev'
     ? `Planner timed out while ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}. Check this LLM connection in Lumiverse. Speech chunk size does not affect planning.`
     : 'Speech generation timed out. Try a shorter speech request or check the TTS provider.'}); controller.abort(); },message.action==='testPlanner'?60000:(message.action==='plan' || message.action==='planJev' || message.action==='planWithJev')?Math.min(600000,Math.max(1000,Number(message.input?.timeoutMs)||600000)):180000);
+  let jevFailure;
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.0.18',ready:true}});return;
+      send({result:{version:'1.1.0',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       if (input.plannerMode === 'jev' || input.useJev) {
@@ -831,7 +911,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     if (message.action === 'plan') {
       if (typeof input.transcript !== 'string' || !input.transcript.trim()) throw new Error('Choose a message with text to plan.');
       validateCastConfig(input.config);
-      if (input.config?.useJev && (input.config?.jevApiKey || input.apiKey)) {
+      if (input.config?.useJev) {
         try {
           progress({stage:'Classifying with Jev System 1'});
           const plan = await planWithJev({
@@ -846,7 +926,9 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
           send({result:plan});return;
         } catch (jevError) {
           if (controller.signal.aborted) return;
-          // Fallback to standard LLM planning
+          if (input.config.allowLlmFallback !== true) throw jevError;
+          jevFailure = jevError;
+          progress({stage:`Jev failed: ${jevError.message}. Using explicitly enabled LLM fallback.`});
         }
       }
       progress({stage:'Resolving saved LLM connection'});
@@ -890,7 +972,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         progress({stage:'Validating planner response',provider:connection.provider,model:connection.model});
         try {
           const plan = validatePlan(resolvePlanReferences(parsePlanJson(result.content),input.transcript,input.config),input.transcript,input.config);
-          send({result:plan}); return;
+          send({result:{...plan,...(jevFailure?{warning:jevFailure.message}:{})}}); return;
         } catch (error) {
           const truncated=/length|max_tokens|max_output_tokens/i.test(result.finish_reason || '');
           failure = truncated ? new Error('The planner response was cut off by its output limit. Increase the planner output budget or plan a shorter reply.') : error;
@@ -977,7 +1059,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       const isCustomVoice = v => typeof v === 'string' && (v.startsWith('voice_') || v.includes('_'));
       const fallbackVoice = gender => gender === 'female' ? 'Kore' : 'Charon';
       const hasCustomVoice = isCustomVoice(segment.voice) || (Array.isArray(segment.turns) && segment.turns.some(turn => isCustomVoice(turn.voice)));
-      if ((response.status === 404 || response.status === 400) && hasCustomVoice) {
+      if (input.allowVoiceFallback === true && (response.status === 404 || response.status === 400) && hasCustomVoice) {
         let detail = '';
         try { detail = JSON.parse(response.body)?.error?.message || response.body || ''; } catch { detail = String(response.body || ''); }
         if (response.status === 404 || !detail || /voice|not found|invalid/i.test(detail)) {
@@ -1002,7 +1084,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       send({result:extractGeminiAudio(JSON.parse(response.body))}); return;
     }
     throw new Error('Unknown Choir action.');
-  })().catch(error => send({error: error?.message || 'Choir request failed.'}))
+  })().catch(error => send({error: [jevFailure?.message, error?.message || 'Choir request failed.'].filter(Boolean).join('\nLLM fallback failed: ')}))
     .finally(() => {clearTimeout(timer);running.delete(key);});
 });
 }

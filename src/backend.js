@@ -1,13 +1,16 @@
 import { validateCastConfig, validatePlan, parsePlanJson, resolvePlanReferences, plannerPrompt, geminiRequest, extractGeminiAudio, speechSourceUnits, normalizeName } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
+  signal?.throwIfAborted();
   if (typeof spindle !== 'undefined' && typeof spindle?.cors === 'function') {
     const res = await spindle.cors(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify(payload),
-      signal
+      // Spindle forwards options through worker postMessage. AbortSignal is not
+      // structured-cloneable there. Cancel locally and discard late results.
+      body: JSON.stringify(payload)
     });
+    signal?.throwIfAborted();
     if (!res) throw new Error('Jev request returned no response.');
     let data;
     try {
@@ -93,9 +96,14 @@ export async function classifyWithJev({ items = [], candidates = [], apiKey, end
   try {
     data = await jevPost(url, headers, payload, signal);
   } catch (err) {
-    throw new Error(`Jev classification failed: ${err.message}`);
+    if (signal?.aborted) throw err;
+    throw new Error(`Jev classification failed: ${err.message}`, {cause:err});
   }
-  return extractChoices(data);
+  const choices = extractChoices(data);
+  if (choices.length !== items.length || choices.some(choice => !payload.choices.includes(choice))) {
+    throw new Error('Jev returned incomplete or unknown classification choices.');
+  }
+  return choices;
 }
 
 export async function planWithJev({ transcript, config, apiKey, endpoint, context = '', signal } = {}) {
@@ -144,7 +152,8 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
       const contextStart = Math.max(0, u.start - 300);
       const contextEnd = Math.min(transcript.length, u.end + 300);
       const localContext = transcript.slice(contextStart, contextEnd);
-      const fullContext = context ? `${context.slice(-1000)}\n${localContext}` : localContext;
+      const castAliases=allCast.filter(actor=>actor.aliases?.length).map(actor=>`${actor.speaker}: ${(actor.aliases || []).join(', ')}`).join('; ');
+      const fullContext = [castAliases?`Character aliases: ${castAliases}`:'',context.slice(-1000),localContext].filter(Boolean).join('\n');
       return { text: u.text, context: fullContext };
     });
 
@@ -166,7 +175,8 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
           endpoint: ep,
           signal
         });
-      } catch {
+      } catch (error) {
+        if(signal?.aborted)throw error;
         emotionChoices = [];
       }
     }
@@ -248,10 +258,11 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   const timer = setTimeout(() => { send({error:message.action==='plan' || message.action==='testPlanner' || message.action==='planJev' || message.action==='planWithJev'
     ? `Planner timed out while ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}. Check this LLM connection in Lumiverse. Speech chunk size does not affect planning.`
     : 'Speech generation timed out. Try a shorter speech request or check the TTS provider.'}); controller.abort(); },message.action==='testPlanner'?60000:(message.action==='plan' || message.action==='planJev' || message.action==='planWithJev')?Math.min(600000,Math.max(1000,Number(message.input?.timeoutMs)||600000)):180000);
+  let jevFailure;
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.0.18',ready:true}});return;
+      send({result:{version:'1.1.0',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       if (input.plannerMode === 'jev' || input.useJev) {
@@ -314,7 +325,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     if (message.action === 'plan') {
       if (typeof input.transcript !== 'string' || !input.transcript.trim()) throw new Error('Choose a message with text to plan.');
       validateCastConfig(input.config);
-      if (input.config?.useJev && (input.config?.jevApiKey || input.apiKey)) {
+      if (input.config?.useJev) {
         try {
           progress({stage:'Classifying with Jev System 1'});
           const plan = await planWithJev({
@@ -329,7 +340,9 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
           send({result:plan});return;
         } catch (jevError) {
           if (controller.signal.aborted) return;
-          // Fallback to standard LLM planning
+          if (input.config.allowLlmFallback !== true) throw jevError;
+          jevFailure = jevError;
+          progress({stage:`Jev failed: ${jevError.message}. Using explicitly enabled LLM fallback.`});
         }
       }
       progress({stage:'Resolving saved LLM connection'});
@@ -373,7 +386,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         progress({stage:'Validating planner response',provider:connection.provider,model:connection.model});
         try {
           const plan = validatePlan(resolvePlanReferences(parsePlanJson(result.content),input.transcript,input.config),input.transcript,input.config);
-          send({result:plan}); return;
+          send({result:{...plan,...(jevFailure?{warning:jevFailure.message}:{})}}); return;
         } catch (error) {
           const truncated=/length|max_tokens|max_output_tokens/i.test(result.finish_reason || '');
           failure = truncated ? new Error('The planner response was cut off by its output limit. Increase the planner output budget or plan a shorter reply.') : error;
@@ -460,7 +473,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       const isCustomVoice = v => typeof v === 'string' && (v.startsWith('voice_') || v.includes('_'));
       const fallbackVoice = gender => gender === 'female' ? 'Kore' : 'Charon';
       const hasCustomVoice = isCustomVoice(segment.voice) || (Array.isArray(segment.turns) && segment.turns.some(turn => isCustomVoice(turn.voice)));
-      if ((response.status === 404 || response.status === 400) && hasCustomVoice) {
+      if (input.allowVoiceFallback === true && (response.status === 404 || response.status === 400) && hasCustomVoice) {
         let detail = '';
         try { detail = JSON.parse(response.body)?.error?.message || response.body || ''; } catch { detail = String(response.body || ''); }
         if (response.status === 404 || !detail || /voice|not found|invalid/i.test(detail)) {
@@ -485,7 +498,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       send({result:extractGeminiAudio(JSON.parse(response.body))}); return;
     }
     throw new Error('Unknown Choir action.');
-  })().catch(error => send({error: error?.message || 'Choir request failed.'}))
+  })().catch(error => send({error: [jevFailure?.message, error?.message || 'Choir request failed.'].filter(Boolean).join('\nLLM fallback failed: ')}))
     .finally(() => {clearTimeout(timer);running.delete(key);});
 });
 }

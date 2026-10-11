@@ -144,6 +144,16 @@ function validateCastConfig(config) {
     if (typeof npc.style !== 'string' || npc.style.length > 600) throw new Error('Invalid NPC base style.');
     names.add(name);
   }
+  for (const actor of [...config.fixed, ...config.npcs]) {
+    if (actor.aliases !== undefined && (!Array.isArray(actor.aliases) || actor.aliases.length > 30 || actor.aliases.some(alias=>typeof alias!=='string' || !alias.trim() || alias.length>100))) throw new Error('Aliases must be a list of up to 30 names.');
+    for (const alias of actor.aliases || []) {
+      const key=normalizeName(alias);
+      if(names.has(key))throw new Error(`Conflicting character alias: ${alias}`);
+      names.add(key);
+    }
+    for(const field of ['pronunciation','accent'])if(actor[field] !== undefined && (typeof actor[field]!=='string' || actor[field].length>300))throw new Error(`Invalid ${field} preference.`);
+    if(actor.excluded !== undefined && typeof actor.excluded!=='boolean')throw new Error('Invalid character exclusion.');
+  }
   return config;
 }
 
@@ -152,6 +162,7 @@ function validatePlan(raw, transcript, config) {
   if (!raw || !Array.isArray(raw.segments) || !raw.segments.length) throw new Error('Expected at least one speech segment.');
   const voices = new Set(config.voices.map(v => v.id));
   const cast = new Map([...config.fixed, ...config.npcs].map(v => [normalizeName(v.speaker), {...v}]));
+  const aliases = new Map([...config.fixed, ...config.npcs].flatMap(actor=>(actor.aliases || []).map(alias=>[normalizeName(alias),normalizeName(actor.speaker)])));
   const available=(voice,route)=>config.voices.some(v=>v.id===voice && (v.route || '')===route);
   const checkAutomaticGender=(voice,gender,route)=>{
     const choice=config.voices.find(v=>v.id===voice && (v.route || '')===route);
@@ -188,7 +199,7 @@ function validatePlan(raw, transcript, config) {
       if (!matchOk) throw new Error(`Segment ${index+1} changes or skips the original text. Copy exact consecutive substrings.`);
       cursor = tIdx;
     }
-    const key = normalizeName(segment.speaker);
+    const key = aliases.get(normalizeName(segment.speaker)) || normalizeName(segment.speaker);
     if (!key || key.length > 100) throw new Error(`Segment ${index+1} has an invalid speaker.`);
     let actor = cast.get(key);
     if (!actor) {
@@ -226,6 +237,62 @@ function validatePlan(raw, transcript, config) {
   if (transcript.slice(cursor).trim()) throw new Error('The plan omits the end of the original message.');
   const fixed = new Set(config.fixed.map(v => normalizeName(v.speaker)));
   return {segments, npcs:[...cast.values()].filter(v => !fixed.has(normalizeName(v.speaker)))};
+}
+
+// Persist attribution separately from synthesis choices so recasting is free.
+function attributionPlan(plan, config) {
+  return {segments:plan.segments.map(segment=>{
+    const actor=[...config.fixed,...config.npcs].find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker));
+    const prefix=actor?.style?`${actor.style}. `:'';
+    return {speaker:segment.speaker,text:segment.text,style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style};
+  })};
+}
+
+function restoreAttribution(saved, transcript, config) {
+  const actors=[...config.fixed,...config.npcs];
+  return validatePlan({segments:saved.segments.map(segment=>{
+    const actor=actors.find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker) || (a.aliases || []).some(alias=>normalizeName(alias)===normalizeName(segment.speaker)));
+    const route=actor?.route || config.defaultRoute || '';
+    const catalogue=config.voices.filter(v=>(v.route || '')===route);
+    const voice=actor?.voice || catalogue.find(v=>!actor?.gender || actor.gender==='auto' || v.gender===actor.gender)?.id;
+    return {...segment,voice,route};
+  })},transcript,config);
+}
+
+function passageKey(segment, settings, connection, parameters={}) {
+  return JSON.stringify([2,segment.text,segment.voice,segment.route || settings.defaultRoute,
+    segment.style || '',connection?.model || settings.model,connection?.provider || '',
+    connection?.api_url || connection?.base_url || '',
+    settings.allowVoiceFallback===true,parameters]);
+}
+
+function mixerVolume(master, speaker, channels) {
+  const channel=Object.hasOwn(channels,speaker)?channels[speaker]:{}, solo=Object.values(channels).some(c=>c.solo);
+  return Math.max(0,Math.min(1,Number(master ?? 1)*Number(channel.volume ?? 1)*(channel.mute || (solo && !channel.solo)?0:1)));
+}
+
+function loudnessGain(channels, target=0.12) {
+  let squares=0,peak=0,count=0;
+  for(const samples of channels)for(const sample of samples){squares+=sample*sample;peak=Math.max(peak,Math.abs(sample));count++;}
+  const rms=count?Math.sqrt(squares/count):0;
+  return rms>0.0001?Math.max(0.25,Math.min(4,target/rms,peak?0.95/peak:4)):1;
+}
+
+function castExport(config) {
+  const clean=castImport({format:'choir-cast',version:1,fixed:config.fixed,casts:config.casts});
+  return {format:'choir-cast',version:1,...clean};
+}
+
+function castImport(raw) {
+  if(raw?.format!=='choir-cast' || raw.version!==1 || !Array.isArray(raw.fixed) || !raw.casts || typeof raw.casts!=='object' || Array.isArray(raw.casts))throw new Error('Expected a Choir cast export (version 1).');
+  const clean=actor=>{
+    if(!actor || typeof actor.speaker!=='string' || typeof actor.voice!=='string' || typeof actor.style!=='string')throw new Error('Invalid imported cast row.');
+    return Object.fromEntries(['speaker','voice','style','route','gender','aliases','pronunciation','accent','excluded'].filter(key=>actor[key]!==undefined).map(key=>[key,structuredClone(actor[key])]));
+  };
+  return {fixed:raw.fixed.map(clean),casts:Object.fromEntries(Object.entries(raw.casts).map(([route,actors])=>{
+    if(!Array.isArray(actors) || actors.length>500 || !/^(gemini|native:[\w.-]+)$/.test(route))throw new Error('Invalid imported cast provider.');
+    return [route,actors.map(clean)];
+  }))};
 }
 
 function speechSourceUnits(transcript) {
@@ -453,8 +520,10 @@ function fastClassifyPlan(transcript, config) {
 
   const findSpeakerInTag = (tagText) => {
     for (const cand of candidates) {
-      const esc = cand.speaker.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-      if (new RegExp('\\b' + esc + '\\b', 'i').test(tagText)) return cand;
+      for(const name of [cand.speaker,...(cand.aliases || [])]){
+        const esc = name.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+        if (new RegExp('\\b' + esc + '\\b', 'i').test(tagText)) return cand;
+      }
     }
     return null;
   };
@@ -593,6 +662,10 @@ export async function setup(ctx) {
     .ensemble-tts details[open] summary{margin-bottom:10px}
     .ensemble-tts .et-message{display:flex;gap:10px;align-items:center;justify-content:space-between}
     .ensemble-tts .et-btn-group{display:flex;gap:6px;align-items:center}
+    .choir-mixer button{cursor:pointer;border:1px solid #8888;border-radius:5px;background:transparent;color:inherit;padding:5px 7px;font:inherit}
+    .choir-mixer button[aria-pressed="true"]{background:Highlight;color:HighlightText}
+    .choir-mixer label{display:grid;gap:5px;margin:8px 0}
+    .choir-mixer input[type="range"]{width:100%;min-width:0;accent-color:Highlight}
   `);
   root.innerHTML = `<div class="ensemble-tts">
     <div class="et-header">
@@ -606,10 +679,20 @@ export async function setup(ctx) {
         <button data-et="stop">Stop</button>
         <button data-et="latest">Plan latest</button>
         <button data-et="save" class="et-btn-primary">Save cast</button>
+        <button data-et="showMixer">Voice mixer</button>
       </div>
     </div>
     <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
     <div class="et-status" data-et="statusActions" hidden></div>
+    <details data-et="setupGuide">
+      <summary>Guided setup</summary>
+      <ol><li>Choose a planner engine and connection, then <button data-et="guidePlanner">Test planner connection</button>.</li>
+      <li>Choose a speech provider and narrator voice, then <button data-et="testTts">Test TTS connection</button>. This generates a short billable preview.</li>
+      <li>Check the automatically filled persona and character names. Use each voice’s preview button to audition it.</li>
+      <li>Save the cast, plan a reply, and inspect its speakers before playback.</li></ol>
+      <details><summary>Optional roleplay formatting suggestion</summary><p>If attribution is ambiguous, you may add this to your chat prompt: “Put spoken dialogue in double quotes and identify the speaker nearby. Leave actions as narration.” Choir never changes your chat prompt.</p></details>
+      <p>Provider failures stop playback. Choir never switches TTS providers automatically.</p>
+    </details>
 
     <div class="et-section-header">
       <h3>Lead Cast</h3>
@@ -648,6 +731,7 @@ export async function setup(ctx) {
     <div data-et="jevPlannerBox" hidden class="et-grid" style="margin-top:10px">
       <label>Jev API key (TypeSafe AI)<input data-et="jevKey" type="password" placeholder="jev_... (~20ms typed classification)"></label>
       <label>Jev endpoint URL<input data-et="jevEndpoint" placeholder="https://api.typesafe.ai/v1/classify"></label>
+      <label class="et-check"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
     </div>
     <div class="et-row" style="margin-top:10px;flex-wrap:wrap;gap:12px">
       <label class="et-check"><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
@@ -662,6 +746,9 @@ export async function setup(ctx) {
         <label>Concurrent TTS requests<select data-et="concurrency"><option value="1">1 (sequential)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
         <label>Max characters per request<input data-et="chunk" type="number" min="80" max="2000" value="1800"></label>
         <label>Planner output tokens<input data-et="plannerTokens" type="number" min="1024" max="32768" step="1024" value="8192"></label>
+        <label>Prefetch passages<input data-et="prefetch" type="number" min="0" max="4" value="1"></label>
+        <label class="et-check"><input data-et="normalizeLoudness" type="checkbox" checked> Match passage loudness</label>
+        <label class="et-check"><input data-et="allowVoiceFallback" type="checkbox"> Allow one Gemini custom voice fallback to Kore/Charon</label>
         <label>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
         <label data-et="batchGeminiWrap" class="et-check" style="align-self:end"><input data-et="batchGemini" type="checkbox" checked> Batch Gemini turns (2 speakers)</label>
       </div>
@@ -681,6 +768,10 @@ export async function setup(ctx) {
       <h3>Active Plan</h3>
     </div>
     <div data-et="preview"></div>
+    <button data-et="playSelected">Play selected passages</button><button data-et="resumePosition">Resume last position</button>
+    <details><summary>Import / export cast</summary><p>Exports include routes and preferences, never credentials. Imported routes must exist on this host.</p>
+      <textarea data-et="castJson" aria-label="Cast JSON"></textarea><button data-et="exportCast">Export cast</button><button data-et="importCast">Validate and import cast</button>
+    </details>
     <details>
       <summary>Edit JSON</summary>
       <textarea data-et="planJson" rows="6" spellcheck="false" style="margin-top:8px"></textarea>
@@ -713,12 +804,17 @@ export async function setup(ctx) {
     if(operation==='deleteChat')for(const sessionKey of [...sessionAudio.keys()]) {
       if(JSON.parse(sessionKey)[1]===JSON.parse(key)[1])sessionAudio.delete(sessionKey);
     }
-    if(operation==='get' && sessionAudio.has(key))return sessionAudio.get(key);
+    if(operation==='get' && sessionAudio.has(key)){
+      const record=sessionAudio.get(key);
+      if(record.expiresAt==null || record.expiresAt>Date.now())return record;
+      sessionAudio.delete(key);
+    }
     if(operation==='put') {
       const createdAt=value.createdAt ?? Date.now(),retention=value.retention || 'forever';
       value={...value,createdAt,expiresAt:retention==='forever' || retention==='session'?null:createdAt+Number(retention)*86400000};
       if(retention==='session'){sessionAudio.set(key,value);return;}
-      sessionAudio.delete(key);
+      // Keep a session copy if IndexedDB is unavailable or full.
+      sessionAudio.set(key,value);
     }
     if(audioNamespaceError)throw new Error(`Audio storage settings could not be loaded: ${audioNamespaceError.message}`);
     if(!globalThis.indexedDB)throw new Error('Device audio storage is unavailable in this browser.');
@@ -734,6 +830,11 @@ export async function setup(ctx) {
       const transaction=db.transaction('recordings','readwrite');
       const store=transaction.objectStore('recordings');
       let result;
+      if(!['policy','prune','deleteChat'].includes(operation)){
+        const request=operation==='put'?store.put(value,key):operation==='delete'?store.delete(key):store.get(key);
+        request.onsuccess=()=>{result=request.result;if(operation==='get' && result?.expiresAt!=null && result.expiresAt<=Date.now()){store.delete(key);result=undefined;}};
+        transaction.oncomplete=()=>{if(operation==='put')sessionAudio.delete(key);resolve(result);};transaction.onerror=()=>reject(transaction.error);transaction.onabort=()=>reject(transaction.error || new Error('Recording storage failed.'));return;
+      }
       const cursorRequest=store.openCursor();
       cursorRequest.onsuccess=()=>{
         const cursor=cursorRequest.result;
@@ -763,15 +864,73 @@ export async function setup(ctx) {
   const recordingKey=(chat,message)=>JSON.stringify([audioNamespace,chat,message]);
   const unsubs = [];
   const messageStatuses=new Map();let messagePlaybackId=null;
-  let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, busy=false;
+  let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, planningSource=null, busy=false;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
   const voiceCatalogues=new Map();
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
-  const defaults = () => ({mode:'gemini',model:'gemini-3.8-flash-tts',planner:'',connection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:true,concurrency:1,plannerTokens:8192,
+  const defaults = () => ({mode:'gemini',model:'gemini-3.8-flash-tts',planner:'',connection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:false,concurrency:1,plannerTokens:8192,
+    prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,
     extraVoices:'',useStyle:true,auto:false,autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1/classify',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
       {speaker:'Character',voice:'',style:''} ]});
+  const withoutSecrets=c=>({...c,jevApiKey:''});
+  const planKey=async(chat,message)=>{
+    const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([chat,message])));
+    return `plan:${Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join('')}`;
+  };
+  const selectedPassages=new Set(), excludedPassages=new Set();
+  let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback;
+  let mixerState={master:1,channels:{},x:20,y:80,collapsed:false,...await ctx.settings.get('ui:mixer').catch(()=>null)};
+  const mixer=document.createElement('section');mixer.className='choir-mixer';mixer.dataset.choirMixer='';mixer.setAttribute('aria-label','Choir voice mixer');
+  mixer.style.cssText='position:fixed;z-index:10000;width:290px;max-width:90vw;max-height:70vh;overflow:auto;background:Canvas;color:CanvasText;border:1px solid #888;border-radius:10px;box-shadow:0 6px 24px #0004;padding:10px;font:14px system-ui';
+  const mixerHeader=document.createElement('div');mixerHeader.style.cssText='display:flex;gap:8px;align-items:center;cursor:move;touch-action:none';
+  const mixerTitle=document.createElement('strong');mixerTitle.textContent='Choir voice mixer';
+  const collapse=document.createElement('button');collapse.type='button';collapse.setAttribute('aria-label','Collapse or reopen voice mixer');
+  mixerHeader.append(mixerTitle,collapse);
+  const mixerBody=document.createElement('div'), speakerLabel=document.createElement('p'), channelsRoot=document.createElement('div');speakerLabel.setAttribute('aria-live','polite');
+  const master=document.createElement('input');master.type='range';master.min='0';master.max='1';master.step='0.01';master.value=mixerState.master;master.setAttribute('aria-label','Master volume');
+  const masterLabel=document.createElement('label');masterLabel.textContent='Master volume';masterLabel.append(master);
+  const mixerPlay=document.createElement('button');mixerPlay.type='button';mixerPlay.textContent='Play / pause';
+  mixerPlay.onclick=()=>{if(currentAudio)$('pause').click();else run(()=>play({resume:true}));};
+  mixerBody.append(masterLabel,mixerPlay,speakerLabel,channelsRoot);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
+  const persistMixer=()=>ctx.settings.set('ui:mixer',mixerState).catch(error=>status(`Mixer preferences could not be saved: ${error.message}`,true));
+  function applyVolume(){
+    const volume=mixerVolume(mixerState.master,currentSpeaker,mixerState.channels);
+    if(currentGain)currentGain.gain.value=volume*currentNormalize;
+    else if(currentAudio)currentAudio.volume=volume;
+  }
+  function positionMixer(){
+    const view=document.defaultView;
+    mixerState.x=Math.max(0,Math.min(Number(mixerState.x)||0,Math.max(0,(view?.innerWidth || 1024)-mixer.offsetWidth-10)));
+    mixerState.y=Math.max(0,Math.min(Number(mixerState.y)||0,Math.max(0,(view?.innerHeight || 768)-mixer.offsetHeight-10)));
+    mixer.style.left=`${mixerState.x}px`;mixer.style.top=`${mixerState.y}px`;
+    mixerBody.hidden=Boolean(mixerState.collapsed);collapse.textContent=mixerState.collapsed?'Open':'Collapse';
+  }
+  collapse.onclick=()=>{mixerState.collapsed=!mixerState.collapsed;positionMixer();persistMixer();};
+  master.oninput=()=>{mixerState.master=Number(master.value);applyVolume();};master.onchange=persistMixer;
+  let drag;
+  mixerHeader.addEventListener('pointerdown',event=>{if(event.target.closest('button'))return;drag={x:event.clientX,y:event.clientY,left:mixerState.x,top:mixerState.y};mixerHeader.setPointerCapture?.(event.pointerId);});
+  mixerHeader.addEventListener('pointermove',event=>{if(!drag)return;mixerState.x=drag.left+event.clientX-drag.x;mixerState.y=drag.top+event.clientY-drag.y;positionMixer();});
+  const endDrag=()=>{if(drag){drag=null;persistMixer();}};
+  mixerHeader.addEventListener('pointerup',endDrag);mixerHeader.addEventListener('pointercancel',endDrag);
+  const resizeMixer=()=>positionMixer();document.defaultView?.addEventListener('resize',resizeMixer);
+  unsubs.push(()=>{document.defaultView?.removeEventListener('resize',resizeMixer);mixer.remove();audioContext?.close().catch(()=>{});});
+  function renderMixer(){
+    channelsRoot.replaceChildren();speakerLabel.textContent=currentSpeaker?`Speaking: ${currentSpeaker}`:'Ready to play';
+    for(const speaker of new Set(plan?.segments.map(s=>s.speaker) || [])){
+      const channel=Object.hasOwn(mixerState.channels,speaker)?mixerState.channels[speaker]:{volume:1,mute:false,solo:false};Object.defineProperty(mixerState.channels,speaker,{value:channel,writable:true,enumerable:true,configurable:true});
+      const row=document.createElement('div');row.dataset.speaker=speaker;row.style.cssText=`display:grid;grid-template-columns:1fr auto auto;gap:5px;padding:8px 4px;border-top:1px solid #8885;${currentSpeaker===speaker?'background:Highlight;color:HighlightText;':''}`;
+      row.setAttribute('aria-current',String(currentSpeaker===speaker));const name=document.createElement('span');name.style.gridColumn='1 / -1';name.textContent=speaker;
+      const volume=document.createElement('input');volume.type='range';volume.min='0';volume.max='1';volume.step='0.01';volume.value=channel.volume;volume.setAttribute('aria-label',`${speaker} volume`);
+      volume.oninput=()=>{channel.volume=Number(volume.value);applyVolume();};volume.onchange=persistMixer;
+      row.append(name,volume);
+      for(const field of ['mute','solo']){const button=document.createElement('button');button.type='button';button.textContent=field==='mute'?'Mute':'Solo';button.setAttribute('aria-label',`${speaker} ${field}`);button.setAttribute('aria-pressed',String(Boolean(channel[field])));button.onclick=()=>{channel[field]=!channel[field];applyVolume();renderMixer();persistMixer();};row.append(button);}
+      channelsRoot.append(row);
+    }
+    positionMixer();
+  }
+  $('showMixer').onclick=()=>{mixerState.collapsed=false;positionMixer();persistMixer();};positionMixer();
   function status(text,error=false) {
     if(disposed)return;
     for(const name of ['status','statusActions']) {$(name).textContent=text;$(name).classList.toggle('et-error',error);}
@@ -804,7 +963,7 @@ export async function setup(ctx) {
       const [id,...desc]=line.split('|');return {id:id.trim(),name:id.trim(),description:desc.join('|').trim()};
     });
     let baseVoices=data.voices || [];
-    if(detectProvider(conn?.provider || route)==='gemini' && !baseVoices.some(v=>GEMINI_VOICES.some(gv=>gv.id===v.id))) {
+    if(detectProvider(route)==='gemini' && !baseVoices.some(v=>GEMINI_VOICES.some(gv=>gv.id===v.id))) {
       baseVoices=[...baseVoices,...GEMINI_VOICES];
     }
     const catalogue=normalizeVoiceCatalogue([...new Map([...baseVoices, ...extra].map(v=>[v.id,v])).values()]);
@@ -1116,7 +1275,7 @@ export async function setup(ctx) {
           }
           searchFilter = ''; voiceSearchInput.value = ''; filterVoices();
           voice.value = item.id;
-          config = capture(); if (chatId) await ctx.settings.set(settingsKey(chatId), config);
+          config = capture(); if (chatId) await ctx.settings.set(settingsKey(chatId), withoutSecrets(config));
           status(`Assigned community voice "${item.name}" to ${name.value || 'character'}.`);
         }
       });
@@ -1151,12 +1310,13 @@ export async function setup(ctx) {
         }
         searchFilter='';voiceSearchInput.value='';filterVoices();
         voice.value=voiceId;
-        config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),config);
+        config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));
         status(`Designed custom voice "${voiceId}" for ${speakerName}.`);
       } finally {designRowBtn.disabled=false;designRowBtn.innerHTML=ICON_SPARKLE;}
     });
 
     const auditionRowBtn=document.createElement('button');
+    auditionRowBtn.dataset.choirPreview='';
     auditionRowBtn.type='button';auditionRowBtn.className='et-btn-subtle';
     auditionRowBtn.title='Audition voice';auditionRowBtn.innerHTML=ICON_PLAY;
     auditionRowBtn.style.cssText='padding:2px 8px';
@@ -1169,11 +1329,12 @@ export async function setup(ctx) {
         let blob;
         const sampleText='Hello! I am your voice for this story.';
         const selectedRoute=route.value || scope(config);
+        const previewRequest=synthesisSettings({speaker:name.value || 'Voice',voice:selectedVoice,text:sampleText,style:style.value.trim(),route:selectedRoute},capture());
         const cardProvider=detectProvider(selectedRoute);
         if(selectedRoute==='gemini') {
           const apiKey=$('key').value.trim();
           if(!apiKey)throw new Error('Enter a Gemini API key for this session.');
-          const result=await rpc('gemini',{segment:{speaker:name.value || 'Voice',voice:selectedVoice,text:sampleText,style:''},model:config.model,apiKey},ctrl.signal);
+          const result=await rpc('gemini',{segment:previewRequest.segment,model:config.model,apiKey,allowVoiceFallback:$('allowVoiceFallback').checked},ctrl.signal);
           const audio=audioBytes(result.base64,result.mimeType);
           blob=new Blob([audio.data],{type:audio.mimeType});
         } else {
@@ -1184,18 +1345,22 @@ export async function setup(ctx) {
           const textToSend=isFish ? `[cheerful] ${sampleText}` : sampleText;
           const resp=await api('/tts/synthesize',{
             method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({connectionId:conn.id,model:conn.model,voice:selectedVoice,text:textToSend,parameters:{}}),
+            body:JSON.stringify({connectionId:conn.id,model:conn.model,voice:selectedVoice,text:textToSend,parameters:previewRequest.parameters}),
             signal:ctrl.signal
           });
           blob=await resp.blob();
         }
         if(token!==revision || ctrl.signal.aborted)return;
-        await playBlob(blob,ctrl.signal);
+        await playBlob(blob,ctrl.signal,name.value || 'Voice',0,$('normalizeLoudness').checked);
         if(token===revision)status('Audition finished.');
       } finally {if(token===revision){controller=null;setBusy(false);}}
     });
 
     const style=document.createElement('input');style.value=actor.style || '';style.maxLength=600;
+    const aliases=document.createElement('input');aliases.value=(actor.aliases || []).join(', ');aliases.maxLength=3000;
+    const pronunciation=document.createElement('input');pronunciation.value=actor.pronunciation || '';pronunciation.maxLength=300;pronunciation.placeholder='e.g. Jev is pronounced “Jev”';
+    const accent=document.createElement('input');accent.value=actor.accent || '';accent.maxLength=300;accent.placeholder='Used only when the provider supports accent or instructions';
+    const excluded=document.createElement('input');excluded.type='checkbox';excluded.checked=Boolean(actor.excluded);
 
     const updateCardProviderControls=()=>{
       const cardRoute=route.value || scope(config);
@@ -1223,7 +1388,7 @@ export async function setup(ctx) {
       try {
         const catalogue=await ensureCatalogue(selected || scope(config));
         if(route.value!==selected || disposed)return;
-        rowVoices=catalogue;filterVoices();clearPlan();
+        rowVoices=catalogue;filterVoices();
         updateCardProviderControls();
         updateProviderVisibility();
         status('Speaker TTS connection selected. Choose a voice or Let LLM choose, then save.');
@@ -1233,13 +1398,13 @@ export async function setup(ctx) {
     voiceSearchRow.append(voiceSearchInput,searchCommBtn,designRowBtn,auditionRowBtn);
     voiceWrap.append(voiceSearchRow,voice);
 
-    for (const [label,node] of [['Speaker name',name],['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style]]) {
+    for (const [label,node] of [['Speaker name',name],['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Pronunciation instruction',pronunciation],['Accent preference',accent],['Exclude from synthesis (keep text)',excluded]]) {
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);row.append(wrap);
     }
     if(!reserved){const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();};row.append(remove);}
     container.append(row);
     updateCardProviderControls();
-    return {row,read:()=>({speaker:name.value.trim(),voice:voice.value,route:route.value,gender:gender.value,style:style.value.trim()})};
+    return {row,read:()=>({speaker:name.value.trim(),voice:voice.value,route:route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter(Boolean),pronunciation:pronunciation.value.trim(),accent:accent.value.trim(),excluded:excluded.checked})};
   }
   function renderCast() {
     $('fixed').replaceChildren();$('npcs').replaceChildren();
@@ -1254,7 +1419,8 @@ export async function setup(ctx) {
       casts:{...config.casts,[scope(config)]:npcRows.filter(v=>v.row.parentElement===$('npcs')).map(v=>v.read())},
       mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
-      plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:$('batchGemini').checked,concurrency:Number($('concurrency').value),
+      plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,concurrency:Number($('concurrency').value),
+      prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,
       extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,autoDesignNPCs:$('autoDesignNPCs').checked,plannerMode:$('plannerMode')?$('plannerMode').value:(config.plannerMode||'llm'),useFastClassifier:$('useFastClassifier')?$('useFastClassifier').checked:false,useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
   }
   function casting(c=config) {
@@ -1268,12 +1434,13 @@ export async function setup(ctx) {
     validateCastConfig(casting(c));
     if(!Number.isInteger(c.chunk) || c.chunk<80 || c.chunk>2000)throw new Error('Chunk size must be 80–2000.');
     if(!Number.isInteger(c.concurrency) || c.concurrency<1 || c.concurrency>4)throw new Error('Choose 1–4 concurrent TTS requests.');
+    if(!Number.isInteger(c.prefetch) || c.prefetch<0 || c.prefetch>4)throw new Error('Prefetch must be 0–4 passages.');
     if(!Number.isInteger(c.plannerTokens) || c.plannerTokens<1024 || c.plannerTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
     if(c.mode==='native' && !nativeConnections.some(v=>v.id===c.connection))throw new Error('Select an existing Lumiverse TTS connection.');
   }
   function updatePlannerVisibility() {
     const isJev=$('plannerMode')?.value==='jev';
-    if($('llmPlannerBox'))$('llmPlannerBox').hidden=isJev;
+    if($('llmPlannerBox'))$('llmPlannerBox').hidden=isJev && !$('allowLlmFallback').checked;
     if($('jevPlannerBox'))$('jevPlannerBox').hidden=!isJev;
   }
   function updateProviderVisibility() {
@@ -1286,7 +1453,7 @@ export async function setup(ctx) {
 
     if($('voiceDesignBox'))$('voiceDesignBox').hidden=!anyGemini;
     if($('autoDesignNPCsWrap'))$('autoDesignNPCsWrap').hidden=!anyGemini;
-    if($('batchGeminiWrap'))$('batchGeminiWrap').hidden=!anyGemini;
+    if($('batchGeminiWrap'))$('batchGeminiWrap').hidden=true;
     if($('fishLibraryContainer'))$('fishLibraryContainer').hidden=!anyFish;
 
     if($('extraVoicesLabel')) {
@@ -1322,21 +1489,25 @@ export async function setup(ctx) {
     if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);
     if($('jevKey'))$('jevKey').value=config.jevApiKey||'';
     if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';
+    for(const name of ['allowLlmFallback','allowVoiceFallback','normalizeLoudness'])$(name).checked=Boolean(config[name]);
+    $('prefetch').value=config.prefetch;
+    // Per-speaker mixing and exclusions need individual passages.
+    $('batchGemini').checked=false;$('batchGeminiWrap').hidden=true;
     updatePlannerVisibility();
     updateProviderVisibility();
   }
   function setBusy(value) {
     busy=value;
     for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','apply','auto'])if($(name))$(name).disabled=value;
-    for (const name of ['model','planner','plannerMode','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention'])if($(name))$(name).disabled=value;
+    for (const name of ['model','planner','plannerMode','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','testTts','guidePlanner','importCast'])if($(name))$(name).disabled=value;
     if($('play'))$('play').disabled=value || !plan;
     if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
   }
-  function clearPlan() {plan=null;planSource=null;$('preview').replaceChildren();$('planJson').value='';$('play').disabled=true;}
+  function clearPlan() {plan=null;planSource=null;selectedPassages.clear();excludedPassages.clear();$('preview').replaceChildren();$('planJson').value='';$('play').disabled=true;renderMixer();}
   function stop(show=true) {
-    revision++;controller?.abort();controller=null;
+    revision++;controller?.abort();controller=null;planningSource=null;
     currentAudio?.pause();finishAudio?.();currentAudio=null;finishAudio=null;
     if(objectUrl){URL.revokeObjectURL(objectUrl);objectUrl=null;}
     $('pause').disabled=true;$('pause').textContent='Pause';
@@ -1345,10 +1516,11 @@ export async function setup(ctx) {
   async function save() {
     if(!chatId)throw new Error('Open a chat first.');
     const updated=capture();validateSettings(updated);config=updated;
-    await ctx.settings.set(settingsKey(chatId),config);
+    await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));
     let retentionError;
     try{await recordingStore('policy',recordingKey(chatId,''),{retention:config.retention});}catch(error){retentionError=error.message;}
-    clearPlan();status(retentionError?`Settings saved. Audio retention could not be applied: ${retentionError}`:'Cast and audio retention saved. Click Plan latest reply, then Play plan. Auto-play applies to future completed replies.');
+    if(planSource)await restoreSavedPlan(planSource.messageId);
+    status(retentionError?`Settings saved. Audio retention could not be applied: ${retentionError}`:'Cast and audio retention saved. Saved attribution reused; changed voices generate only affected audio.');
   }
   async function loadProviders() {
     const version=loadVersion;
@@ -1381,7 +1553,7 @@ export async function setup(ctx) {
       const response=await api(`/tts-connections/${encodeURIComponent(config.connection)}/voices`);
       const data=await response.json();if(disposed || version!==loadVersion)return;
       let baseVoices=data.voices || [];
-      if(detectProvider(conn?.provider || config)==='gemini' && !baseVoices.some(v=>GEMINI_VOICES.some(gv=>gv.id===v.id))) {
+      if(detectProvider(config)==='gemini' && !baseVoices.some(v=>GEMINI_VOICES.some(gv=>gv.id===v.id))) {
         baseVoices=[...baseVoices,...GEMINI_VOICES];
       }
       voices=[...new Map([...baseVoices, ...extra].map(v=>[v.id,v])).values()];
@@ -1409,6 +1581,7 @@ export async function setup(ctx) {
     let saved=id?await ctx.settings.get(settingsKey(id)):null;
     if(disposed || version!==loadVersion)return;
     config={...defaults(),...(saved || {})};
+    if(saved?.jevApiKey){await ctx.settings.set(settingsKey(id),withoutSecrets(config));if(disposed || version!==loadVersion)return;}
     await recordingStore('prune').catch(()=>{});
     if(disposed || version!==loadVersion)return;
     if(!saved) {
@@ -1427,10 +1600,33 @@ export async function setup(ctx) {
     }
     setFields();await loadProviders();
     if(version!==loadVersion || disposed)return;
-    renderMessages();status(id?'Ready. Set your persona name, choose voices, then save.':'Open a chat to begin.');
+    const previous=id?await ctx.settings.get(`activeplan:${id}`):null;
+    if(version!==loadVersion || disposed)return;
+    if(previous)await restoreSavedPlan(previous);
+    if(version!==loadVersion || disposed)return;
+    renderMessages();status(plan?'Saved speech plan restored.':id?'Ready. Set your persona name, choose voices, then save.':'Open a chat to begin.');
+  }
+  async function persistPlan(){
+    if(!planSource || !plan)return;
+    const source={...planSource}, saved={...source,attribution:attributionPlan(plan,casting(config)),excluded:[...excludedPassages],warning:plan.warning || ''};
+    await ctx.settings.set(await planKey(source.chatId,source.messageId),saved);
+    await ctx.settings.set(`activeplan:${source.chatId}`,source.messageId);
+  }
+  async function restoreSavedPlan(messageId){
+    const targetChat=chatId,version=loadVersion,token=revision;
+    const saved=await ctx.settings.get(await planKey(targetChat,messageId));
+    if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return false;
+    if(!saved || saved.content!==ctx.messages.getContent(messageId) || !await recordingMatchesTranscript(saved,saved.content))return false;
+    if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return false;
+    const restored=restoreAttribution(saved.attribution,saved.transcript,casting(config));
+    config.casts[scope(config)]=restored.npcs;
+    plan={...restored,warning:saved.warning || ''};planSource={messageId,content:saved.content,transcript:saved.transcript,chatId:targetChat};
+    selectedPassages.clear();excludedPassages.clear();for(const index of saved.excluded || [])excludedPassages.add(index);
+    renderPreview();return true;
   }
   function renderPreview() {
     $('preview').replaceChildren();
+    if(plan.warning){const warning=document.createElement('p');warning.setAttribute('role','note');warning.textContent=`Jev failed: ${plan.warning}. Explicit LLM fallback supplied this attribution.`;$('preview').append(warning);}
     for(const [index,segment] of plan.segments.entries()) {
       const card=document.createElement('div');card.className='et-card';
       const label=document.createElement('strong');
@@ -1438,7 +1634,13 @@ export async function setup(ctx) {
       label.textContent=`${index+1}. ${segment.speaker} · ${segment.voice}${connectionLabel?` · ${connectionLabel}`:''}`;
       const delivery=document.createElement('p');delivery.textContent=segment.style || 'Default delivery';
       const text=document.createElement('div');text.className='et-transcript';text.textContent=segment.text;
-      card.append(label,delivery,text);$('preview').append(card);
+      const selection=document.createElement('input');selection.type='checkbox';selection.checked=selectedPassages.has(index);selection.setAttribute('aria-label',`Select passage ${index+1}`);selection.onchange=()=>selection.checked?selectedPassages.add(index):selectedPassages.delete(index);
+      const exclude=document.createElement('input');exclude.type='checkbox';exclude.checked=excludedPassages.has(index);exclude.setAttribute('aria-label',`Exclude passage ${index+1}`);exclude.onchange=()=>{exclude.checked?excludedPassages.add(index):excludedPassages.delete(index);run(persistPlan);};
+      const selectLabel=document.createElement('label');selectLabel.className='et-check';selectLabel.append(selection,'Select');
+      const excludeLabel=document.createElement('label');excludeLabel.className='et-check';excludeLabel.append(exclude,'Skip synthesis (keep text)');
+      const cacheStatus=document.createElement('small');cacheStatus.dataset.cacheIndex=index;cacheStatus.textContent='Checking cache…';
+      const controls=document.createElement('div');controls.className='et-row';controls.append(selectLabel,excludeLabel,cacheStatus);
+      card.append(label,delivery,text,controls);$('preview').append(card);
     }
     // Editing uses delivery-only styles, so re-validation does not double the base style.
     $('planJson').value=JSON.stringify({segments:plan.segments.map(s=>{
@@ -1447,6 +1649,19 @@ export async function setup(ctx) {
       const style=s.style || ''; return {...s,style:prefix && style.startsWith(prefix)?style.slice(prefix.length):style===actor?.style?'':style};
     })},null,2);
     $('play').disabled=busy;
+    renderMixer();void refreshCacheStatus();
+  }
+  async function refreshCacheStatus(){
+    if(!planSource)return;
+    const source=planSource,segments=plan.segments,snapshot=capture();
+    const record=await recordingStore('get',recordingKey(source.chatId,source.messageId)).catch(()=>null);
+    if(source!==planSource)return;
+    for(const [index,segment] of segments.entries()){
+      const batches=speechBatches([segment],snapshot.chunk,scope(snapshot),false);
+      const count=batches.filter(batch=>record?.passages?.[cacheKey(batch,snapshot)]).length;
+      const node=$('preview').querySelector(`[data-cache-index="${index}"]`);
+      if(node)node.textContent=excludedPassages.has(index) || actorFor(segment,snapshot)?.excluded?'Excluded; text retained':count===batches.length?'Cached':`${count}/${batches.length} cached · requires generation`;
+    }
   }
   const replacePersonaMacro=(text,name)=>text.replace(/\{\{\s*user\s*\}\}/gi,()=>name);
   async function personaName() {
@@ -1478,12 +1693,18 @@ export async function setup(ctx) {
     let context=ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
       .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content).slice(0,1000)}`).join('\n').slice(-4000);
     const ctrl=new AbortController();controller=ctrl;setBusy(true);status('Checking Choir backend…');
+    planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;
     let streaming=false, player=null;
     try {
       if(/\{\{\s*user\s*\}\}/i.test(transcript+context)) {
         const name=await personaName();
         if(ctrl.signal.aborted || token!==revision)return;
         transcript=replacePersonaMacro(transcript,name);context=replacePersonaMacro(context,name);
+      }
+      if(await restoreSavedPlan(messageId)){
+        status('Saved attribution reused.');
+        if(autoPlay){controller=null;setBusy(false);await play();}
+        return;
       }
       await rpc('ping',{},ctrl.signal,8000);
       if(token!==revision || ctrl.signal.aborted)return;
@@ -1503,7 +1724,8 @@ export async function setup(ctx) {
         }
       }
       // 2. Jev System 1 classifier (~20ms)
-      if (!fastPlan && config.useJev && (config.jevApiKey || $('jevKey')?.value?.trim())) {
+      let jevFailure='';
+      if (!fastPlan && config.useJev) {
         try {
           status('Classifying dialogue with Jev System 1 model…');
           const jevKey = (config.jevApiKey || $('jevKey')?.value || '').trim();
@@ -1519,7 +1741,9 @@ export async function setup(ctx) {
             status('Speech plan ready (Jev System 1 classifier).');
           }
         } catch (err) {
-          status(`Jev fast classification fell back to LLM: ${err.message}`);
+          if(ctrl.signal.aborted || token!==revision)throw err;
+          if(!config.allowLlmFallback)throw err;
+          jevFailure=err.message;status(`Jev failed: ${jevFailure}. Using enabled LLM fallback.`);
           fastPlan = null;
         }
       }
@@ -1535,10 +1759,14 @@ export async function setup(ctx) {
         combined.push(...stripBase(fastPlan.segments));
       } else {
         const sections = planningSections(transcript);
+        let timeoutSplits=0;
         streaming = autoPlay && sections.length > 1 && !config.autoDesignNPCs;
         if (streaming) {
           const apiKey = $('key').value.trim();
-          player = createStreamingPlayer(config, { chatId: targetChat, messageId, content, transcript }, null, apiKey, ctrl, token);
+          const cached=await recordingStore('get',recordingKey(targetChat,messageId)).catch(()=>null);
+          if(ctrl.signal.aborted || token!==revision)return;
+          player = createStreamingPlayer(config, { chatId: targetChat, messageId, content, transcript }, cached, apiKey, ctrl, token);
+          player.playbackPromise.catch(error=>{if(!ctrl.signal.aborted){status(error.message,true);ctrl.abort();}});
         }
         for (let index = 0; index < sections.length; index++) {
           const section = sections[index];
@@ -1558,13 +1786,13 @@ export async function setup(ctx) {
             if (ctrl.signal.aborted || token !== revision) throw error;
             if (/timed out|timeout/i.test(error.message)) {
               const smaller = planningSections(section, Math.max(1, Math.floor(section.length/2)), 1);
-              if (smaller.length > 1) {
+              if (smaller.length > 1 && timeoutSplits++<2) {
                 sections.splice(index, 1, ...smaller); index--;
                 status(`Splitting the slow section into ${smaller.length} smaller parts…`); continue;
               }
-              throw new Error(`A single speech turn timed out while identifying its speaker. Earlier sections completed, but no audio was generated. Try a faster Planner LLM connection. ${error.message}`);
+              throw new Error(`${jevFailure?`${jevFailure}\nLLM fallback failed: `:''}Planning timed out after limited retries. Completed audio passages were retained. Try a faster Planner LLM connection. ${error.message}`);
             }
-            throw error;
+            throw new Error(jevFailure?`${jevFailure}\nLLM fallback failed: ${error.message}`:error.message);
           }
           if (token !== revision || targetChat !== chatId || disposed) return;
           const checked = validatePlan({ segments: stripBase(result.segments) }, section, snapshot);
@@ -1574,7 +1802,8 @@ export async function setup(ctx) {
           }
           combined.push(...stripBase(checked.segments)); previous = section;
           if (streaming) {
-            const sectionBatches = speechBatches(stripBase(checked.segments), snapshot.chunk, scope(snapshot), snapshot.batchGemini);
+            const offset=combined.length-checked.segments.length;
+            const sectionBatches = checked.segments.flatMap((segment,index)=>actorFor(segment,config)?.excluded?[]:speechBatches([segment],config.chunk,scope(config),false).map((batch,chunkIndex)=>({...batch,passageIndex:offset+index,chunkIndex})));
             player.push(sectionBatches);
           }
         }
@@ -1582,7 +1811,7 @@ export async function setup(ctx) {
       }
       // Validate the complete original reply before audio or cast persistence.
       const validated=validatePlan({segments:combined},transcript,snapshot);
-      plan=validated;planSource={messageId,content,transcript,chatId:targetChat};
+      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat};
       config.casts[scope(config)]=validated.npcs;
       for(const actor of config.fixed) {
         if(!actor.voice)actor.voice=validated.segments.find(s=>normalizeName(s.speaker)===normalizeName(actor.speaker))?.voice || '';
@@ -1615,41 +1844,87 @@ export async function setup(ctx) {
           }
         }
       }
-      await ctx.settings.set(settingsKey(targetChat),config);
+      await ctx.settings.set(settingsKey(targetChat),withoutSecrets(config));
       if(token!==revision || disposed)return;
       renderCast();renderPreview();
-      if(!streaming)status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.map(s=>s.speaker)).size} speakers.`);
+      await persistPlan();
+      if(!streaming)status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.map(s=>s.speaker)).size} speakers.${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''}`);
       if(streaming) {
         const {blobs,segments:playedBatches}=await player.playbackPromise;
         const key=recordingKey(targetChat,messageId);
         const signature=JSON.stringify([snapshot.mode,snapshot.model,snapshot.connection,snapshot.styleParam,playedBatches,
           playedBatches.map(segment=>nativeConnections.find(c=>`native:${c.id}`===(segment.route || scope(snapshot)))?.model)]);
         let storageError='';
-        try{await recordingStore('put',key,{content,transcript,signature,segments:playedBatches,blobs,retention:snapshot.retention});}
+        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content,transcript,signature,segments:playedBatches,blobs,retention:config.retention});}
         catch(error){storageError=error.message;}
-        if(token===revision){renderMessages();status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.');}
+        if(token===revision){renderMessages();status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:config.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.');}
       }
-    } finally {if(token===revision){controller=null;setBusy(false);}}
+    } finally {ctrl.abort();if(planningSource?.token===token)planningSource=null;if(token===revision){controller=null;setBusy(false);}}
     if(autoPlay && !streaming && token===revision)await play();
   }
-  async function playBlob(blob,signal) {
+  async function playBlob(blob,signal,speaker='',offset=0,normalize=false) {
     if(signal.aborted)throw abortError();
     const url=URL.createObjectURL(blob);objectUrl=url;currentAudio=new Audio(url);
-    const audio=currentAudio;$('pause').disabled=false;
+    const audio=currentAudio;$('pause').disabled=true;currentSpeaker=speaker;renderMixer();applyVolume();
+    const AudioContextClass=globalThis.AudioContext || globalThis.webkitAudioContext;
+    let mediaSource, gain;
     try {
+    if(normalize && AudioContextClass){
+      try{
+        audioContext ||= new AudioContextClass();await audioContext.resume();
+        const decoded=await audioContext.decodeAudioData(await blob.arrayBuffer());
+        if(signal.aborted)throw abortError();
+        currentNormalize=loudnessGain(Array.from({length:decoded.numberOfChannels},(_,i)=>decoded.getChannelData(i)));
+        mediaSource=audioContext.createMediaElementSource(audio);gain=audioContext.createGain();currentGain=gain;
+        mediaSource.connect(gain);gain.connect(audioContext.destination);audio.volume=1;applyVolume();
+      }catch(error){if(signal.aborted)throw error;status(`Loudness matching unavailable: ${error.message}. Playing at mixer volume.`);}
+    }
+    const seek=()=>{if(offset>0 && Number.isFinite(audio.duration))audio.currentTime=Math.min(offset,Math.max(0,audio.duration-0.05));};
+    audio.onloadedmetadata=seek;seek();
+    let lastSaved=0;
+    audio.ontimeupdate=()=>{if(activePlayback && Date.now()-lastSaved>1000){lastSaved=Date.now();savePosition(audio.currentTime);}};
+      if(signal.aborted)throw abortError();
       await new Promise((resolve,reject)=>{
         let settled=false;
         const done=error=>{if(settled)return;settled=true;signal.removeEventListener('abort',cancel);audio.onended=null;audio.onerror=null;finishAudio=null;error?reject(error):resolve();};
         const cancel=()=>{audio.pause();done(abortError());};finishAudio=cancel;
         audio.onended=()=>done();audio.onerror=()=>done(new Error('Browser could not decode this provider’s audio. Use WAV or MP3.'));
         signal.addEventListener('abort',cancel,{once:true});
-        audio.play().catch(error=>done(new Error(error.name==='NotAllowedError'?'Browser blocked audio. Click Play plan to enable playback.':error.message)));
+        audio.play().then(()=>{if(!settled && currentAudio===audio)$('pause').disabled=false;}).catch(error=>done(new Error(error.name==='NotAllowedError'?'Browser blocked audio. Click Play plan to enable playback.':error.message)));
       });
     } finally {
+      if(activePlayback)savePosition(audio.currentTime || 0);
+      audio.onloadedmetadata=null;audio.ontimeupdate=null;mediaSource?.disconnect();gain?.disconnect();currentGain=null;currentNormalize=1;
       audio.pause();if(currentAudio===audio)currentAudio=null;
       URL.revokeObjectURL(url);if(objectUrl===url)objectUrl=null;
       $('pause').disabled=true;$('pause').textContent='Pause';
+      currentSpeaker='';renderMixer();
     }
+  }
+  function savePosition(seconds=0){
+    if(!activePlayback)return;
+    const value={...activePlayback,seconds};
+    void ctx.settings.set(`position:${value.chatId}`,value).catch(error=>status(`Playback position could not be saved: ${error.message}`,true));
+  }
+  const actorFor=(segment,snapshot)=>[...(snapshot.fixed || []),...(snapshot.casts?.[scope(snapshot)] || [])].find(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker));
+  function synthesisSettings(segment,snapshot){
+    const route=segment.route || scope(snapshot),actor=actorFor(segment,snapshot);
+    const connection=nativeConnections.find(c=>`native:${c.id}`===route);
+    const supported=nativeProviders.find(provider=>provider.id===connection?.provider)?.capabilities?.parameters || {};
+    const styleParam=snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:route!==scope(snapshot)?['instructions','instruct','prompt'].find(p=>supported[p]):undefined;
+    const parameters={};
+    if(actor?.accent && supported.accent){
+      const allowed=supported.accent.enum || supported.accent.options;
+      if(Array.isArray(allowed) && !allowed.includes(actor.accent))throw new Error(`Accent ${actor.accent} is not supported by ${connection.name}. Supported accents: ${allowed.join(', ')}.`);
+      parameters.accent=actor.accent;
+    }
+    const instructions=[snapshot.useStyle?segment.style:'',actor?.pronunciation,actor?.accent && !supported.accent?`Accent: ${actor.accent}`:''].filter(Boolean).join('. ');
+    if(styleParam && instructions)parameters[styleParam]=instructions;
+    return {segment:{...segment,route,style:route==='gemini'?instructions:detectProvider(route)==='fish_audio' && snapshot.useStyle?segment.style:''},connection,parameters};
+  }
+  function cacheKey(segment,snapshot){
+    const request=synthesisSettings(segment,snapshot);
+    return passageKey(request.segment,{...snapshot,defaultRoute:scope(snapshot)},request.connection,request.parameters);
   }
   function createStreamingPlayer(snapshot,source,cached,apiKey,ctrl,token) {
     const segments=[];
@@ -1661,6 +1936,16 @@ export async function setup(ctx) {
     let wakePlayback=null;
     const blobs=[];
     let totalExpected=0;
+    let playIdx=0,failed=false,saveError='',saveQueue=Promise.resolve();
+    const passages={...(cached?.passages || {})};
+    const inflight=new Map();
+    // Upgrade old complete recordings without discarding their audio.
+    if(!cached?.passages)for(const [index,segment] of (cached?.segments || []).entries())if(cached.blobs?.[index] && (!segment.turns || segment.turns.length===1))passages[cacheKey(segment,snapshot)]=cached.blobs[index];
+    const persist=()=>{
+      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],passages:{...passages},retention:snapshot.retention};
+      saveQueue=saveQueue.then(()=>recordingStore('put',recordingKey(source.chatId,source.messageId),value)).catch(error=>{saveError=error.message;});
+      return saveQueue;
+    };
 
     ctrl.signal.addEventListener('abort',()=>wakePlayback?.(),{once:true});
 
@@ -1675,34 +1960,33 @@ export async function setup(ctx) {
 
     function pump() {
       const concurrency=Math.max(1,Number(snapshot.concurrency)||1);
-      while(!ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length) {
+      while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=playIdx+Number(snapshot.prefetch ?? 1)) {
         const idx=nextToSynthesize++;
         ensureSlot(idx);
         activeWorkers++;
         (async()=>{
+          let resolveFlight,rejectFlight,flightKey;
           try {
             const seg=segments[idx];
             if(ctrl.signal.aborted)throw abortError();
             status(`Synthesizing ${idx+1}/${totalExpected || segments.length}: ${seg.speaker} · ${seg.voice}`);
-            let blob=cached?.blobs?.[idx];
+            const request=synthesisSettings(seg,snapshot),key=cacheKey(seg,snapshot);
+            let blob=passages[key];
+            if(!blob && inflight.has(key))blob=await inflight.get(key);
+            if(!blob){flightKey=key;const promise=new Promise((resolve,reject)=>{resolveFlight=resolve;rejectFlight=reject;});promise.catch(()=>{});inflight.set(key,promise);}
             if(blob) {
               status(`Replaying ${idx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
             } else if((seg.route || scope(snapshot))==='gemini') {
               if(!apiKey)throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');
-              const result=await rpc('gemini',{segment:seg,model:snapshot.model,apiKey},ctrl.signal);
+              const result=await rpc('gemini',{segment:request.segment,model:snapshot.model,apiKey,allowVoiceFallback:snapshot.allowVoiceFallback},ctrl.signal);
               const audio=audioBytes(result.base64,result.mimeType);
               blob=new Blob([audio.data],{type:audio.mimeType});
             } else {
               const route=seg.route || scope(snapshot);
               const connection=nativeConnections.find(c=>`native:${c.id}`===route);
               if(!connection)throw new Error(`TTS connection for ${seg.speaker} is no longer available. Choose another connection and plan again.`);
-              const parameters={};
-              const supported=nativeProviders.find(provider=>provider.id===connection.provider)?.capabilities?.parameters || {};
-              const styleParam=route===scope(snapshot)
-                ? (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:undefined)
-                : (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:['instructions','instruct','prompt'].find(p=>supported[p]));
-              if(snapshot.useStyle && styleParam && seg.style)parameters[styleParam]=seg.style;
-              const isFish=detectProvider(connection?.provider || route)==='fish_audio';
+              const parameters=request.parameters;
+              const isFish=detectProvider(route)==='fish_audio';
               const textToSend=isFish && snapshot.useStyle && seg.style && !seg.text.startsWith('[')
                 ? (seg.style.trim().startsWith('[') ? `${seg.style.trim()} ${seg.text}` : `[${seg.style.trim()}] ${seg.text}`)
                 : seg.text;
@@ -1715,10 +1999,17 @@ export async function setup(ctx) {
               blob=await response.blob();
             }
             if(token!==revision || ctrl.signal.aborted)throw abortError();
+            resolveFlight?.(blob);
+            blobs[idx]=blob;passages[key]=blob;
+            await persist();
+            void refreshCacheStatus().catch(()=>{});
             resolvers.get(idx)({blob});
           } catch(error) {
+            rejectFlight?.(error);
+            failed=true;
             resolvers.get(idx)({error});
           } finally {
+            if(flightKey)inflight.delete(flightKey);
             activeWorkers--;
             pump();
           }
@@ -1739,7 +2030,6 @@ export async function setup(ctx) {
     }
 
     const playbackPromise=(async()=>{
-      let playIdx=0;
       while(!ctrl.signal.aborted) {
         if(playIdx>=segments.length) {
           if(isDoneAdding)break;
@@ -1749,51 +2039,65 @@ export async function setup(ctx) {
         }
         ensureSlot(playIdx);
         const outcome=await ready.get(playIdx);
-        if(outcome.error)throw outcome.error;
+        if(outcome.error){await saveQueue;throw new Error(`${outcome.error.message} Completed passages were retained.${saveError?` Storage failed: ${saveError}`:''}`);}
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         const blob=outcome.blob;
-        blobs.push(blob);
         const seg=segments[playIdx];
         status(`Playing ${playIdx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
-        await playBlob(blob,ctrl.signal);
+        activePlayback={chatId:source.chatId,messageId:source.messageId,content:source.content,passage:seg.passageIndex ?? playIdx,chunk:seg.chunkIndex ?? 0};
+        const offset=source.resume && source.resume.passage===activePlayback.passage && source.resume.chunk===activePlayback.chunk?source.resume.seconds:0;
+        await playBlob(blob,ctrl.signal,seg.speaker,offset,snapshot.normalizeLoudness);
         playIdx++;
+        activePlayback={...activePlayback,passage:segments[playIdx]?.passageIndex ?? (activePlayback.passage+1),chunk:segments[playIdx]?.chunkIndex ?? 0,complete:isDoneAdding && playIdx===segments.length};
+        savePosition(0);activePlayback=null;pump();
       }
+      await saveQueue;
+      if(saveError)status(`Audio could not be saved: ${saveError}`,true);
       return {blobs,segments};
     })();
 
+    // Observe failures immediately while the next planning section is pending.
+    playbackPromise.catch(()=>{failed=true;});
     return {push,finish,playbackPromise};
   }
-  async function play() {
+  async function play(options={}) {
     if(!plan || !planSource)throw new Error('Plan a message first.');
     if(chatId!==planSource.chatId || ctx.messages.getContent(planSource.messageId)!==planSource.content) {
       clearPlan();throw new Error('Message or swipe changed. Generate a fresh plan.');
     }
     stop(false);const token=revision;const ctrl=new AbortController();controller=ctrl;
-    const snapshot=structuredClone(capture()), segments=speechBatches(plan.segments,snapshot.chunk,scope(snapshot),snapshot.batchGemini);
+    const snapshot=structuredClone(capture());
+    const resume=options.resume?await ctx.settings.get(`position:${chatId}`):null;
+    if(token!==revision || ctrl.signal.aborted)throw abortError();
+    const validResume=resume?.messageId===planSource.messageId && resume.content===planSource.content && !resume.complete?resume:null;
+    const segments=plan.segments.flatMap((segment,index)=>{
+      if(excludedPassages.has(index) || actorFor(segment,snapshot)?.excluded || (options.selected && !selectedPassages.has(index)) || (validResume && index<validResume.passage))return [];
+      return speechBatches([segment],snapshot.chunk,scope(snapshot),false).map((batch,chunkIndex)=>({...batch,passageIndex:index,chunkIndex})).filter(batch=>!validResume || index!==validResume.passage || batch.chunkIndex>=(validResume.chunk || 0));
+    });
+    if(!segments.length){controller=null;status('No included passages selected. Text remains in the plan.');return;}
     validateSettings(snapshot);
-    const source={...planSource}, key=recordingKey(source.chatId,source.messageId);
+    const source={...planSource,resume:validResume}, key=recordingKey(source.chatId,source.messageId);
     const signature=JSON.stringify([snapshot.mode,snapshot.model,snapshot.connection,snapshot.styleParam,segments,
       segments.map(segment=>nativeConnections.find(c=>`native:${c.id}`===(segment.route || scope(snapshot)))?.model)]);
     let cached,storageError='';
     status('Checking saved audio…');
     try{cached=await recordingStore('get',key);}catch(error){storageError=error.message;}
     if(token!==revision || ctrl.signal.aborted)throw abortError();
-    if(cached?.content!==source.content || cached?.signature!==signature)cached=null;
     const apiKey=$('key').value.trim();
-    if(!cached && segments.some(segment=>(segment.route || scope(snapshot))==='gemini') && !apiKey){controller=null;throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');}
+    if(segments.some(segment=>(segment.route || scope(snapshot))==='gemini' && !cached?.passages?.[cacheKey(segment,snapshot)]) && !apiKey){controller=null;throw new Error('Enter your Gemini API key for missing passages using the Gemini adapter. It is held only in this page session.');}
     setBusy(true);
     try {
       const player=createStreamingPlayer(snapshot,source,cached,apiKey,ctrl,token);
       player.push(segments,segments.length);
       player.finish();
       const {blobs}=await player.playbackPromise;
-      if(!cached) {
+      {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        try{await recordingStore('put',key,{content:source.content,transcript:source.transcript,signature,segments,blobs,retention:snapshot.retention});storageError='';}
+        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
       if(token===revision){renderMessages();status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.');}
-    } finally {ctrl.abort();if(token===revision){controller=null;setBusy(false);}}
+    } finally {ctrl.abort();activePlayback=null;void refreshCacheStatus();if(token===revision){controller=null;setBusy(false);}}
   }
   async function replayRecording(messageId) {
     stop(false);const token=revision,targetChat=chatId;
@@ -1806,12 +2110,16 @@ export async function setup(ctx) {
       if(ctx.messages.getContent(messageId)!==recording.content)throw new Error('The message changed since recording. Plan and play the current reply.');
       if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to remove trackers or update the persona name.');
       for(const [index,blob] of recording.blobs.entries()) {
+        if(!blob)continue;
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
-        await playBlob(blob,ctrl.signal);
+        const segment=recording.segments[index];
+        activePlayback={chatId:targetChat,messageId,content:recording.content,passage:segment.passageIndex ?? index,chunk:segment.chunkIndex ?? 0};
+        await playBlob(blob,ctrl.signal,recording.segments[index].speaker,0,config.normalizeLoudness);
+        const next=recording.segments[index+1];activePlayback={...activePlayback,passage:next?.passageIndex ?? (activePlayback.passage+1),chunk:next?.chunkIndex ?? 0,complete:index+1===recording.blobs.length};savePosition(0);activePlayback=null;
       }
       if(token===revision)status('Replay finished.');
-    } finally {if(token===revision){controller=null;setBusy(false);}}
+    } finally {activePlayback=null;if(token===revision){controller=null;setBusy(false);}}
   }
   async function playMessage(messageId) {
     if(controller && messagePlaybackId===messageId){stop();return;}
@@ -1819,11 +2127,16 @@ export async function setup(ctx) {
     status('Checking saved audio…');
     const content=ctx.messages.getContent(messageId);
     let recording;try{recording=await recordingStore('get',recordingKey(chatId,messageId));}catch{}
-    if(recording?.content===content && await recordingMatchesTranscript(recording,content)){await replayRecording(messageId);return;}
+    if(await restoreSavedPlan(messageId)){await play();return;}
+    if(recording?.content===content && await recordingMatchesTranscript(recording,content)){
+      const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
+      const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).map(segment=>segment.text).join(' ');
+      if(canonical(recordedText)===canonical(recording.transcript || transcriptFromMessage(content)) && Array.from(recording.blobs || []).every(Boolean) && recording.blobs?.length===recording.segments?.length){await replayRecording(messageId);return;}
+    }
     await prepare(messageId,true);
   }
   const decorateMessage=(target,context={})=>{
-    const messageId=ctx.dom.getMessageId?.(context.node || target) || context.scope?.split(':')[1];
+    const messageId=context.messageId || ctx.dom.getMessageId?.(context.node || target) || context.scope?.match(/^message:(.*):(?:bubble|minimal):footer$/)?.[1] || context.scope?.split(':')[1];
     if(!messageId)return;
     const controls=document.createElement('div');controls.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px';
     const button=document.createElement('button');button.type='button';button.innerHTML=`${ICON_PLAY} Play Choir`;button.title='Play or stop Choir audio';button.setAttribute('aria-label','Play or stop Choir audio for this message');
@@ -1833,8 +2146,9 @@ export async function setup(ctx) {
     button.onclick=()=>run(()=>playMessage(messageId));controls.append(button,progress);target.append(controls);
     return ()=>{controls.remove();statuses.delete(progress);if(!statuses.size)messageStatuses.delete(messageId);};
   };
-  if(ctx.registerDomDecorator) {
-    const handle=ctx.registerDomDecorator({mount:'message_footer',render:decorateMessage,target:'message_footer',decorate:decorateMessage});
+  const registerDecorator=ctx.ui.registerDomDecorator?.bind(ctx.ui) || ctx.registerDomDecorator?.bind(ctx);
+  if(registerDecorator) {
+    const handle=registerDecorator({mount:'message_footer',render:decorateMessage,target:'message_footer',decorate:decorateMessage});
     unsubs.push(typeof handle==='function'?handle:()=>handle?.destroy());
   } else if(ctx.registerMessageAction) {
     const handle=ctx.registerMessageAction({id:'choir-play',label:'Play Choir',onClick:id=>run(()=>playMessage(id))});
@@ -1911,7 +2225,7 @@ export async function setup(ctx) {
       const entry=`${result.id} | ${result.description}`;
       const existing=$('extraVoices').value.trim();
       $('extraVoices').value=existing?`${existing}\n${entry}`:entry;
-      config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),config);
+      config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));
       loadVersion++;await loadVoices();
       $('voicePrompt').value='';status(`Voice designed and added to catalogue: ${result.id}`);
     } finally {if(token===revision){controller=null;setBusy(false);}}
@@ -1934,7 +2248,7 @@ export async function setup(ctx) {
           const entry=`${result.id} | ${result.description}`;
           const existing=$('extraVoices').value.trim();
           $('extraVoices').value=existing?`${existing}\n${entry}`:entry;
-          config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),config);
+          config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));
           loadVersion++;await loadVoices();
         } finally {if(token===revision){controller=null;setBusy(false);}}
       }
@@ -1964,7 +2278,7 @@ export async function setup(ctx) {
       } else {
         const connection=nativeConnections.find(c=>`native:${c.id}`===config.connection) || nativeConnections.find(c=>c.id===config.connection) || nativeConnections[0];
         if(!connection)throw new Error('TTS connection is not available for audition.');
-        const isFish=detectProvider(connection?.provider || config)==='fish_audio';
+        const isFish=detectProvider(config)==='fish_audio';
         const textToSend=isFish ? `[cheerful] ${sampleText}` : sampleText;
         const response=await api('/tts/synthesize',{
           method:'POST',
@@ -1989,7 +2303,7 @@ export async function setup(ctx) {
         const existing = $('extraVoices').value.trim();
         $('extraVoices').value = existing ? `${existing}\n${entry}` : entry;
         config = capture();
-        if (chatId) await ctx.settings.set(settingsKey(chatId), config);
+        if (chatId) await ctx.settings.set(settingsKey(chatId), withoutSecrets(config));
         loadVersion++; await loadVoices();
         status(`Added "${item.name}" to voice catalogue.`);
       }
@@ -1999,16 +2313,33 @@ export async function setup(ctx) {
   $('voiceSearchQuery')?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearchVoices(); } });
   $('load').onclick=()=>run(async()=>{config=capture();loadVersion++;await loadProviders();clearPlan();status('Connections and voices reloaded.');});
   $('plannerMode')?.addEventListener('change',updatePlannerVisibility);
+  $('allowLlmFallback').onchange=updatePlannerVisibility;
+  $('guidePlanner').onclick=()=>$('testPlanner').click();
+  $('testTts').onclick=()=>castRows[0]?.row.querySelector('[data-choir-preview]')?.click();
+  $('playSelected').onclick=()=>run(()=>play({selected:true}));
+  $('resumePosition').onclick=()=>run(()=>play({resume:true}));
+  $('exportCast').onclick=()=>{$('castJson').value=JSON.stringify(castExport(capture()),null,2);status('Cast exported below. Copy this JSON to transfer it. Credentials are excluded.');};
+  $('importCast').onclick=()=>run(async()=>{
+    if(!chatId)throw new Error('Open a chat first.');
+    const imported=castImport(JSON.parse($('castJson').value)),candidate={...capture(),...imported};
+    const routes=new Set([scope(candidate),...candidate.fixed.map(actor=>actor.route || scope(candidate)),...Object.keys(candidate.casts),...Object.values(candidate.casts).flat().map(actor=>actor.route).filter(Boolean)]);
+    for(const route of routes)await ensureCatalogue(route);
+    validateSettings(candidate);
+    for(const route of Object.keys(candidate.casts)){const scoped=route==='gemini'?{...candidate,mode:'gemini'}:{...candidate,mode:'native',connection:route.slice(7)};validateCastConfig(casting(scoped));}
+    stop(false);config=candidate;await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));setFields();renderCast();
+    if(planSource)await restoreSavedPlan(planSource.messageId);
+    status('Cast imported and validated. Saved attribution reused.');
+  });
   for(const name of ['mode','connection'])$(name).onchange=()=>run(async()=>{
-    stop(false);clearPlan();config=capture();loadVersion++;setFields();await loadVoices();
+    stop(false);config=capture();loadVersion++;setFields();await loadVoices();
     const unavailable=config.fixed.some(v=>v.voice && !voices.some(x=>x.id===v.voice));
     status(unavailable?'Choose valid voices for this provider, then save.':'Provider selected. Save your cast.');
   });
   $('apply').onclick=()=>run(async()=>{
     if(!planSource)throw new Error('Plan a message first.');
     const edited=validatePlan(parsePlanJson($('planJson').value),planSource.transcript,casting(config));
-    plan=edited;config.casts[scope(config)]=edited.npcs;await ctx.settings.set(settingsKey(chatId),config);
-    renderCast();renderPreview();status('Edited plan validated.');
+    plan=edited;config.casts[scope(config)]=edited.npcs;await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));
+    await persistPlan();renderCast();renderPreview();status('Edited plan validated and saved.');
   });
   unsubs.push(ctx.state.subscribe('chat.active',()=>run(switchChat)));
   unsubs.push(ctx.state.subscribe('chat.messageCount',()=>renderMessages()));
@@ -2021,7 +2352,9 @@ export async function setup(ctx) {
   for(const event of ['MESSAGE_EDITED','MESSAGE_SWIPED','SWIPE_EDITED','MESSAGE_DELETED']) {
     unsubs.push(ctx.events.on(event,payload=>{
       const id=payload?.messageId || payload?.message?.id || payload?.id;
-      if(planSource && (!id || id===planSource.messageId)){stop(false);clearPlan();status('Message changed. Generate a fresh plan.');}
+      if(payload?.chatId && payload.chatId!==chatId)return;
+      const affected=planSource || planningSource;
+      if(affected && (!id || id===affected.messageId)){stop(false);clearPlan();status('Message changed. Generate a fresh plan.');}
       renderMessages();
     }));
   }

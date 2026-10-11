@@ -107,7 +107,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     // Drawer roots can be detached when the user is looking at the story.
     root.remove();
     $('key').value = 'test-key'; messageActions.querySelector('button').click();await until(()=>$('status').textContent.includes('Playback finished'));
-    assert.equal(audios.length,2);audios.length=0;
+    assert.equal(audios.length,3);audios.length=0;
     assert.match(messageActions.textContent,/Playback finished/);
     assert.match(minimalFooter.textContent,/Playback finished/);
     assert.equal($('preview').querySelectorAll('.et-card').length,3);
@@ -116,7 +116,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.equal(store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Mira').gender,'female');
     assert.equal(requests.find(request=>request.action==='plan').input.config.fixed[2].gender,'female');
     $('key').value='test-key';$('play').click();await until(()=>$('status').textContent.includes('finished'));
-    assert.equal(audios.length,2);assert.match($('status').textContent,/finished/);
+    assert.equal(audios.length,3);assert.match($('status').textContent,/finished/);
     assert.match($('status').textContent,/Audio saved/);
     const generated=requests.filter(v=>v.action==='gemini').length;
     $('key').value='';$('play').click();await until(()=>$('status').textContent.includes('finished'));
@@ -142,12 +142,12 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     $('play').click();await until(()=>$('status').textContent.includes('Audio saved'));
     assert.equal(nativeRequests.length,1);assert.equal(nativeRequests[0].voice,'coral');
     assert.equal(nativeRequests[0].parameters.instructions,'Curious');
-    assert.equal(requests.filter(request=>request.action==='gemini').length,beforeMixed+2);
+    assert.equal(requests.filter(request=>request.action==='gemini').length,beforeMixed);
     assert.equal(store.get('chat:chat-a').fixed[2].route,'native:native-a');
     $('key').value='';
     $('play').click();await until(()=>$('status').textContent.includes('Audio saved'));
     assert.equal(nativeRequests.length,1);
-    assert.equal(requests.filter(request=>request.action==='gemini').length,beforeMixed+2);
+    assert.equal(requests.filter(request=>request.action==='gemini').length,beforeMixed);
     nativeRequests.length=0;
     $('mode').value='native';$('mode').dispatchEvent(new dom.window.Event('change'));await tick();
     $('connection').value='native-a';$('connection').dispatchEvent(new dom.window.Event('change'));await tick();
@@ -161,7 +161,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.equal(peakTTS,2);assert.equal(store.get('chat:chat-a').concurrency,2);
     assert.equal(nativeRequests[0].voice,'alloy');assert.equal(nativeRequests[0].connectionId,'native-a');
     assert.equal(nativeRequests[0].parameters.instructions,'Clear, measured narration. Calm');
-    assert.equal(nativeRequests[2].voice,'echo');
+    assert.equal(nativeRequests[2].voice,'alloy'); // Recast from saved attribution, without a new planner call.
     $('retention').value='1';$('save').click();await until(()=>$('status').textContent.includes('retention saved'));
     assert.equal(store.get('chat:chat-a').retention,'1');
     const realNow=Date.now;
@@ -620,7 +620,7 @@ test('detects Fish Audio vs Gemini/Vertex provider and dynamically adapts UI con
   await until(() => $('fixed')?.querySelectorAll('.et-card')?.length >= 2);
 
   // 1. Initially mode is gemini
-  assert.equal($('batchGeminiWrap').hidden, false, 'Batch Gemini should be visible in Gemini mode');
+  assert.equal($('batchGeminiWrap').hidden, true, 'Mixer uses individual passages in Gemini mode');
   assert.equal($('voiceDesignBox').hidden, false, 'Gemini voice design should be visible');
   
   // 2. Switch to Fish Audio native connection
@@ -645,9 +645,9 @@ test('detects Fish Audio vs Gemini/Vertex provider and dynamically adapts UI con
   // 3. Switch to Vertex native connection
   $('connection').value = 'conn-vertex';
   $('connection').dispatchEvent(new dom.window.Event('change'));
-  await until(() => !$('batchGeminiWrap').hidden);
+  await tick();
 
-  assert.equal($('batchGeminiWrap').hidden, false, 'Batch Gemini should be visible for Vertex');
+  assert.equal($('batchGeminiWrap').hidden, true, 'Mixer uses individual passages for Vertex');
   assert.equal($('voiceDesignBox').hidden, false, 'Voice design should be visible for Vertex');
 
   cleanup?.();
