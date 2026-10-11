@@ -148,3 +148,44 @@ test('designVoice handles missing API key or empty prompt',async()=>{
   h2.send('designVoice',{apiKey:'key',prompt:''});
   assert.match((await h2.result()).message.error,/Describe the voice to design/);
 });
+
+test('backend retry fallback when custom voice_ returns 404',async()=>{
+  const calls=[];
+  const h=await harness(null,async(url,options)=>{
+    calls.push({url,options,body:JSON.parse(options.body)});
+    if(calls.length===1) {
+      return {status:404,body:JSON.stringify({error:{message:'Voice voices/voice_dwarf_abc not found',status:'NOT_FOUND'}})};
+    }
+    return {status:200,body:JSON.stringify({candidates:[{content:{parts:[{inlineData:{data:'ZmFsbGJhY2s=',mimeType:'audio/wav'}}]}}]})};
+  });
+  h.send('gemini',{
+    apiKey:'test-key',
+    model:'gemini-3.8-flash-tts',
+    segment:{text:'Halt!',voice:'voice_dwarf_abc',gender:'male',style:'Stern'}
+  });
+  const result=await h.result();
+  assert.equal(result.message.result.base64,'ZmFsbGJhY2s=');
+  assert.equal(calls.length,2);
+  assert.equal(calls[0].body.generationConfig.speechConfig.voiceConfig.voice,'voice_dwarf_abc');
+  assert.equal(calls[1].body.generationConfig.speechConfig.voiceConfig.voice,'Charon');
+
+  // Test female voice falling back to Kore
+  const femaleCalls=[];
+  const h2=await harness(null,async(url,options)=>{
+    femaleCalls.push({url,options,body:JSON.parse(options.body)});
+    if(femaleCalls.length===1) {
+      return {status:404,body:JSON.stringify({error:{message:'Voice not found'}})};
+    }
+    return {status:200,body:JSON.stringify({candidates:[{content:{parts:[{inlineData:{data:'a29yZQ==',mimeType:'audio/wav'}}]}}]})};
+  });
+  h2.send('gemini',{
+    apiKey:'test-key',
+    model:'gemini-3.8-flash-tts',
+    segment:{text:'Greetings.',voice:'voice_female_elf',gender:'female',style:'Gentle'}
+  });
+  const result2=await h2.result();
+  assert.equal(result2.message.result.base64,'a29yZQ==');
+  assert.equal(femaleCalls.length,2);
+  assert.equal(femaleCalls[0].body.generationConfig.speechConfig.voiceConfig.voice,'voice_female_elf');
+  assert.equal(femaleCalls[1].body.generationConfig.speechConfig.voiceConfig.voice,'Kore');
+});

@@ -322,3 +322,200 @@ test('pipelined playback begins playing section 1 while subsequent sections are 
   }
 });
 
+
+test('auditionVoice synthesizes and plays a voice sample', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  let onBackend;
+  const store = new Map(), requests = [], audios = [];
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; audios.push(this); }
+    play() { this.paused = false; setTimeout(() => this.onended?.(), 5); return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = FakeAudio;
+  globalThis.fetch = async (url, options) => {
+    if (url.includes('/providers')) return new Response(JSON.stringify({providers: []}), {headers: {'Content-Type': 'application/json'}});
+    if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}]}), {headers: {'Content-Type': 'application/json'}});
+    return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
+  };
+  const root = dom.window.document.createElement('div');
+  const ctx = {
+    registerDomDecorator: () => () => {},
+    settings: {
+      get: async key => store.get(key) || null,
+      set: async (key, value) => { store.set(key, structuredClone(value)); }
+    },
+    messages: { getRecent: () => [], getContent: () => null },
+    state: { subscribe: () => () => {} },
+    connections: { list: () => [] },
+    characters: { get: async () => ({name: 'Mira'}) },
+    getActiveChat: () => ({chatId: 'chat-audition', characterId: 'character-a'}),
+    dom: { addStyle: () => () => {} },
+    ui: {
+      registerDrawerTab: () => ({root, activate() {}, destroy() {}}),
+      mount: () => dom.window.document.createElement('div'),
+      registerInputBarAction: () => ({onClick() {}, destroy() {}})
+    },
+    events: { on: () => () => {} },
+    onBackendMessage: fn => { onBackend = fn; return () => null; },
+    sendToBackend: message => {
+      requests.push(message);
+      setTimeout(() => {
+        if (message.action === 'ping') onBackend?.({namespace: 'choir', id: message.id, result: {version: '1.0.18', ready: true}});
+        else if (message.action === 'gemini') {
+          onBackend?.({namespace: 'choir', id: message.id, result: {base64: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=', mimeType: 'audio/wav'}});
+        }
+      }, 5);
+    }
+  };
+  try {
+    const cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+    $('key').value = 'gemini-key-123';
+    $('voicePrompt').value = 'voice_custom_audition';
+    assert.ok($('auditionVoice'));
+    $('auditionVoice').click();
+    await until(() => $('status').textContent.includes('Audition finished'));
+    const geminiReq = requests.find(r => r.action === 'gemini');
+    assert.ok(geminiReq);
+    assert.equal(geminiReq.input.segment.voice, 'voice_custom_audition');
+    assert.equal(geminiReq.input.segment.text, 'Hello! I am your new voice for this story.');
+    assert.equal(audios.length, 1);
+    cleanup();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});
+
+test('autoDesignNPCs setting auto-designs bespoke Gemini voices for new NPCs with graceful fallback', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  let onBackend;
+  const store = new Map(), requests = [], audios = [];
+  let currentMsgId = 'msg-npc-1';
+  const messages = {
+    'msg-npc-1': {
+      id: 'msg-npc-1',
+      chat_id: 'chat-npc',
+      name: 'Mira',
+      is_user: false,
+      content: 'The old blacksmith looked up. "Welcome to my forge," the blacksmith said.',
+      extra: {}
+    },
+    'msg-npc-2': {
+      id: 'msg-npc-2',
+      chat_id: 'chat-npc',
+      name: 'Mira',
+      is_user: false,
+      content: 'The baker smiled warmly. "Fresh bread is ready," the baker said.',
+      extra: {}
+    }
+  };
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; audios.push(this); }
+    play() { this.paused = false; setTimeout(() => this.onended?.(), 5); return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = FakeAudio;
+  globalThis.fetch = async (url) => {
+    if (url.includes('/providers')) return new Response(JSON.stringify({providers: []}), {headers: {'Content-Type': 'application/json'}});
+    if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}, {id: 'Zephyr', name: 'Zephyr', gender: 'female'}]}), {headers: {'Content-Type': 'application/json'}});
+    return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
+  };
+  const messageActions = dom.window.document.createElement('div');
+  const root = dom.window.document.createElement('div');
+  let designVoiceShouldFail = false;
+  const ctx = {
+    registerDomDecorator: options => options.render(messageActions, {scope: 'message:msg-npc-1:bubble:footer'}),
+    settings: {
+      get: async key => store.get(key) || null,
+      set: async (key, value) => { store.set(key, structuredClone(value)); }
+    },
+    messages: {
+      getRecent: () => [messages[currentMsgId]],
+      getContent: id => messages[id]?.content || null
+    },
+    state: { subscribe: () => () => {} },
+    connections: { list: () => [] },
+    characters: { get: async () => ({name: 'Mira'}) },
+    getActiveChat: () => ({chatId: 'chat-npc', characterId: 'character-a'}),
+    dom: { addStyle: () => () => {} },
+    ui: {
+      registerDrawerTab: () => ({root, activate() {}, destroy() {}}),
+      mount: () => dom.window.document.createElement('div'),
+      registerInputBarAction: () => ({onClick() {}, destroy() {}})
+    },
+    events: { on: () => () => {} },
+    onBackendMessage: fn => { onBackend = fn; return () => null; },
+    sendToBackend: message => {
+      requests.push(message);
+      setTimeout(() => {
+        if (message.action === 'ping') onBackend?.({namespace: 'choir', id: message.id, result: {version: '1.0.18', ready: true}});
+        else if (message.action === 'plan') {
+          const units = speechSourceUnits(message.input.transcript);
+          onBackend?.({namespace: 'choir', id: message.id, result: {segments: units.map(u => ({
+            speaker: u.kind === 'dialogue' ? (currentMsgId === 'msg-npc-1' ? 'Blacksmith' : 'Baker') : 'Narrator',
+            text: u.text,
+            voice: 'Charon'
+          }))}});
+        }
+        else if (message.action === 'designVoice') {
+          if (designVoiceShouldFail) {
+            onBackend?.({namespace: 'choir', id: message.id, error: 'Gemini Voice Design rate limited'});
+          } else {
+            onBackend?.({namespace: 'choir', id: message.id, result: {id: 'voice_bespoke_blacksmith', name: 'voice_bespoke_blacksmith', description: message.input.prompt}});
+          }
+        }
+        else if (message.action === 'gemini') {
+          onBackend?.({namespace: 'choir', id: message.id, result: {base64: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=', mimeType: 'audio/wav'}});
+        }
+      }, 5);
+    }
+  };
+  try {
+    let cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+    assert.ok($('autoDesignNPCs'));
+    assert.equal($('autoDesignNPCs').checked, false);
+    
+    // Enable auto-design of NPCs
+    $('autoDesignNPCs').checked = true;
+    $('key').value = 'gemini-key-test';
+    
+    // Plan message 1
+    messageActions.querySelector('button').click();
+    await until(() => $('status').textContent.includes('Playback finished'));
+    
+    // Check that designVoice was called for the Blacksmith NPC
+    const designReq = requests.find(r => r.action === 'designVoice');
+    assert.ok(designReq, 'Expected designVoice request to be made');
+    assert.match(designReq.input.prompt, /Blacksmith/);
+    
+    // Check that NPC voice was updated in extraVoices, casts, and settings
+    assert.match($('extraVoices').value, /voice_bespoke_blacksmith/);
+    const savedConfig = store.get('chat:chat-npc');
+    assert.ok(savedConfig);
+    assert.equal(savedConfig.casts.gemini[0].speaker, 'Blacksmith');
+    assert.equal(savedConfig.casts.gemini[0].voice, 'voice_bespoke_blacksmith');
+
+    // Test graceful fallback: when designVoice throws on newly planned NPC, keep prebuilt voice without failing
+    designVoiceShouldFail = true;
+    requests.length = 0;
+    currentMsgId = 'msg-npc-2';
+    $('latest').click();
+    await until(() => $('status').textContent.includes('Ready:'));
+    
+    assert.ok(requests.some(r => r.action === 'designVoice'));
+    assert.match($('status').textContent, /Ready:/);
+    cleanup();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});

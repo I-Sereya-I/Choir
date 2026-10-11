@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags} from '../src/core.js';
 
 test('Gemini batches preserve turn metadata and split on third speaker or provider change',()=>{
   const turns=['Narrator','Alice','Narrator','Bob','Alice'].map((speaker,i)=>({speaker,voice:speaker==='Narrator'?'Charon':speaker==='Alice'?'Kore':'Puck',text:'Turn '+i,style:'Soft',route:'gemini'}));
@@ -204,4 +204,47 @@ test('default planning sections keep ordinary requests small and preserve every 
   const sections=planningSections(text);
   assert.equal(sections.length,10);assert.equal(sections.join(''),text);
   assert.ok(sections.every(section=>speechSourceUnits(section).length<=8 && section.length<=1200));
+});
+
+test('stripAudioTags and validatePlan allowing inline tags like <sigh> or [whispers] in segment text without failing transcript equality',()=>{
+  assert.equal(stripAudioTags('Hello <sigh> world! [whispers]').trim().replace(/\s+/g, ' '), 'Hello world!');
+  assert.equal(stripAudioTags('<gasp> Oh no! <laugh> [shouting] Stop! </pause>').trim().replace(/\s+/g, ' '), 'Oh no! Stop!');
+  const c=config();
+  const plan=validatePlan({
+    segments:[
+      {speaker:'Narrator',voice:'Charon',text:'<sigh> Hello world.'},
+      {speaker:'Alice',voice:'Kore',text:'Wait! [whispers] Are you sure? <gasp>'}
+    ]
+  },'Hello world. Wait! Are you sure?',c);
+  assert.equal(plan.segments[0].text,'<sigh> Hello world.');
+  assert.equal(plan.segments[1].text,'Wait! [whispers] Are you sure? <gasp>');
+});
+
+test('validatePlan preserving voicePrompt on newly cast NPCs',()=>{
+  const c=config();
+  const plan=validatePlan({
+    segments:[
+      {speaker:'Narrator',voice:'Charon',text:'He entered.'},
+      {speaker:'Blacksmith',voice:'Fenrir',text:'Welcome to my forge.',voicePrompt:'Gruff Scottish blacksmith, deep gravelly timbre'}
+    ]
+  },'He entered. Welcome to my forge.',c);
+  assert.equal(plan.npcs.length,1);
+  assert.equal(plan.npcs[0].speaker,'Blacksmith');
+  assert.equal(plan.npcs[0].voice,'Fenrir');
+  assert.equal(plan.npcs[0].voicePrompt,'Gruff Scottish blacksmith, deep gravelly timbre');
+
+  // Also test preservation when raw.newNPCs is provided
+  const c2=config();
+  const plan2=validatePlan({
+    segments:[
+      {speaker:'Narrator',voice:'Charon',text:'He looked around.'},
+      {speaker:'Merchant',voice:'Puck',text:'Looking to buy?'}
+    ],
+    newNPCs:[
+      {name:'Merchant',voice:'Puck',voicePrompt:'Fast-talking traveling merchant, nasal high pitch'}
+    ]
+  },'He looked around. Looking to buy?',c2);
+  assert.equal(plan2.npcs.length,1);
+  assert.equal(plan2.npcs[0].speaker,'Merchant');
+  assert.equal(plan2.npcs[0].voicePrompt,'Fast-talking traveling merchant, nasal high pitch');
 });
