@@ -433,6 +433,36 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       }
       send({result:{base64:response.body,mimeType:'audio/mpeg'}}); return;
     }
+    if (message.action === 'freesound') {
+      const apiKey = typeof input.apiKey === 'string' && input.apiKey.trim() ? input.apiKey.trim() : '';
+      if (!apiKey) throw new Error('Freesound API key is required. Configure it in Choir Advanced Settings.');
+      const query = typeof input.query === 'string' ? input.query.trim() : '';
+      if (!query) throw new Error('Search query is required.');
+      const filter = typeof input.filter === 'string' && input.filter.trim() ? input.filter.trim() : 'duration:[0.1 TO 2.5]';
+      const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(query)}&filter=${encodeURIComponent(filter)}&fields=id,name,duration,previews,tags&sort=score&page_size=5&token=${encodeURIComponent(apiKey)}`;
+      let resData;
+      if (typeof spindle !== 'undefined' && typeof spindle?.cors === 'function') {
+        const resp = await spindle.cors(url, { method: 'GET', headers: { 'Accept': 'application/json' }, signal: controller.signal });
+        if (resp.status < 200 || resp.status >= 300) {
+          throw new Error(`Freesound HTTP ${resp.status}`);
+        }
+        resData = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body;
+      } else if (typeof fetch === 'function') {
+        const resp = await fetch(url, { headers: { 'Accept': 'application/json' }, signal: controller.signal });
+        if (!resp.ok) throw new Error(`Freesound HTTP ${resp.status}`);
+        resData = await resp.json();
+      } else {
+        throw new Error('No HTTP transport available.');
+      }
+      const results = (Array.isArray(resData?.results) ? resData.results : []).map(r => ({
+        id: r.id,
+        name: r.name,
+        duration: r.duration,
+        previewUrl: r.previews?.['preview-hq-mp3'] || r.previews?.['preview-lq-mp3'] || Object.values(r.previews || {})[0] || null,
+        tags: Array.isArray(r.tags) ? r.tags.slice(0, 5) : []
+      })).filter(r => r.previewUrl);
+      send({ result: { query, results } }); return;
+    }
     if (message.action === 'searchVoices') {
       const query = typeof input.query === 'string' ? input.query.trim() : '';
       if (!query) throw new Error('Enter a character or voice name to search.');

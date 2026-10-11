@@ -231,8 +231,10 @@ function validatePlan(raw, transcript, config) {
     // Assigned voices always win; blank fixed voices are cast once by the planner.
     const delivery = typeof segment.style === 'string' ? segment.style.trim() : '';
     if (delivery.length > 600) throw new Error('Turn styles must be at most 600 characters.');
+    const cue = detectFoleyCue(text);
     return {speaker:actor.speaker, voice:actor.voice,...((actor.route || config.defaultRoute)?{route:actor.route || config.defaultRoute}:{}), gender:actor.gender || 'auto', text,
-      style: config.useStyle === false ? '' : [actor.style, delivery].filter(Boolean).join('. ')};
+      style: config.useStyle === false ? '' : [actor.style, delivery].filter(Boolean).join('. '),
+      ...(cue ? { sfx: { query: cue.query, filter: cue.filter, trigger: cue.matchedText } } : (segment.sfx ? { sfx: segment.sfx } : {}))};
   });
   if (transcript.slice(cursor).trim()) throw new Error('The plan omits the end of the original message.');
   const fixed = new Set(config.fixed.map(v => normalizeName(v.speaker)));
@@ -539,6 +541,11 @@ function fastClassifyPlan(transcript, config) {
     return null;
   };
 
+  const preferredActor = config.speaker ? (
+    candidates.find(c => normalizeName(c.speaker) === normalizeName(config.speaker)) ||
+    (Object.values(config.casts || {}).flat()).find(c => normalizeName(c.speaker) === normalizeName(config.speaker))
+  ) : null;
+
   // Case 2: 1-on-1 character dialogue
   const isOneOnOne = candidates.length === 1 && candidates[0].voice;
   const singleCharacter = isOneOnOne ? candidates[0] : (
@@ -547,6 +554,7 @@ function fastClassifyPlan(transcript, config) {
     candidates[1].voice
   ) ? candidates[1] : null;
 
+  let lastAssigned = null;
   const unitAssignments = [];
 
   for (const u of units) {
@@ -564,6 +572,12 @@ function fastClassifyPlan(transcript, config) {
 
     const { beforeTag, afterTag } = getImmediateTag(u);
     let assigned = findSpeakerInTag(afterTag) || findSpeakerInTag(beforeTag);
+    if (!assigned && lastAssigned) {
+      assigned = lastAssigned;
+    }
+    if (!assigned && preferredActor && preferredActor.voice) {
+      assigned = preferredActor;
+    }
     if (!assigned && singleCharacter) {
       assigned = singleCharacter;
     }
@@ -571,6 +585,7 @@ function fastClassifyPlan(transcript, config) {
     if (!assigned || !assigned.voice) {
       return null;
     }
+    lastAssigned = assigned;
 
     const style = detectStyle(afterTag) || detectStyle(beforeTag);
 
@@ -595,6 +610,94 @@ function fastClassifyPlan(transcript, config) {
     return null;
   }
 }
+
+const DEFAULT_FREESOUND_KEY = '';
+
+const FOLEY_RULES = [
+  // Page / paper turn
+  {
+    pattern: /\b(?:page\s+(?:turned|snapped|flipped)|turn(?:ed|ing)?\s+(?:the\s+)?page|flipp(?:ed|ing)?\s+(?:the\s+)?page|rustl(?:ed|ing)?\s+(?:the\s+)?paper)\b/i,
+    query: 'page turn',
+    filter: 'duration:[0.1 TO 2.5]'
+  },
+  // Thump / bump / impacts
+  {
+    pattern: /\b(?:(?:knee|elbow|shoulder|head|foot|body)\s+bumped\b|bumped\s+against\b|thump(?:ed|s)?\b|dull\s+thud\b|heavy\s+thud\b|thudded\b)\b/i,
+    query: 'thump',
+    filter: 'duration:[0.1 TO 2.0]'
+  },
+  // Breath / breathing / sigh / gasp
+  {
+    pattern: /\b(?:breath\s+smelled\b|heavy\s+breath(?:ing)?\b|sharp\s+intake\s+of\s+breath\b|caught\s+(?:her|his|their|my)\s+breath\b|gasped?\s*(?:in\s+surprise|softly|for\s+air)?\b|sighed?\s*(?:softly|heavily|deeply|in\s+relief)?\b)\b/i,
+    query: 'breath',
+    filter: 'duration:[0.2 TO 2.5]'
+  },
+  // Hiss
+  {
+    pattern: /\b(?:hissed\b|hissing\s+sound\b|steam\s+hissed\b)\b/i,
+    query: 'hiss',
+    filter: 'duration:[0.2 TO 2.5]'
+  },
+  // Door creak / slam / knock
+  {
+    pattern: /\b(?:door\s+(?:creaked|creaks|swung\s+open)\b|creak(?:ed|ing)?\s+(?:door|floorboard|floor|hinge)\b|knock(?:ed|ing)?\s+(?:on|at)\s+the\s+door\b|slam(?:med)?\s+the\s+door\b)\b/i,
+    query: 'door creak',
+    filter: 'duration:[0.3 TO 2.5]'
+  },
+  // Footsteps / walking
+  {
+    pattern: /\b(?:footsteps?\s+(?:approached|echoed|slowed|receded)\b|shuffl(?:ed|ing)?\s+(?:her|his|their|the)\s+feet\b|pacing\s+(?:the\s+floor|back\s+and\s+forth)\b)\b/i,
+    query: 'footsteps',
+    filter: 'duration:[0.3 TO 2.5]'
+  },
+  // Glass / dishes
+  {
+    pattern: /\b(?:glass\s+(?:shattered|clinked|broke)\b|cup\s+clatter(?:ed)?\b|dishes\s+clatter(?:ed)?\b)\b/i,
+    query: 'glass clink',
+    filter: 'duration:[0.1 TO 2.0]'
+  },
+  // Heartbeat
+  {
+    pattern: /\b(?:heart\s+(?:pounded|thumped|raced|beat\s+wildly)\b)\b/i,
+    query: 'heartbeat',
+    filter: 'duration:[0.5 TO 2.5]'
+  },
+  // Clock ticking
+  {
+    pattern: /\b(?:clock\s+tick(?:ed|ing)?\b|ticking\s+clock\b)\b/i,
+    query: 'clock tick',
+    filter: 'duration:[0.5 TO 2.5]'
+  }
+];
+
+function detectFoleyCue(text) {
+  if (!text || typeof text !== 'string') return null;
+  for (const rule of FOLEY_RULES) {
+    const match = rule.pattern.exec(text);
+    if (match) {
+      return {
+        query: rule.query,
+        filter: rule.filter,
+        matchedText: match[0],
+        matchIndex: match.index
+      };
+    }
+  }
+  return null;
+}
+
+function attachFoleyCues(segments) {
+  if (!Array.isArray(segments)) return segments;
+  return segments.map(seg => {
+    if (!seg || typeof seg.text !== 'string') return seg;
+    const cue = detectFoleyCue(seg.text);
+    if (cue) {
+      return { ...seg, sfx: { query: cue.query, filter: cue.filter, trigger: cue.matchedText } };
+    }
+    return seg;
+  });
+}
+
 
 
 async function jevPost(url, headers, payload, signal) {
@@ -1029,6 +1132,36 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         throw new Error(`Fish Audio HTTP ${response.status}${detail ? `: ${detail}` : ''}. Check API key and quota.`);
       }
       send({result:{base64:response.body,mimeType:'audio/mpeg'}}); return;
+    }
+    if (message.action === 'freesound') {
+      const apiKey = typeof input.apiKey === 'string' && input.apiKey.trim() ? input.apiKey.trim() : '';
+      if (!apiKey) throw new Error('Freesound API key is required. Configure it in Choir Advanced Settings.');
+      const query = typeof input.query === 'string' ? input.query.trim() : '';
+      if (!query) throw new Error('Search query is required.');
+      const filter = typeof input.filter === 'string' && input.filter.trim() ? input.filter.trim() : 'duration:[0.1 TO 2.5]';
+      const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(query)}&filter=${encodeURIComponent(filter)}&fields=id,name,duration,previews,tags&sort=score&page_size=5&token=${encodeURIComponent(apiKey)}`;
+      let resData;
+      if (typeof spindle !== 'undefined' && typeof spindle?.cors === 'function') {
+        const resp = await spindle.cors(url, { method: 'GET', headers: { 'Accept': 'application/json' }, signal: controller.signal });
+        if (resp.status < 200 || resp.status >= 300) {
+          throw new Error(`Freesound HTTP ${resp.status}`);
+        }
+        resData = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body;
+      } else if (typeof fetch === 'function') {
+        const resp = await fetch(url, { headers: { 'Accept': 'application/json' }, signal: controller.signal });
+        if (!resp.ok) throw new Error(`Freesound HTTP ${resp.status}`);
+        resData = await resp.json();
+      } else {
+        throw new Error('No HTTP transport available.');
+      }
+      const results = (Array.isArray(resData?.results) ? resData.results : []).map(r => ({
+        id: r.id,
+        name: r.name,
+        duration: r.duration,
+        previewUrl: r.previews?.['preview-hq-mp3'] || r.previews?.['preview-lq-mp3'] || Object.values(r.previews || {})[0] || null,
+        tags: Array.isArray(r.tags) ? r.tags.slice(0, 5) : []
+      })).filter(r => r.previewUrl);
+      send({ result: { query, results } }); return;
     }
     if (message.action === 'searchVoices') {
       const query = typeof input.query === 'string' ? input.query.trim() : '';

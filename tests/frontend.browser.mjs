@@ -936,3 +936,594 @@ test('plannerMode toggles Jev System 1 inputs directly in Speech & Planner secti
     dom.window.close();
   }
 });
+
+
+test('muteNarrator skips narrator synthesis and badges preview cards', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB, Blob: globalThis.Blob, URL: globalThis.URL};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  globalThis.Blob = class { constructor(parts, opts) { this.parts = parts; this.type = opts?.type; } };
+  globalThis.URL = { createObjectURL: () => 'blob:test-choir', revokeObjectURL: () => {} };
+
+  const requests = [], nativeRequests = [];
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; }
+    play() { this.paused = false; setTimeout(() => this.onended?.(), 2); return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = FakeAudio;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.endsWith('/tts/synthesize')) {
+      nativeRequests.push(JSON.parse(options.body));
+      return new Response(new Uint8Array([1, 2]), { headers: { 'Content-Type': 'audio/wav' } });
+    }
+    if (url.includes('/providers')) {
+      return new Response(JSON.stringify({ providers: [{ id: 'native-prov', capabilities: { parameters: {} } }] }));
+    }
+    if (url.endsWith('/voices')) {
+      return new Response(JSON.stringify({
+        voices: [
+          { id: 'voice-narrator', name: 'Narrator Voice' },
+          { id: 'voice-jack', name: 'Jack Voice' }
+        ]
+      }));
+    }
+    if (url.includes('/connections?')) {
+      return new Response(JSON.stringify({ data: [] }));
+    }
+    return new Response(JSON.stringify({
+      data: [{ id: 'conn-native', name: 'Local Engine', provider: 'native-prov', model: 'v1' }]
+    }));
+  };
+
+  const root = dom.window.document.createElement('div');
+  const store = new Map();
+  let onBackend;
+  const ctx = {
+    root,
+    dom: {
+      addStyle: () => () => {},
+      getMessageId: () => null
+    },
+    characters: { get: async () => ({ name: 'Jack' }) },
+    ui: {
+      registerDrawerTab: () => ({ root, activate: () => {}, onActivate: (fn) => { fn(); return () => {}; }, destroy: () => {} }),
+      registerInputBarAction: () => ({ onClick() {}, destroy() {} }),
+      mount: () => null
+    },
+    getActiveChat: () => ({ chatId: 'chat-mute', characterId: 'char-1' }),
+    messages: {
+      getContent: id => id === 'm-mixed'
+        ? 'The storm raged outside. "Hold on tight!" warned Jack.'
+        : 'The sun set slowly behind the crimson horizon.',
+      getRecent: () => [
+        { id: 'm-mixed', content: 'The storm raged outside. "Hold on tight!" warned Jack.' },
+        { id: 'm-pure', content: 'The sun set slowly behind the crimson horizon.' }
+      ]
+    },
+    settings: {
+      get: async (key) => store.get(key) || null,
+      set: async (key, val) => { store.set(key, val); }
+    },
+    state: { subscribe: () => () => {}, get: () => null },
+    events: { on: () => () => {} },
+    onBackendMessage: fn => { onBackend = fn; return () => null; },
+    sendToBackend: msg => {
+      requests.push(msg);
+      setTimeout(() => {
+        if (msg.action === 'ping') onBackend?.({ namespace: 'choir', id: msg.id, result: { ready: true } });
+        else if (msg.action === 'plan') {
+          const units = speechSourceUnits(msg.input.transcript);
+          onBackend?.({
+            namespace: 'choir',
+            id: msg.id,
+            result: {
+              segments: units.map(u => ({
+                speaker: u.kind === 'dialogue' ? 'Jack' : 'Narrator',
+                voice: u.kind === 'dialogue' ? 'voice-jack' : 'voice-narrator',
+                route: 'native:conn-native',
+                style: '',
+                text: u.text,
+                unit_ids: [u.id]
+              })),
+              newNPCs: [{ name: 'Jack', voice: 'voice-jack', route: 'native:conn-native' }]
+            }
+          });
+        }
+      }, 5);
+    }
+  };
+
+  try {
+    const cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+
+    $('mode').value = 'native';
+    $('mode').dispatchEvent(new dom.window.Event('change'));
+    await tick();
+    $('connection').value = 'conn-native';
+    $('connection').dispatchEvent(new dom.window.Event('change'));
+    await tick();
+    const voiceSelects = $('fixed').querySelectorAll('[data-choir-voice]');
+    if (voiceSelects[0]) voiceSelects[0].value = 'voice-narrator';
+
+    // Check muteNarrator option is available and unchecked by default
+    assert.equal($('muteNarrator').checked, false);
+
+    // Plan the mixed message
+    const planBtns = [...$('messages').querySelectorAll('button')].filter(b => b.textContent === 'Plan');
+    planBtns[0].click(); // m-mixed
+    await until(() => $('preview').querySelectorAll('.et-card').length === 3);
+
+    let previewCards = $('preview').querySelectorAll('.et-card');
+    assert.ok(!previewCards[0].textContent.includes('Muted'));
+
+    // Toggle muteNarrator on
+    $('muteNarrator').checked = true;
+    $('muteNarrator').dispatchEvent(new dom.window.Event('change'));
+    await tick();
+
+    // Preview cards should now show Narrator muted
+    previewCards = $('preview').querySelectorAll('.et-card');
+    assert.ok(previewCards[0].textContent.includes('Muted'));
+    assert.equal(previewCards[0].style.opacity, '0.55');
+    assert.ok(!previewCards[1].textContent.includes('Muted'));
+    assert.ok(previewCards[2].textContent.includes('Muted'));
+    assert.equal(previewCards[2].style.opacity, '0.55');
+
+    // Play mixed plan: only Jack dialogue should be synthesized, Narrator is skipped
+    nativeRequests.length = 0;
+    const playBtn = $('play') || dom.window.document.querySelector('[data-choir-action="playback"]');
+    playBtn.click();
+    await until(() => $('status').textContent.includes('finished'));
+
+    assert.equal(nativeRequests.length, 1);
+    assert.equal(nativeRequests[0].voice, 'voice-jack');
+    assert.equal(nativeRequests[0].text, '"Hold on tight!"');
+
+    cleanup?.();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});
+
+
+test('__CHOIR_API__ companion bridge exposes controls and handles paragraph playback', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, window: globalThis.window, addEventListener: globalThis.addEventListener, removeEventListener: globalThis.removeEventListener, dispatchEvent: globalThis.dispatchEvent, CustomEvent: globalThis.CustomEvent, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB, Blob: globalThis.Blob, URL: globalThis.URL, __CHOIR_API__: globalThis.__CHOIR_API__};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  globalThis.addEventListener = dom.window.addEventListener.bind(dom.window);
+  globalThis.removeEventListener = dom.window.removeEventListener.bind(dom.window);
+  globalThis.dispatchEvent = dom.window.dispatchEvent.bind(dom.window);
+  globalThis.CustomEvent = dom.window.CustomEvent;
+  globalThis.Blob = class { constructor(parts, opts) { this.parts = parts; this.type = opts?.type; } };
+  globalThis.URL = { createObjectURL: () => 'blob:test-choir', revokeObjectURL: () => {} };
+
+  const nativeRequests = [];
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; }
+    play() { this.paused = false; setTimeout(() => this.onended?.(), 2); return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = FakeAudio;
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.endsWith('/tts/synthesize')) {
+      nativeRequests.push(JSON.parse(options.body));
+      return new Response(new Uint8Array([1, 2]), { headers: { 'Content-Type': 'audio/wav' } });
+    }
+    if (url.includes('/providers')) {
+      return new Response(JSON.stringify({ providers: [{ id: 'native-prov', capabilities: { parameters: {} } }] }));
+    }
+    if (url.endsWith('/voices')) {
+      return new Response(JSON.stringify({
+        voices: [
+          { id: 'voice-narrator', name: 'Narrator Voice' },
+          { id: 'voice-jack', name: 'Jack Voice' }
+        ]
+      }));
+    }
+    if (url.includes('/connections?')) {
+      return new Response(JSON.stringify({ data: [] }));
+    }
+    return new Response(JSON.stringify({
+      data: [{ id: 'conn-native', name: 'Local Engine', provider: 'native-prov', model: 'v1' }]
+    }));
+  };
+
+  const root = dom.window.document.createElement('div');
+  const store = new Map();
+  const ctx = {
+    root,
+    dom: { addStyle: () => () => {}, getMessageId: () => null },
+    characters: { get: async () => ({ name: 'Jack' }) },
+    ui: {
+      registerDrawerTab: () => ({ root, activate: () => {}, onActivate: (fn) => { fn(); return () => {}; }, destroy: () => {} }),
+      registerInputBarAction: () => ({ onClick() {}, destroy() {} }),
+      mount: () => null
+    },
+    getActiveChat: () => ({ chatId: 'chat-bridge', characterId: 'char-1' }),
+    messages: {
+      getContent: () => 'Some text',
+      getRecent: () => []
+    },
+    settings: {
+      get: async (key) => store.get(key) || null,
+      set: async (key, val) => { store.set(key, val); }
+    },
+    state: { subscribe: () => () => {}, get: () => null },
+    events: { on: () => () => {} },
+    onBackendMessage: () => () => null,
+    sendToBackend: () => {}
+  };
+
+  let availableEventSeen = false;
+  const onAnnounce = () => { availableEventSeen = true; };
+  globalThis.addEventListener('choir-available-v1', onAnnounce);
+
+  try {
+    const cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+
+    $('mode').value = 'native';
+    $('mode').dispatchEvent(new dom.window.Event('change'));
+    await tick();
+    $('connection').value = 'conn-native';
+    $('connection').dispatchEvent(new dom.window.Event('change'));
+    await tick();
+
+    assert.ok(globalThis.__CHOIR_API__, 'choir API should be mounted on globalThis');
+    assert.equal(globalThis.__CHOIR_API__.isAvailable(), true);
+    assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(), false);
+
+    // Toggle mute narrator via bridge
+    globalThis.__CHOIR_API__.setNarratorMuted(true);
+    assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(), true);
+    assert.equal($('muteNarrator').checked, true);
+
+    // Plan mixed paragraph text
+    const mixedText = 'The storm raged outside. "Hold on tight!" warned Jack.';
+    const plan = globalThis.__CHOIR_API__.planParagraph(mixedText);
+    assert.equal(plan.segments.length, 3);
+
+    // Play mixed paragraph text with narrator muted: only Jack speech is synthesized
+    nativeRequests.length = 0;
+    const playResult = await globalThis.__CHOIR_API__.playParagraph({
+      text: mixedText,
+      chatId: 'chat-bridge',
+      paragraphIndex: 0
+    });
+    assert.equal(playResult.played, 1);
+    assert.equal(nativeRequests.length, 1);
+    assert.equal(nativeRequests[0].text, '"Hold on tight!"');
+
+    cleanup?.();
+    assert.equal(globalThis.__CHOIR_API__, undefined);
+  } finally {
+    globalThis.removeEventListener('choir-available-v1', onAnnounce);
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});
+
+
+
+test('Foley SFX detects cues from text, queries Freesound and intersperses SFX playback', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB, Blob: globalThis.Blob, URL: globalThis.URL, __CHOIR_API__: globalThis.__CHOIR_API__};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  globalThis.Blob = class { constructor(parts, opts) { this.parts = parts; this.type = opts?.type; } };
+  globalThis.URL = { createObjectURL: () => 'blob:test-choir', revokeObjectURL: () => {} };
+
+  const nativeRequests = [];
+  const audiosPlayed = [];
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; }
+    play() {
+      this.paused = false;
+      audiosPlayed.push(this.url);
+      setTimeout(() => this.onended?.(), 2);
+      return Promise.resolve();
+    }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = FakeAudio;
+
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.includes('freesound.org') || url.includes('/freesound')) {
+      return new Response(JSON.stringify({
+        results: [
+          {
+            id: 12345,
+            name: 'Page turn 1',
+            duration: 0.8,
+            previews: { 'preview-hq-mp3': 'https://cdn.freesound.org/previews/123/12345-hq.mp3' }
+          }
+        ]
+      }), { headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.endsWith('.mp3')) {
+      return new Response(new Uint8Array([70, 79, 76, 69, 89]), { headers: { 'Content-Type': 'audio/mpeg' } });
+    }
+    if (url.endsWith('/tts/synthesize')) {
+      nativeRequests.push(JSON.parse(options.body));
+      return new Response(new Uint8Array([1, 2]), { headers: { 'Content-Type': 'audio/wav' } });
+    }
+    if (url.includes('/providers')) {
+      return new Response(JSON.stringify({ providers: [{ id: 'native-prov', capabilities: { parameters: {} } }] }));
+    }
+    if (url.endsWith('/voices')) {
+      return new Response(JSON.stringify({
+        voices: [
+          { id: 'voice-narrator', name: 'Narrator Voice' },
+          { id: 'voice-jack', name: 'Jack Voice' }
+        ]
+      }));
+    }
+    if (url.includes('/connections?')) {
+      return new Response(JSON.stringify({ data: [] }));
+    }
+    return new Response(JSON.stringify({
+      data: [{ id: 'conn-native', name: 'Local Engine', provider: 'native-prov', model: 'v1' }]
+    }));
+  };
+
+  const root = dom.window.document.createElement('div');
+  const store = new Map();
+  const ctx = {
+    root,
+    dom: { addStyle: () => () => {}, getMessageId: () => null },
+    characters: { get: async () => ({ name: 'Jack' }) },
+    ui: {
+      registerDrawerTab: () => ({ root, activate: () => {}, onActivate: (fn) => { fn(); return () => {}; }, destroy: () => {} }),
+      registerInputBarAction: () => ({ onClick() {}, destroy() {} }),
+      mount: () => null
+    },
+    getActiveChat: () => ({ chatId: 'chat-foley', characterId: 'char-1' }),
+    messages: {
+      getContent: () => 'The page snapped under her thumb.',
+      getRecent: () => []
+    },
+    settings: {
+      get: async (key) => store.get(key) || null,
+      set: async (key, val) => { store.set(key, val); }
+    },
+    state: { subscribe: () => () => {}, get: () => null },
+    events: { on: () => () => {} },
+    onBackendMessage: () => () => null,
+    sendToBackend: () => {}
+  };
+
+  try {
+    const cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+
+    $('mode').value = 'native';
+    $('mode').dispatchEvent(new dom.window.Event('change'));
+    await tick();
+    $('connection').value = 'conn-native';
+    $('connection').dispatchEvent(new dom.window.Event('change'));
+    await tick();
+
+    // Verify SFX toggle is present and on by default
+    assert.ok($('enableSfx'), 'enableSfx toggle should exist in settings UI');
+    assert.equal($('enableSfx').checked, true);
+
+    // Plan text containing a sound cue: 'The page snapped under her thumb.'
+    const textWithCue = 'The page snapped under her thumb.';
+    const plan = globalThis.__CHOIR_API__.planParagraph(textWithCue);
+    assert.ok(plan.segments.length > 0);
+    const sfxSegment = plan.segments.find(s => s.sfx);
+    assert.ok(sfxSegment, 'Segment should detect foley cue');
+    assert.equal(sfxSegment.sfx.query, 'page turn');
+    assert.equal(sfxSegment.sfx.trigger, 'page snapped');
+
+    // Play paragraph: verify that TTS and SFX both play
+    audiosPlayed.length = 0;
+    nativeRequests.length = 0;
+    const playRes = await globalThis.__CHOIR_API__.playParagraph({
+      text: textWithCue,
+      chatId: 'chat-foley',
+      paragraphIndex: 0
+    });
+
+    assert.ok(playRes.played >= 2, `Should have played TTS and SFX parts (played: ${playRes.played})`);
+    assert.ok(audiosPlayed.length >= 2, 'Audio player should have received at least 2 blobs (SFX + Speech)');
+
+    cleanup?.();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});
+
+
+
+test('Settings changes (checkboxes and dropdowns) auto-persist globally and across chat switches', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB, Blob: globalThis.Blob, URL: globalThis.URL};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  globalThis.Blob = class { constructor(parts, opts) { this.parts = parts; this.type = opts?.type; } };
+  globalThis.URL = { createObjectURL: () => 'blob:test-choir', revokeObjectURL: () => {} };
+
+  globalThis.fetch = async (url) => {
+    if (url.includes('/providers')) return new Response(JSON.stringify({ providers: [{ id: 'gemini', capabilities: { parameters: {} } }] }));
+    if (url.endsWith('/voices')) return new Response(JSON.stringify({ voices: [{ id: 'Charon', name: 'Charon' }] }));
+    return new Response(JSON.stringify({ data: [] }));
+  };
+
+  const root = dom.window.document.createElement('div');
+  const store = new Map();
+  let currentChat = { chatId: 'chat-1', characterId: 'char-1' };
+  const ctx = {
+    root,
+    dom: { addStyle: () => () => {}, getMessageId: () => null },
+    characters: { get: async () => ({ name: 'Jack' }) },
+    ui: {
+      registerDrawerTab: () => ({ root, activate: () => {}, onActivate: (fn) => { fn(); return () => {}; }, destroy: () => {} }),
+      registerInputBarAction: () => ({ onClick() {}, destroy() {} }),
+      mount: () => null
+    },
+    getActiveChat: () => currentChat,
+    messages: { getContent: () => '', getRecent: () => [] },
+    settings: {
+      get: async (key) => store.get(key) || null,
+      set: async (key, val) => { store.set(key, val); }
+    },
+    state: { subscribe: () => () => {}, get: () => null },
+    events: { on: () => () => {} },
+    onBackendMessage: () => () => null,
+    sendToBackend: () => {}
+  };
+
+  try {
+    const cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+
+    // Initially defaults
+    assert.equal($('muteNarrator').checked, false);
+    assert.equal($('useFastClassifier').checked, false);
+
+    // User toggles checkboxes without clicking "Save settings" button
+    $('muteNarrator').checked = true;
+    $('muteNarrator').dispatchEvent(new dom.window.Event('change'));
+    $('useFastClassifier').checked = true;
+    $('useFastClassifier').dispatchEvent(new dom.window.Event('change'));
+    await tick();
+
+    // Verify global settings store was updated
+    const globalSaved = store.get('settings:global');
+    assert.ok(globalSaved, 'Global settings should be saved');
+    assert.equal(globalSaved.muteNarrator, true);
+    assert.equal(globalSaved.useFastClassifier, true);
+
+    // Switch to a brand new chat that never had settings saved
+    currentChat = { chatId: 'chat-brand-new', characterId: 'char-2' };
+    await tick();
+
+    // Re-simulate setup in new chat or reload
+    cleanup?.();
+
+    const root2 = dom.window.document.createElement('div');
+    const ctx2 = {
+      ...ctx,
+      root: root2,
+      ui: {
+        ...ctx.ui,
+        registerDrawerTab: () => ({ root: root2, activate: () => {}, onActivate: (fn) => { fn(); return () => {}; }, destroy: () => {} })
+      }
+    };
+    const cleanup2 = await setup(ctx2);
+    const $2 = name => root2.querySelector(`[data-et="${name}"]`);
+    await tick();
+
+    // User's choices must be preserved!
+    assert.equal($2('muteNarrator').checked, true, 'muteNarrator should be preserved in new chat / reload');
+    assert.equal($2('useFastClassifier').checked, true, 'useFastClassifier should be preserved in new chat / reload');
+
+    cleanup2?.();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});
+
+
+
+test('playParagraph uses attributed character voice when speaker is provided or tagged', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB, Blob: globalThis.Blob, URL: globalThis.URL};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  globalThis.Blob = class { constructor(parts, opts) { this.parts = parts; this.type = opts?.type; } };
+  globalThis.URL = { createObjectURL: () => 'blob:test-choir', revokeObjectURL: () => {} };
+
+  const requests = [];
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; }
+    play() { this.paused = false; setTimeout(() => this.onended?.(), 2); return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  globalThis.Audio = FakeAudio;
+
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.endsWith('/tts/synthesize')) {
+      requests.push(JSON.parse(options.body));
+      return new Response(new Uint8Array([1, 2]), { headers: { 'Content-Type': 'audio/wav' } });
+    }
+    if (url.includes('/providers')) return new Response(JSON.stringify({ providers: [{ id: 'native-prov', capabilities: { parameters: {} } }] }));
+    if (url.endsWith('/voices')) {
+      return new Response(JSON.stringify({
+        voices: [
+          { id: 'v-narrator', name: 'Charon' },
+          { id: 'v-jay', name: 'Jay' },
+          { id: 'v-natsuki', name: 'Natsuki' }
+        ]
+      }));
+    }
+    return new Response(JSON.stringify({ data: [{ id: 'conn-native', name: 'Local Engine', provider: 'native-prov', model: 'v1' }] }));
+  };
+
+  const root = dom.window.document.createElement('div');
+  const store = new Map();
+  // Fixed cast: Narrator, Jay (Persona), Natsuki (Character)
+  store.set('settings:global', {
+    fixed: [
+      { speaker: 'Narrator', voice: 'v-narrator', route: 'native:conn-native', style: '' },
+      { speaker: 'Jay', voice: 'v-jay', route: 'native:conn-native', style: '' },
+      { speaker: 'Natsuki', voice: 'v-natsuki', route: 'native:conn-native', style: '' }
+    ],
+    mode: 'native',
+    connection: 'conn-native'
+  });
+
+  const ctx = {
+    root,
+    dom: { addStyle: () => () => {}, getMessageId: () => null },
+    characters: { get: async () => ({ name: 'Natsuki' }) },
+    ui: {
+      registerDrawerTab: () => ({ root, activate: () => {}, onActivate: (fn) => { fn(); return () => {}; }, destroy: () => {} }),
+      registerInputBarAction: () => ({ onClick() {}, destroy() {} }),
+      mount: () => null
+    },
+    getActiveChat: () => ({ chatId: 'chat-jay', characterId: 'char-natsuki' }),
+    messages: { getContent: () => '', getRecent: () => [] },
+    settings: {
+      get: async (key) => store.get(key) || null,
+      set: async (key, val) => { store.set(key, val); }
+    },
+    state: { subscribe: () => () => {}, get: () => null },
+    events: { on: () => () => {} },
+    onBackendMessage: () => () => null,
+    sendToBackend: () => {}
+  };
+
+  try {
+    const cleanup = await setup(ctx);
+    const text = '"I\'m just saying," Jay murmured, keeping his tone quiet. "The stakes feel pretty low."';
+
+    // Play paragraph with speaker "Jay"
+    requests.length = 0;
+    const res = await globalThis.__CHOIR_API__.playParagraph({
+      text,
+      speaker: 'Jay',
+      chatId: 'chat-jay'
+    });
+
+    assert.ok(requests.length >= 1, 'Should synthesize segments');
+    // Dialogue requests must use Jay voice (v-jay), NOT Natsuki (v-natsuki)
+    const jayReq = requests.find(r => r.voice === 'v-jay');
+    assert.ok(jayReq, 'Dialogue must be synthesized with Jay voice v-jay');
+
+    cleanup?.();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});
+
