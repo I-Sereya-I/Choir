@@ -88,7 +88,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   try {
     let cleanup=await setup(ctx);
     const $=name=>root.querySelector(`[data-et="${name}"]`) || settingsRoot.querySelector(`[data-et="${name}"]`);
-    assert.equal(minimalFooter.querySelector('button').textContent,'▶ Play Choir');
+    assert.match(minimalFooter.querySelector('button').textContent,/Play Choir/);
     assert.match($('planner').textContent,/GPT planner · openai · gpt-text-test/);
     $('planner').value='planner-a';$('testPlanner').click();await until(()=>$('status').textContent.includes('Planner test passed'));
     assert.equal(requests.find(request=>request.action==='testPlanner').input.connectionId,'planner-a');

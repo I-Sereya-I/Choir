@@ -1,6 +1,11 @@
 import { GEMINI_VOICES, normalizeName, normalizeVoiceCatalogue, transcriptFromMessage, planningSections, validateCastConfig, validatePlan, parsePlanJson, speechBatches, audioBytes, fastClassifyPlan } from './core.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
+const ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
+const ICON_PAUSE = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+const ICON_SEARCH = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`;
+const ICON_SPARKLE = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg>`;
+const ICON_CLOSE = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`;
 
 export async function setup(ctx) {
   const tab = ctx.ui.registerDrawerTab({id:'ensemble',title:'Choir',shortName:'Choir',iconSvg:CHOIR_ICON_SVG,
@@ -110,7 +115,7 @@ export async function setup(ctx) {
     </div>
     <div class="et-grid">
       <label>Default TTS connection<select data-et="mode"><option value="gemini">Gemini 3.8 (style metadata)</option><option value="native">Lumiverse TTS</option></select></label>
-      <label>Planner engine<select data-et="plannerMode"><option value="llm">Standard LLM Connection</option><option value="jev">⚡ Jev System 1 (TypeSafe AI)</option></select></label>
+      <label>Planner engine<select data-et="plannerMode"><option value="llm">Standard LLM Connection</option><option value="jev">Jev System 1 (TypeSafe AI)</option></select></label>
     </div>
     <div data-et="gemini" class="et-grid" style="margin-top:10px">
       <label>Gemini model<select data-et="model"><option>gemini-3.8-flash-tts</option><option>gemini-3.8-flash-lite-tts</option></select></label>
@@ -130,7 +135,7 @@ export async function setup(ctx) {
     <div class="et-row" style="margin-top:10px;flex-wrap:wrap;gap:12px">
       <label class="et-check"><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
       <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
-      <label class="et-check"><input data-et="useFastClassifier" type="checkbox"> ⚡ Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
+      <label class="et-check"><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
 
     <details>
@@ -350,7 +355,7 @@ export async function setup(ctx) {
     titleWrap.append(title, subtitle);
 
     const closeBtn = document.createElement('button');
-    closeBtn.type = 'button'; closeBtn.textContent = '✕';
+    closeBtn.type = 'button'; closeBtn.innerHTML = ICON_CLOSE; closeBtn.setAttribute('aria-label', 'Close');
     closeBtn.style.cssText = 'background:none;border:none;color:inherit;font-size:1.3em;cursor:pointer;padding:4px 8px;border-radius:4px;opacity:0.8';
     closeBtn.onclick = () => closeModal();
     header.append(titleWrap, closeBtn);
@@ -477,22 +482,22 @@ export async function setup(ctx) {
           const listenBtn = document.createElement('button');
           listenBtn.type = 'button'; listenBtn.className = 'et-btn-subtle';
           listenBtn.style.cssText = 'font-size:0.85em;padding:4px 10px;white-space:nowrap';
-          listenBtn.textContent = '▶ Listen';
+          listenBtn.innerHTML = `${ICON_PLAY} Listen`;
           listenBtn.onclick = () => {
             if (previewAudio) {
               try { previewAudio.pause(); } catch {}
               const wasCurrent = activePlayBtn === listenBtn;
-              if (activePlayBtn) activePlayBtn.textContent = '▶ Listen';
+              if (activePlayBtn) activePlayBtn.innerHTML = `${ICON_PLAY} Listen`;
               previewAudio = null; activePlayBtn = null;
               if (wasCurrent) return;
             }
             if (item.sampleAudio) {
               const audio = new Audio(item.sampleAudio);
               previewAudio = audio; activePlayBtn = listenBtn;
-              listenBtn.textContent = '⏸ Pause';
-              audio.play().catch(() => { listenBtn.textContent = '▶ Listen'; });
-              audio.onended = () => { listenBtn.textContent = '▶ Listen'; activePlayBtn = null; previewAudio = null; };
-              audio.onerror = () => { listenBtn.textContent = '▶ Listen'; activePlayBtn = null; previewAudio = null; };
+              listenBtn.innerHTML = `${ICON_PAUSE} Pause`;
+              audio.play().catch(() => { listenBtn.innerHTML = `${ICON_PLAY} Listen`; });
+              audio.onended = () => { listenBtn.innerHTML = `${ICON_PLAY} Listen`; activePlayBtn = null; previewAudio = null; };
+              audio.onerror = () => { listenBtn.innerHTML = `${ICON_PLAY} Listen`; activePlayBtn = null; previewAudio = null; };
             } else {
               status(`No pre-recorded sample for "${item.name}".`);
             }
@@ -576,7 +581,7 @@ export async function setup(ctx) {
 
     const searchCommBtn=document.createElement('button');
     searchCommBtn.type='button';searchCommBtn.className='et-btn-subtle';
-    searchCommBtn.title='Search Fish Audio community models';searchCommBtn.textContent='🔍';
+    searchCommBtn.title='Search Fish Audio community models';searchCommBtn.innerHTML=ICON_SEARCH;
     searchCommBtn.style.cssText='padding:2px 8px';
     const doRowSearch=()=>{
       openVoiceLibraryModal({
@@ -604,7 +609,7 @@ export async function setup(ctx) {
 
     const designRowBtn=document.createElement('button');
     designRowBtn.type='button';designRowBtn.className='et-btn-subtle';
-    designRowBtn.title='Design bespoke voice for this character (Gemini / AI Studio)';designRowBtn.textContent='✨';
+    designRowBtn.title='Design bespoke voice for this character (Gemini / AI Studio)';designRowBtn.innerHTML=ICON_SPARKLE;
     designRowBtn.style.cssText='padding:2px 8px';
     designRowBtn.onclick=()=>run(async()=>{
       const speakerName=name.value.trim() || 'Character';
@@ -631,12 +636,12 @@ export async function setup(ctx) {
         voice.value=voiceId;
         config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),config);
         status(`Designed custom voice "${voiceId}" for ${speakerName}.`);
-      } finally {designRowBtn.disabled=false;designRowBtn.textContent='✨';}
+      } finally {designRowBtn.disabled=false;designRowBtn.innerHTML=ICON_SPARKLE;}
     });
 
     const auditionRowBtn=document.createElement('button');
     auditionRowBtn.type='button';auditionRowBtn.className='et-btn-subtle';
-    auditionRowBtn.title='Audition voice';auditionRowBtn.textContent='▶';
+    auditionRowBtn.title='Audition voice';auditionRowBtn.innerHTML=ICON_PLAY;
     auditionRowBtn.style.cssText='padding:2px 8px';
     auditionRowBtn.onclick=()=>run(async()=>{
       const selectedVoice=voice.value;
@@ -1291,7 +1296,7 @@ export async function setup(ctx) {
     const messageId=ctx.dom.getMessageId?.(context.node || target) || context.scope?.split(':')[1];
     if(!messageId)return;
     const controls=document.createElement('div');controls.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px';
-    const button=document.createElement('button');button.type='button';button.textContent='▶ Play Choir';button.title='Play or stop Choir audio';button.setAttribute('aria-label','Play or stop Choir audio for this message');
+    const button=document.createElement('button');button.type='button';button.innerHTML=`${ICON_PLAY} Play Choir`;button.title='Play or stop Choir audio';button.setAttribute('aria-label','Play or stop Choir audio for this message');
     button.style.cssText='cursor:pointer;border:1px solid currentColor;border-radius:6px;padding:4px 8px;background:transparent;color:inherit;font:inherit';
     const progress=document.createElement('span');progress.setAttribute('role','status');progress.style.fontSize='0.8em';
     let statuses=messageStatuses.get(messageId);if(!statuses){statuses=new Set();messageStatuses.set(messageId,statuses);}statuses.add(progress);
