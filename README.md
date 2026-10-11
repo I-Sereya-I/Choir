@@ -1,6 +1,14 @@
-# Choir 1.1.0 for Lumiverse staging
+# Choir 1.1.1 for Lumiverse staging
 
 An installable Spindle extension for narrated roleplay with multiple voices.
+
+## What's new in 1.1.1
+
+- The floating mixer starts as a draggable **44 px sound icon**. Click it to open the controls, or close it back to the icon. Its position and volume settings persist. Host remounts remove the previous mixer and stop its playback.
+- Message playback uses a compact **28 px play icon** with a tooltip. It reuses the current validated plan even when saving that plan failed, then checks saved plans and audio before making another planner request. Repeated clicks during loading cannot launch duplicate planning.
+- A planned latest reply displays **latest already planned, click on plan latest to redo it**. Clicking **Plan latest reply** explicitly replans it; existing audio remains reusable when the synthesis inputs are unchanged.
+- Enable **Show section play buttons** in Speech & Planner to add a small expandable **Sections** menu to each message and numbered controls above its plan. Each button plays that section's narration and dialogue and synthesizes only missing included audio. The toggle is off by default and persists per chat. Older plans and local/Jev attribution use individual passages as sections.
+- Completed LLM planning sections now save immediately. After a planner error, cancellation, or reload, **Play Choir** resumes matching attribution sections and cached audio. Changing message text invalidates saved attribution; explicit **Plan latest reply** redo bypasses it.
 
 ## What's new in 1.1.0
 
@@ -24,7 +32,7 @@ Gemini and Jev keys are page-session credentials. Legacy saved Jev keys are remo
 - NPC voices persist per chat and speech provider. Fixed and previously assigned voices override any contradictory model suggestion.
 - Gemini 3.8 uses `speech_metadata.style`, separate from the spoken transcript.
 - Other speech providers use existing Lumiverse TTS connections and their saved credentials.
-- Play directly from **▶ Play Choir** on a message, or review/edit a plan, pause/resume, stop, and enable automatic playback from settings.
+- Play directly from the message's small play icon (**Play Choir** tooltip), or review/edit a plan, pause/resume, stop, and enable automatic playback from settings.
 
 ## Install from GitHub
 
@@ -32,7 +40,7 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? Update Choir to **1.1.0**, restart it, then reload. GitHub updates use the repository and branch selected when installing Choir. Choir pipelines multi-section planning and playback and strips tracker/status/state blocks, details panels, HTML comments, and HUD panels. Nested and unfinished metadata blocks are handled. Older recordings containing removed metadata need regeneration. Existing complete recordings can still replay; new playback uses passage caches.
+Already installed? Update Choir to **1.1.1**, restart it, then reload. GitHub updates use the repository and branch selected when installing Choir. Choir pipelines multi-section planning and playback and strips tracker/status/state blocks, details panels, HTML comments, and HUD panels. Nested and unfinished metadata blocks are handled. Older recordings containing removed metadata need regeneration. Existing complete recordings can still replay; new playback uses passage caches.
 
 ## Install locally
 
@@ -100,7 +108,7 @@ NPC lists are stored independently for Gemini and each native connection. Fixed 
 
 ## Daily use and corrections
 
-Use **Plan** beside any recent message, or **Plan latest reply**. After validation, attribution and newly cast NPCs are saved for this chat. These buttons reuse matching attribution without another planner call. Change a voice, provider route, or base style in the cast and save to apply it. Correct attribution through the JSON editor; **Apply JSON** validates and persists the correction. The **Replay** action plays the last saved recording; **Play Choir** uses the current plan and cast and generates only missing audio.
+Use **Plan** beside any recent message, or **Plan latest reply**. After validation, attribution and newly cast NPCs are saved for this chat. **Plan** and **Play Choir** reuse matching attribution without another planner call; **Plan latest reply** explicitly redoes an already planned latest reply. Change a voice, provider route, or base style in the cast and save to apply it. Correct attribution through the JSON editor; **Apply JSON** validates and persists the correction. The **Replay** action plays the last saved recording; **Play Choir** uses the current plan and cast and generates only missing audio. To play a section, enable **Show section play buttons** and open the message's **Sections** menu.
 
 The optional JSON editor can correct segment boundaries and speaker attribution. Every segment must copy an exact consecutive substring of the cleaned transcript. The validator rejects invented, rewritten or omitted prose. Existing cast assignments still take priority over a JSON voice suggestion. Styles in this editor are turn styles; base cast styles are added automatically.
 
