@@ -165,8 +165,9 @@ export async function setup(ctx) {
         <span class="et-badge">Voices</span>
       </div>
       <div class="et-toolbar">
+        <span data-et="saveState" role="status" aria-live="polite" style="font-size:11px;opacity:.75">Settings saved per chat</span>
         <button data-et="latest">Plan latest</button>
-        <button data-et="save" class="et-btn-primary">Save cast</button>
+        <button data-et="save" class="et-btn-primary">Save settings</button>
         <button data-et="showMixer">Open mixer</button>
       </div>
     </div>
@@ -343,7 +344,7 @@ export async function setup(ctx) {
   const recordingKey=(chat,message)=>JSON.stringify([audioNamespace,chat,message]);
   const unsubs = [];
   const messageStatuses=new Map(),messageSections=new Set(),seekControls=new Set();let messagePlaybackId=null,messageOperation=null;
-  let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, planningSource=null, busy=false;
+  let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, planAttribution=null, planningSource=null, busy=false;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
   const voiceCatalogues=new Map();
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
@@ -388,7 +389,8 @@ export async function setup(ctx) {
   const channelsTitle=document.createElement('div');channelsTitle.className='cm-channels-title';channelsTitle.innerHTML='<span>Cast levels</span>';
   const channelCount=document.createElement('span');channelCount.setAttribute('aria-hidden','true');channelsTitle.append(channelCount);
   player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,channelsTitle,channelsRoot,legend);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
-  const persistMixer=()=>ctx.settings.set('ui:mixer',mixerState).catch(error=>status(`Mixer preferences could not be saved: ${error.message}`,true));
+  let mixerWriteQueue=null;
+  const persistMixer=()=>{const snapshot=structuredClone(mixerState),write=()=>ctx.settings.set('ui:mixer',snapshot);const operation=mixerWriteQueue?mixerWriteQueue.catch(()=>{}).then(write):write();mixerWriteQueue=operation;return operation.then(()=>{if(mixerWriteQueue===operation)mixerWriteQueue=null;},error=>{if(mixerWriteQueue===operation)mixerWriteQueue=null;status(`Mixer preferences could not be saved: ${error.message}`,true);});};
   function applyVolume(){
     const volume=mixerVolume(mixerState.master,currentSpeaker,mixerState.channels);
     if(currentGain)currentGain.gain.value=volume*currentNormalize;
@@ -457,7 +459,7 @@ export async function setup(ctx) {
     for(const actor of [...config.fixed,...Object.values(config.casts).flat()])if(normalizeName(actor.speaker)===normalizeName(speaker))actor.excluded=excluded;
     for(const entry of [...castRows,...npcRows])if(normalizeName(entry.read().speaker)===normalizeName(speaker))entry.setExcluded(excluded);
     generationPolicyChanged?.();if(excluded && currentSpeaker===speaker)advancePlayback?.();
-    renderMixer();void refreshCacheStatus();await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));
+    renderMixer();void refreshCacheStatus();await persistConfig(chatId,config);
   }
   function makeSeekControl(messageId){
     const root=document.createElement('div');root.className='cm-seek';root.hidden=true;
@@ -519,6 +521,47 @@ export async function setup(ctx) {
     voiceCatalogues.set(route,catalogue);return catalogue;
   }
   const settingsKey = id => `chat:${id}`;
+  const preferenceFields=['mode','model','planner','connection','connectionMode','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','useStyle','auto','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint'];
+  let settingsWriteQueue=null,pendingSettings=null,autosaveTimer=null,settingsEdit=0;const retentionPolicies=new Map();
+  function saveState(text,error=false){if(disposed)return;$('saveState').textContent=text;$('saveState').classList.toggle('et-error',error);}
+  async function persistConfig(targetChat=chatId,value=config,inherit=false){
+    if(pendingSettings?.chatId===targetChat){pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;inherit=true;}
+    const snapshot=structuredClone(withoutSecrets(value)),edit=settingsEdit;
+    const write=async()=>{
+      await ctx.settings.set(settingsKey(targetChat),snapshot);
+      if(inherit){await ctx.settings.set('settings:defaults',Object.fromEntries(preferenceFields.map(name=>[name,snapshot[name]])));
+        if(retentionPolicies.get(targetChat)!==snapshot.retention){try{await recordingStore('policy',recordingKey(targetChat,''),{retention:snapshot.retention});retentionPolicies.set(targetChat,snapshot.retention);}catch(error){if(chatId===targetChat)status(`Settings saved. Audio retention could not be applied: ${error.message}`,true);}}
+      }
+    };
+    const operation=settingsWriteQueue?settingsWriteQueue.catch(()=>{}).then(write):write();settingsWriteQueue=operation;
+    try{await operation;if(inherit && chatId===targetChat && edit===settingsEdit && !pendingSettings)saveState('Saved automatically');}catch(error){if(chatId===targetChat && edit===settingsEdit)saveState('Save failed · retry Save settings',true);throw error;}finally{if(settingsWriteQueue===operation)settingsWriteQueue=null;}
+  }
+  function scheduleSettingsSave(){
+    if(disposed || !chatId || !config)return;
+    config=capture();pendingSettings={chatId,value:structuredClone(config),edit:++settingsEdit};
+    renderMixer();
+    saveState('Saving…');clearTimeout(autosaveTimer);autosaveTimer=setTimeout(()=>void flushSettings().catch(()=>{}),250);
+  }
+  async function flushSettings(){
+    clearTimeout(autosaveTimer);autosaveTimer=null;
+    const pending=pendingSettings;if(!pending)return settingsWriteQueue;
+    pendingSettings=null;
+    try{
+      await persistConfig(pending.chatId,pending.value,true);
+      if(!disposed && chatId===pending.chatId && pending.edit===settingsEdit)saveState('Saved automatically');
+    }catch(error){
+      if(!pendingSettings && chatId===pending.chatId)pendingSettings=pending;
+      if(!disposed && chatId===pending.chatId && pending.edit===settingsEdit)saveState('Save failed · retry Save settings',true);
+      throw error;
+    }
+  }
+  const autosaveFields=new Set(preferenceFields.filter(name=>!['mode','connection','connectionMode','sectionButtons','useJev'].includes(name)));
+  const autoSaveEvent=event=>{if(event.target.hasAttribute('data-choir-persist') || autosaveFields.has(event.target.dataset.et))scheduleSettingsSave();};
+  root.addEventListener('input',autoSaveEvent);root.addEventListener('change',autoSaveEvent);
+  const saveOnLeave=()=>{void flushSettings().catch(()=>{});void persistMixer();};
+  document.defaultView?.addEventListener('pagehide',saveOnLeave);
+  const saveOnHidden=()=>{if(document.visibilityState==='hidden')saveOnLeave();};document.addEventListener('visibilitychange',saveOnHidden);
+  unsubs.push(()=>{root.removeEventListener('input',autoSaveEvent);root.removeEventListener('change',autoSaveEvent);document.defaultView?.removeEventListener('pagehide',saveOnLeave);document.removeEventListener('visibilitychange',saveOnHidden);clearTimeout(autosaveTimer);});
 
   function rpc(action,input,signal,timeoutMs=185000,onProgress) {
     if (signal?.aborted) return Promise.reject(abortError());
@@ -830,7 +873,7 @@ export async function setup(ctx) {
           }
           searchFilter = ''; voiceSearchInput.value = ''; filterVoices();
           voice.value = item.id;
-          config = capture(); if (chatId) await ctx.settings.set(settingsKey(chatId), withoutSecrets(config));
+          config = capture(); if (chatId) await persistConfig(chatId,config);
           status(`Assigned community voice "${item.name}" to ${name.value || 'character'}.`);
         }
       });
@@ -865,7 +908,7 @@ export async function setup(ctx) {
         }
         searchFilter='';voiceSearchInput.value='';filterVoices();
         voice.value=voiceId;
-        config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));
+        config=capture();if(chatId)await persistConfig(chatId,config);
         status(`Designed custom voice "${voiceId}" for ${speakerName}.`);
       } finally {designRowBtn.disabled=false;designRowBtn.innerHTML=ICON_SPARKLE;}
     });
@@ -939,14 +982,14 @@ export async function setup(ctx) {
     };
 
     route.onchange=()=>run(async()=>{
-      const selected=route.value;voice.value='';voice.disabled=true;
+      const selected=route.value,targetChat=chatId,version=loadVersion;voice.value='';voice.disabled=true;scheduleSettingsSave();
       try {
         const catalogue=await ensureCatalogue(selected || scope(config));
-        if(route.value!==selected || disposed)return;
+        if(route.value!==selected || disposed || chatId!==targetChat || version!==loadVersion || !root.contains(row))return;
         rowVoices=catalogue;filterVoices();
         updateCardProviderControls();
         updateProviderVisibility();
-        status('Speaker TTS connection selected. Choose a voice or Let LLM choose, then save.');
+        scheduleSettingsSave();status('Speaker TTS connection selected. Changes save automatically.');
       } finally {if(!disposed && route.value===selected)voice.disabled=busy;}
     });
 
@@ -954,10 +997,11 @@ export async function setup(ctx) {
     voiceWrap.append(voiceSearchRow,voice);
 
     for (const [label,node] of [['Speaker name',name],['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Pronunciation instruction',pronunciation],['Accent preference',accent]]) {
+      if(node!==route)(node===voiceWrap?voice:node).dataset.choirPersist='';
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);editor.append(wrap);
       if(node===route)wrap.hidden=single;
     }
-    if(!reserved){const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();};editor.append(remove);}
+    if(!reserved){const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();scheduleSettingsSave();renderMixer();};editor.append(remove);}
     container.append(row);
     updateCardProviderControls();
     return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter(Boolean),pronunciation:pronunciation.value.trim(),accent:accent.value.trim(),excluded:excluded.checked})};
@@ -1081,7 +1125,7 @@ export async function setup(ctx) {
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
   }
-  function clearPlan() {plan=null;planSource=null;$('preview').replaceChildren();$('planJson').value='';$('planSummary').textContent='Speech plan';$('latestNotice').hidden=true;renderMixer();refreshSectionControls();}
+  function clearPlan() {plan=null;planSource=null;planAttribution=null;$('preview').replaceChildren();$('planJson').value='';$('planSummary').textContent='Speech plan';$('latestNotice').hidden=true;renderMixer();refreshSectionControls();}
   function stop(show=true) {
     if(activePlayback && currentAudio)savePosition(currentAudio.currentTime || 0);
     revision++;controller?.abort();controller=null;planningSource=null;advancePlayback=null;skipAudio=null;generationPolicyChanged=null;activePlayback=null;currentSpeaker='';
@@ -1093,7 +1137,7 @@ export async function setup(ctx) {
   async function save() {
     if(!chatId)throw new Error('Open a chat first.');
     const updated=capture();validateSettings(updated);config=updated;
-    await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));
+    await flushSettings();await persistConfig(chatId,config,true);saveState('Settings saved');
     let retentionError;
     try{await recordingStore('policy',recordingKey(chatId,''),{retention:config.retention});}catch(error){retentionError=error.message;}
     if(planSource)await restoreSavedPlan(planSource.messageId);
@@ -1152,14 +1196,23 @@ export async function setup(ctx) {
   async function switchChat() {
     const id=ctx.getActiveChat().chatId;
     if(id===chatId && config)return;
-    stop(false);clearPlan();chatId=id;
+    // Capture the old chat before awaiting its save; a later navigation must win.
     const version=++loadVersion;
+    stop(false);clearPlan();
+    try{await flushSettings();}catch(error){status(`Previous chat settings could not be saved: ${error.message}`,true);}
+    if(disposed || version!==loadVersion)return;
+    chatId=id;
+    pendingSettings=null;
     castRows=[];npcRows=[];$('fixed').replaceChildren();$('npcs').replaceChildren();
     let saved=id?await ctx.settings.get(settingsKey(id)):null;
     if(disposed || version!==loadVersion)return;
-    config={...defaults(),...(saved || {})};
+    const preferences=!saved?await ctx.settings.get('settings:defaults'):null;
+    if(disposed || version!==loadVersion)return;
+    config={...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(saved || {})};
+    if(!saved && config.mode==='native')config.fixed[0].voice='';
+    retentionPolicies.set(id,config.retention);
     if(saved && !saved.connectionMode)config.connectionMode='several';
-    if(saved?.jevApiKey){await ctx.settings.set(settingsKey(id),withoutSecrets(config));if(disposed || version!==loadVersion)return;}
+    if(saved?.jevApiKey){await persistConfig(id,config);if(disposed || version!==loadVersion)return;}
     await recordingStore('prune').catch(()=>{});
     if(disposed || version!==loadVersion)return;
     if(!saved) {
@@ -1182,24 +1235,27 @@ export async function setup(ctx) {
     if(version!==loadVersion || disposed)return;
     if(previous)await restoreSavedPlan(previous);
     if(version!==loadVersion || disposed)return;
-    renderMessages();status(plan?'Saved speech plan restored.':id?'Ready. Set your persona name, choose voices, then save.':'Open a chat to begin.');
+    saveState(saved?'Saved settings restored':preferences?'Connection preferences restored':'Changes save automatically');
+    renderMessages();status(plan?'Saved speech plan restored.':id?'Ready. Set your persona name and choose voices. Changes save automatically.':'Open a chat to begin.');
   }
   async function persistPlan(){
     if(!planSource || !plan)return;
     const source={...planSource}, saved={...source,attribution:attributionPlan(plan,casting(config)),warning:plan.warning || ''};
+    planAttribution=saved.attribution;
     await ctx.settings.set(await planKey(source.chatId,source.messageId),saved);
     await ctx.settings.set(`activeplan:${source.chatId}`,source.messageId);
   }
-  async function restoreSavedPlan(messageId){
+  async function restoreSavedPlan(messageId,renderRows=true){
     const targetChat=chatId,version=loadVersion,token=revision;
     const saved=await ctx.settings.get(await planKey(targetChat,messageId));
     if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return false;
     if(!saved || saved.content!==ctx.messages.getContent(messageId) || !await recordingMatchesTranscript(saved,saved.content))return false;
     if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return false;
     const restored=restoreAttribution(saved.attribution,saved.transcript,casting(config));
+    planAttribution=saved.attribution;
     rememberPlanCast(restored);
     plan={...restored,warning:saved.warning || ''};planSource={messageId,content:saved.content,transcript:saved.transcript,chatId:targetChat,sections:saved.sections};
-    renderCast();renderPreview();return true;
+    if(renderRows)renderCast();renderPreview();return true;
   }
   let latestNoticeVersion=0;
   function refreshLatestNotice(){
@@ -1448,7 +1504,7 @@ export async function setup(ctx) {
           }
         }
       }
-      await ctx.settings.set(settingsKey(targetChat),withoutSecrets(config));
+      await persistConfig(targetChat,config);
       if(token!==revision || disposed)return;
       renderCast();renderPreview();
       await persistPlan();
@@ -1688,6 +1744,8 @@ export async function setup(ctx) {
     if(chatId!==planSource.chatId || ctx.messages.getContent(planSource.messageId)!==planSource.content) {
       clearPlan();throw new Error('Message or swipe changed. Generate a fresh plan.');
     }
+    config=capture();
+    if(planAttribution){const restored=restoreAttribution(planAttribution,planSource.transcript,casting(config));rememberPlanCast(restored);plan={...restored,warning:plan.warning};renderPreview();}
     stop(false);const token=revision;const ctrl=new AbortController();controller=ctrl;
     const snapshot=structuredClone(capture());
     const resume=options.resume?await ctx.settings.get(`position:${chatId}`):null;
@@ -1891,8 +1949,8 @@ export async function setup(ctx) {
     if(disposed || targetChat!==chatId || ctx.messages.getContent(latest.id)!==content)return;
     await prepare(latest.id,false,undefined,Boolean(alreadyPlanned));
   });
-  $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:'',style:''},$('fixed'),false,true));};
-  $('reset').onclick=()=>{config=capture();config.casts[scope(config)]=[];renderCast();clearPlan();status('NPC cast cleared. Save to keep this change.');};
+  $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:'',style:''},$('fixed'),false,true));scheduleSettingsSave();renderMixer();};
+  $('reset').onclick=()=>{config=capture();config.casts[scope(config)]=[];renderCast();clearPlan();scheduleSettingsSave();status('NPC cast cleared. Changes save automatically.');};
   $('designVoice').onclick=()=>run(async()=>{
     const prompt=$('voicePrompt').value.trim();
     if(!prompt)throw new Error('Describe the voice to design (e.g. age, timbre, accent, persona).');
@@ -1907,7 +1965,7 @@ export async function setup(ctx) {
       const entry=`${result.id} | ${result.description}`;
       const existing=$('extraVoices').value.trim();
       $('extraVoices').value=existing?`${existing}\n${entry}`:entry;
-      config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));
+      config=capture();if(chatId)await persistConfig(chatId,config);
       loadVersion++;await loadVoices();
       $('voicePrompt').value='';status(`Voice designed and added to catalogue: ${result.id}`);
     } finally {if(token===revision){controller=null;setBusy(false);}}
@@ -1930,7 +1988,7 @@ export async function setup(ctx) {
           const entry=`${result.id} | ${result.description}`;
           const existing=$('extraVoices').value.trim();
           $('extraVoices').value=existing?`${existing}\n${entry}`:entry;
-          config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));
+          config=capture();if(chatId)await persistConfig(chatId,config);
           loadVersion++;await loadVoices();
         } finally {if(token===revision){controller=null;setBusy(false);}}
       }
@@ -1985,7 +2043,7 @@ export async function setup(ctx) {
         const existing = $('extraVoices').value.trim();
         $('extraVoices').value = existing ? `${existing}\n${entry}` : entry;
         config = capture();
-        if (chatId) await ctx.settings.set(settingsKey(chatId), withoutSecrets(config));
+        if (chatId) await persistConfig(chatId,config);
         loadVersion++; await loadVoices();
         status(`Added "${item.name}" to voice catalogue.`);
       }
@@ -1993,15 +2051,17 @@ export async function setup(ctx) {
   };
   $('searchVoicesBtn')?.addEventListener('click', doSearchVoices);
   $('voiceSearchQuery')?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearchVoices(); } });
-  $('load').onclick=()=>run(async()=>{config=capture();loadVersion++;await loadProviders();clearPlan();status('Connections and voices reloaded.');});
+  $('load').onclick=()=>run(async()=>{await flushSettings();config=capture();loadVersion++;await loadProviders();await persistConfig(chatId,config,true);saveState('Settings saved');clearPlan();status('Connections and voices reloaded.');});
   $('plannerMode')?.addEventListener('change',updatePlannerVisibility);
   $('allowLlmFallback').onchange=updatePlannerVisibility;
-  $('sectionButtons').onchange=()=>run(async()=>{config.sectionButtons=$('sectionButtons').checked;refreshSectionControls();if(plan)renderPreview();if(chatId)await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));});
+  $('sectionButtons').onchange=()=>run(async()=>{config=capture();refreshSectionControls();if(plan)renderPreview();scheduleSettingsSave();await flushSettings();});
   $('connectionMode').onchange=()=>run(async()=>{
+    await flushSettings();
     const messageId=planSource?.messageId,targetChat=chatId;stop(false);config=capture();config.connectionMode=$('connectionMode').value;const version=++loadVersion;
+    await persistConfig(targetChat,config,true);if(disposed || chatId!==targetChat || version!==loadVersion)return;saveState('Settings saved');
     await loadVoices();if(disposed || chatId!==targetChat || version!==loadVersion)return;
     if(messageId)await restoreSavedPlan(messageId);if(disposed || chatId!==targetChat || version!==loadVersion)return;
-    renderMixer();if(chatId)await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));
+    renderMixer();if(chatId){await persistConfig(chatId,config,true);saveState('Settings saved');}
     status(config.connectionMode==='one'?'One TTS now applies to the whole cast. Per-character routes are remembered.':'Several TTS restored your per-character routes.');
   });
   $('testTts').onclick=()=>castRows[0]?.row.querySelector('[data-choir-preview]')?.click();
@@ -2014,20 +2074,24 @@ export async function setup(ctx) {
     for(const [route,choices] of Object.entries(candidate.singleVoices || {}))for(const voice of Object.values(choices))if(voice && !voiceCatalogues.get(route)?.some(v=>v.id===voice))throw new Error(`Imported voice ${voice} is unavailable on ${route}.`);
     validateSettings(candidate);
     for(const route of Object.keys(candidate.casts)){const scoped=route==='gemini'?{...candidate,mode:'gemini'}:{...candidate,mode:'native',connection:route.slice(7)};validateCastConfig(casting(scoped));}
-    stop(false);config=candidate;await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));setFields();renderCast();
+    stop(false);config=candidate;await persistConfig(chatId,config);setFields();renderCast();
     if(planSource)await restoreSavedPlan(planSource.messageId);
     status('Cast imported and validated. Saved attribution reused.');
   });
   for(const name of ['mode','connection'])$(name).onchange=()=>run(async()=>{
-    const messageId=planSource?.messageId,targetChat=chatId;stop(false);config=capture();const version=++loadVersion;setFields();await loadVoices();if(disposed || chatId!==targetChat || version!==loadVersion)return;
+    await flushSettings();
+    const messageId=planSource?.messageId,targetChat=chatId;stop(false);config=capture();const version=++loadVersion;
+    await persistConfig(targetChat,config,true);if(disposed || chatId!==targetChat || version!==loadVersion)return;saveState('Settings saved');
+    setFields();await loadVoices();if(disposed || chatId!==targetChat || version!==loadVersion)return;
     if(messageId)await restoreSavedPlan(messageId);if(disposed || chatId!==targetChat || version!==loadVersion)return;renderMixer();
     const unavailable=config.connectionMode==='several' && config.fixed.some(v=>v.voice && !voices.some(x=>x.id===v.voice));
-    status(unavailable?'Choose valid voices for this provider, then save.':'Provider selected. Save your cast.');
+    await persistConfig(targetChat,config,true);if(disposed || chatId!==targetChat || version!==loadVersion)return;saveState('Settings saved');
+    status(unavailable?'Choose valid voices for this provider. Changes save automatically.':'Provider selected. Settings saved automatically.');
   });
   $('apply').onclick=()=>run(async()=>{
     if(!planSource)throw new Error('Plan a message first.');
     const edited=validatePlan(parsePlanJson($('planJson').value),planSource.transcript,casting(config));
-    plan=edited;rememberPlanCast(edited);await ctx.settings.set(settingsKey(chatId),withoutSecrets(config));
+    plan=edited;rememberPlanCast(edited);await persistConfig(chatId,config);
     await persistPlan();renderCast();renderPreview();status('Edited plan validated and saved.');
   });
   unsubs.push(ctx.state.subscribe('chat.active',()=>run(switchChat)));
@@ -2051,7 +2115,7 @@ export async function setup(ctx) {
   action.onClick(()=>tab.activate());
   unsubs.push(()=>action.destroy());
   const cleanup=()=>{
-    if(disposed)return;stop(false);$('key').value='';disposed=true;loadVersion++;
+    if(disposed)return;saveOnLeave();stop(false);$('key').value='';disposed=true;loadVersion++;
     for(const done of [...pending.values()])done(abortError());
     unsubs.splice(0).forEach(fn=>fn());removeStyle();cleanupPlacements();
     audioDatabase?.then(db=>db.close()).catch(()=>{});
