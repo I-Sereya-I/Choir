@@ -54,3 +54,13 @@ test('versioned cast exchange round-trips preferences and strips credentials and
   assert.throws(()=>castImport({...exported,version:2}),/version 1/);
   assert.throws(()=>castImport({...exported,casts:{unknown:[]}}),/provider/);
 });
+
+
+test('cast exchange preserves connection mode and per-provider single voices while rejecting malformed routing',()=>{
+ const config={fixed:[{speaker:'Narrator',voice:'n',style:'',excluded:true}],casts:{'native:a':[]},connectionMode:'one',singleVoices:{'native:a':{Narrator:'new',Mira:''}},apiKey:'private-key'};
+ const exported=castExport(config);assert.equal(JSON.stringify(exported).includes('private-key'),false);
+ assert.deepEqual(castImport(exported),{fixed:config.fixed,casts:config.casts,connectionMode:'one',singleVoices:config.singleVoices});
+ assert.throws(()=>castImport({...exported,connectionMode:'unknown'}),/connection mode/);
+ assert.throws(()=>castImport({...exported,singleVoices:{'https://evil.test':{Narrator:'n'}}}),/voice choices/);
+ assert.throws(()=>castImport({...exported,singleVoices:{'native:a':{Narrator:{secret:'private-key'}}}}),/voice choice/);
+});

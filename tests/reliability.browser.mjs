@@ -67,10 +67,10 @@ async function harness(mixerPreferences){
       },2);
     }};
   let cleanup=await setup(ctx);
-  const $=name=>root.querySelector(`[data-et="${name}"]`);
+  const $=name=>(root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
   const click=async(name,done)=>{$(name).click();await until(()=>done($('status').textContent));};
   const plan=()=>click('latest',text=>text.startsWith('Ready:') || text.includes('Saved attribution'));
-  const play=()=>click('play',text=>text.includes('Playback finished'));
+  const play=async()=>{footer.querySelector('button').click();await tick();await until(()=>$('status').textContent.includes('Playback finished'));};
   const reload=async()=>{cleanup();cleanup=await setup(ctx);};
   return {dom,state,store,requests,synthesis,audios,message,events,subscriptions,root,footer,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
@@ -111,24 +111,21 @@ test('429 retains completed audio across reload and retry bills only missing pas
   }finally{await h.close();}
 });
 
-test('selection and exclusion retain all text, resume seeks, mixer controls and position survive reload',async()=>{
+test('mixer Silent and No voice retain text; resume, volume and position survive reload',async()=>{
   const h=await harness();try{
     h.$('showMixer').click();
-    await h.plan();const select=h.$('preview').querySelector('[aria-label="Select passage 2"]');select.checked=true;select.dispatchEvent(new h.dom.window.Event('change'));
-    await h.click('playSelected',text=>text.includes('Playback finished'));assert.equal(h.synthesis.length,1);
-    assert.equal(h.synthesis[0].voice,'m');assert.equal(h.$('preview').querySelectorAll('.et-card').length,4);
-    const excluded=h.$('preview').querySelector('[aria-label="Exclude passage 3"]');excluded.checked=true;excluded.dispatchEvent(new h.dom.window.Event('change'));await tick();
+    await h.plan();document.querySelector('[aria-label="Guard no voice"]').click();await tick();
+    assert.equal(h.$('preview').querySelectorAll('.et-card').length,4);
     h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.at(-1)?.paused===false);
     const audio=h.audios.at(-1);audio.currentTime=7;audio.ontimeupdate?.();
     const mixer=document.querySelector('[data-choir-mixer]');assert.match(mixer.textContent,/Speaking: Narrator/);
     const master=mixer.querySelector('[aria-label="Master volume"]');master.value='0.5';master.dispatchEvent(new h.dom.window.Event('input'));master.dispatchEvent(new h.dom.window.Event('change'));assert.equal(audio.volume,0.5);
-    mixer.querySelector('[aria-label="Narrator mute"]').click();assert.equal(audio.volume,0);
-    mixer.querySelector('[aria-label="Narrator mute"]').click();mixer.querySelector('[aria-label="Mira solo"]').click();assert.equal(audio.volume,0);
-    mixer.querySelector('[aria-label="Mira solo"]').click();assert.equal(audio.volume,0.5);
+    mixer.querySelector('[aria-label="Narrator silent"]').click();assert.equal(audio.volume,0);
+    mixer.querySelector('[aria-label="Narrator silent"]').click();mixer.querySelector('[aria-label="Mira no voice"]').click();assert.equal(audio.volume,0.5);await tick();
     const header=mixer.firstChild;header.dispatchEvent(new h.dom.window.MouseEvent('pointerdown',{bubbles:true,clientX:20,clientY:80}));header.dispatchEvent(new h.dom.window.MouseEvent('pointermove',{bubbles:true,clientX:90,clientY:160}));header.dispatchEvent(new h.dom.window.MouseEvent('pointerup',{bubbles:true}));
     h.$('stop').click();await tick();assert.equal(h.store.get('position:chat-a').seconds,7);
-    await h.reload();assert.equal(document.querySelector('[data-choir-mixer]').style.left,'90px');assert.equal(h.$('preview').querySelector('[aria-label="Exclude passage 3"]').checked,true);
-    const before=h.synthesis.length;h.$('resumePosition').click();await until(()=>h.audios.at(-1)?.paused===false);assert.equal(h.audios.at(-1).currentTime,7);
+    await h.reload();assert.equal(document.querySelector('[data-choir-mixer]').style.left,'90px');assert.equal(document.querySelector('[aria-label="Guard no voice"]').getAttribute('aria-pressed'),'true');
+    const before=h.synthesis.length;h.$('play').click();await until(()=>h.audios.at(-1)?.paused===false);assert.equal(h.audios.at(-1).currentTime,7);
     h.state.blockAudio=false;h.audios.at(-1).onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
     assert.equal(h.synthesis.length,before+1);assert.ok(!h.synthesis.some(r=>r.voice==='g'));
     h.$('showMixer').click();document.querySelector('[aria-label="Collapse Choir voice mixer"]').click();assert.equal(document.querySelector('[data-choir-mixer]').children[1].hidden,true);
@@ -252,11 +249,9 @@ test('duplicate prefetched passages share one synthesis request',async()=>{
 test('character exclusions preserve attribution and reenabling generates only those characters',async()=>{
   const h=await harness();try{
     await h.plan();
-    const mira=h.$('fixed').querySelectorAll('.et-card')[2].querySelector('input[type="checkbox"]'),guard=h.$('npcs').querySelector('input[type="checkbox"]');
-    mira.checked=true;guard.checked=true;await h.click('save',text=>text.includes('retention saved'));await h.play();
+    document.querySelector('[aria-label="Mira no voice"]').click();document.querySelector('[aria-label="Guard no voice"]').click();await tick();await h.play();
     assert.deepEqual(h.synthesis.map(input=>input.voice),['n','n']);assert.equal(h.$('preview').querySelectorAll('.et-card').length,4);
-    h.$('fixed').querySelectorAll('.et-card')[2].querySelector('input[type="checkbox"]').checked=false;
-    h.$('npcs').querySelector('input[type="checkbox"]').checked=false;await h.click('save',text=>text.includes('retention saved'));await h.play();
+    document.querySelector('[aria-label="Mira no voice"]').click();document.querySelector('[aria-label="Guard no voice"]').click();await tick();await h.play();
     assert.deepEqual(h.synthesis.slice(2).map(input=>input.voice),['m','g']);assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
   }finally{await h.close();}
 });
@@ -306,12 +301,12 @@ test('next skips a whole multi-chunk block; previous reuses audio, paused naviga
     h.message.content='The hall was silent '.repeat(65)+'. "Hello." The door closed.';await h.plan();const planned=h.requests.filter(r=>r.action==='plan').length;h.state.blockAudio=true;
     h.$('play').click();await until(()=>h.audios.at(-1)?.paused===false && !h.$('next').disabled);assert.equal(h.synthesis.length,1);
     const first=h.audios[0];h.$('pause').click();assert.equal(first.paused,true);h.$('next').click();
-    await until(()=>h.audios.length===2 && !h.$('next').disabled);assert.equal(h.synthesis[1].voice,'m');assert.equal(h.audios[1].paused,true);assert.equal(h.$('pause').textContent,'Resume');
-    const seek=h.footer.querySelector('[aria-label="Seek in current spoken block"]');seek.value='7.5';seek.dispatchEvent(new h.dom.window.Event('input'));await tick();
+    await until(()=>h.audios.length===2 && !h.$('next').disabled);assert.equal(h.synthesis[1].voice,'m');assert.equal(h.audios[1].paused,true);assert.equal(h.$('pause').getAttribute('aria-label'),'Resume Choir audio');
+    const seek=document.querySelector('[data-choir-mixer] [aria-label="Seek in current spoken block"]');seek.value='7.5';seek.dispatchEvent(new h.dom.window.Event('input'));await tick();
     assert.equal(h.audios[1].currentTime,7.5);assert.equal(h.store.get('position:chat-a').seconds,7.5);assert.equal(h.store.get('position:chat-a').passage,1);assert.equal(h.synthesis.length,2);
     h.$('previous').click();await until(()=>h.audios.length===3 && !h.$('next').disabled);assert.equal(h.synthesis.length,2);assert.equal(h.audios[2].paused,true);
     h.$('next').click();await until(()=>h.audios.length===4 && !h.$('next').disabled);assert.equal(h.synthesis.length,2);
-    h.$('pause').click();assert.equal(h.audios[3].paused,false);h.footer.querySelector('[aria-label="Next spoken block"]').click();
+    h.$('pause').click();assert.equal(h.audios[3].paused,false);h.$('next').click();
     await until(()=>h.audios.length===5 && h.audios[4].paused===false);assert.equal(h.synthesis.length,3);assert.match(h.synthesis[2].text,/door closed/);
     h.$('next').click();await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.$('next').disabled,true);assert.equal(h.$('previous').disabled,true);assert.equal(seek.parentElement.hidden,true);
     assert.equal(h.requests.filter(r=>r.action==='plan').length,planned);
@@ -325,7 +320,7 @@ test('a failed prefetched chunk can be skipped; cancellation disables transport 
     await until(()=>h.audios.length===2 && h.audios[1].paused===false);assert.equal(h.synthesis[2].voice,'m');assert.equal(h.synthesis.length,3);
     h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent.includes('Ready.'));assert.ok(h.audios.every(audio=>audio.paused));assert.equal(h.$('next').disabled,true);
     h.state.active='chat-a';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent.includes('restored'));
-    h.state.failSynthesisAt=null;h.$('play').click();await until(()=>h.audios.length===3 && h.audios[2].paused===false);await tick();assert.equal(h.synthesis.length,4); // only the formerly failed prefetched chunk is new
+    h.state.failSynthesisAt=null;h.footer.querySelector('button').click();await until(()=>h.audios.length===3 && h.audios[2].paused===false);await tick();assert.equal(h.synthesis.length,4); // only the formerly failed prefetched chunk is new
   }finally{await h.close();}
 });
 
@@ -335,7 +330,7 @@ test('saved recording playback supports previous, next and seeking without synth
     [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.audios.length===before+1 && !h.$('next').disabled);
     h.$('next').click();await until(()=>h.audios.length===before+2 && !h.$('next').disabled);assert.match(document.querySelector('[data-choir-mixer]').textContent,/Speaking: Mira/);
     h.$('previous').click();await until(()=>h.audios.length===before+3 && !h.$('previous').disabled);assert.match(document.querySelector('[data-choir-mixer]').textContent,/Speaking: Narrator/);
-    const seek=h.$('seekHost').querySelector('input');seek.value='9';seek.dispatchEvent(new h.dom.window.Event('input'));assert.equal(h.audios.at(-1).currentTime,9);
+    const seek=document.querySelector('[data-choir-mixer] [aria-label="Seek in current spoken block"]');seek.value='9';seek.dispatchEvent(new h.dom.window.Event('input'));assert.equal(h.audios.at(-1).currentTime,9);
     h.$('stop').click();await tick();assert.equal(h.synthesis.length,generated);assert.equal(h.store.get('position:chat-a').seconds,9);assert.equal(h.$('previous').disabled,true);
   }finally{await h.close();}
 });
@@ -344,10 +339,83 @@ test('previous remains available before a saved resume point and does not reappl
   const h=await harness();try{
     await h.plan();await h.play();const generated=h.synthesis.length;h.state.blockAudio=true;h.$('play').click();await until(()=>!h.$('next').disabled);
     h.$('next').click();await until(()=>document.querySelector('[data-choir-mixer]').textContent.includes('Speaking: Mira') && !h.$('next').disabled);
-    const slider=h.$('seekHost').querySelector('input');slider.value='8';slider.dispatchEvent(new h.dom.window.Event('input'));h.$('stop').click();await tick();await h.reload();
-    h.$('resumePosition').click();await until(()=>h.audios.at(-1)?.paused===false && !h.$('previous').disabled);assert.equal(h.audios.at(-1).currentTime,8);
+    const slider=document.querySelector('[data-choir-mixer] [aria-label="Seek in current spoken block"]');slider.value='8';slider.dispatchEvent(new h.dom.window.Event('input'));h.$('stop').click();await tick();await h.reload();
+    h.$('play').click();await until(()=>h.audios.at(-1)?.paused===false && !h.$('previous').disabled);assert.equal(h.audios.at(-1).currentTime,8);
     const before=h.audios.length;h.$('previous').click();await until(()=>h.audios.length===before+1 && !h.$('next').disabled);assert.match(document.querySelector('[data-choir-mixer]').textContent,/Speaking: Narrator/);
     h.$('next').click();await until(()=>h.audios.length===before+2 && !h.$('next').disabled);assert.match(document.querySelector('[data-choir-mixer]').textContent,/Speaking: Mira/);assert.equal(h.audios.at(-1).currentTime,0);
     assert.equal(h.synthesis.length,generated);assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
   }finally{await h.close();}
+});
+
+
+test('drawer and messages expose one mixer transport; legacy solo and passage selections do not hide audio',async()=>{
+  const h=await harness({master:1,channels:{Mira:{volume:1,solo:true},Narrator:{volume:1,mute:false}}});try{
+    await h.plan();for(const [key,value] of h.store)if(key.startsWith('plan:'))h.store.set(key,{...value,excluded:[0]});await h.reload();
+    for(const name of ['play','pause','next','previous','stop','playSelected','resumePosition','seekHost'])assert.equal(h.root.querySelector('[data-et="'+name+'"]'),null);
+    assert.equal(h.root.querySelector('[aria-label^="Select passage"]'),null);assert.equal(h.root.querySelector('[aria-label^="Exclude passage"]'),null);
+    assert.equal(h.root.querySelector('[data-et="planDetails"]').open,false);assert.equal(h.footer.querySelector('[aria-label="Next spoken block"]'),null);assert.equal(h.footer.querySelector('input[type="range"]'),null);
+    assert.equal(document.querySelectorAll('[aria-label="Next spoken block"]').length,1);assert.equal(document.querySelector('[aria-label="Mira solo"]'),null);
+    h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.at(-1)?.paused===false);assert.equal(h.audios.at(-1).volume,1);
+    document.querySelector('[aria-label="Narrator silent"]').click();assert.equal(h.audios.at(-1).volume,0);h.$('stop').click();await tick();await h.reload();
+    assert.equal(document.querySelector('[aria-label="Narrator silent"]').getAttribute('aria-pressed'),'true');assert.equal(h.$('preview').querySelectorAll('.et-card').length,4);
+  }finally{await h.close();}
+});
+
+test('No voice skips an in-flight failed speaker, persists per chat and reenables only missing audio',async()=>{
+  const h=await harness();try{
+    await h.plan();h.state.delay=80;h.state.failVoice='n';h.$('play').click();await until(()=>h.synthesis.length===1);
+    document.querySelector('[aria-label="Narrator no voice"]').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
+    assert.deepEqual(h.synthesis.map(v=>v.voice),['n','m','g']);assert.equal(h.audios.length,2);assert.equal(h.$('preview').querySelectorAll('.et-card').length,4);
+    await h.reload();assert.equal(document.querySelector('[aria-label="Narrator no voice"]').getAttribute('aria-pressed'),'true');
+    h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent.includes('Ready.'));assert.equal(document.querySelector('[aria-label="Narrator no voice"]').getAttribute('aria-pressed'),'false');
+    h.state.active='chat-a';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent.includes('restored'));assert.equal(document.querySelector('[aria-label="Narrator no voice"]').getAttribute('aria-pressed'),'true');
+    h.state.failVoice=null;h.state.delay=0;document.querySelector('[aria-label="Narrator no voice"]').click();await tick();await h.play();
+    assert.deepEqual(h.synthesis.slice(3).map(v=>v.voice),['n','n']);assert.equal(h.requests.filter(v=>v.action==='plan').length,1);
+  }finally{await h.close();}
+});
+
+test('One TTS routes the entire cast without replanning and Several TTS restores saved character routes',async()=>{
+  const h=await harness();try{
+    await h.plan();await h.play();const planned=h.requests.filter(v=>v.action==='plan').length;
+    h.$('connectionMode').value='one';h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('status').textContent.startsWith('One TTS now'));
+    assert.ok(JSON.parse(h.$('planJson').value).segments.every(v=>v.route==='native:a'));assert.equal(h.store.get('chat:chat-a').fixed[2].route,'native:b');
+    assert.ok([...h.$('fixed').querySelectorAll('[data-choir-route]')].every(v=>v.parentElement.hidden));
+    const voices=h.$('fixed').querySelectorAll('[data-choir-voice]');voices[2].value='new';await h.click('save',text=>text.includes('retention saved'));await h.play();
+    assert.equal(h.synthesis.at(-1).connectionId,'a');assert.equal(h.synthesis.at(-1).voice,'new');assert.equal(h.requests.filter(v=>v.action==='plan').length,planned);
+    await h.reload();assert.equal(h.$('connectionMode').value,'one');assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'new');
+    h.$('connectionMode').value='several';h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('status').textContent.startsWith('Several TTS restored'));
+    assert.equal(h.$('fixed').querySelectorAll('[data-choir-route]')[2].value,'native:b');assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'m');
+    const before=h.synthesis.length;await h.play();assert.equal(h.synthesis.length,before);assert.equal(h.requests.filter(v=>v.action==='plan').length,planned);
+  }finally{await h.close();}
+});
+
+
+test('No voice skips already cached audio and changing it during paused playback preserves the pause',async()=>{
+ const h=await harness();try{
+  await h.plan();await h.play();const generated=h.synthesis.length;
+  document.querySelector('[aria-label="Mira no voice"]').click();await tick();const count=h.audios.length;await h.play();assert.equal(h.audios.length-count,3);assert.equal(h.synthesis.length,generated);
+  document.querySelector('[aria-label="Mira no voice"]').click();await tick();h.state.blockAudio=true;h.footer.querySelector('button').click();await until(()=>!h.$('next').disabled);h.$('next').click();await until(()=>document.querySelector('[data-choir-mixer]').textContent.includes('Speaking: Mira') && !h.$('next').disabled);
+  h.$('pause').click();document.querySelector('[aria-label="Mira no voice"]').click();await until(()=>document.querySelector('[data-choir-mixer]').textContent.includes('Speaking: Guard') && !h.$('next').disabled);assert.equal(h.audios.at(-1).paused,true);assert.equal(h.synthesis.length,generated);
+  h.$('stop').click();await tick();document.querySelector('[aria-label="Mira no voice"]').click();await tick();h.state.blockAudio=false;await h.play();assert.equal(h.synthesis.length,generated);
+ }finally{await h.close();}
+});
+
+test('One TTS changes the whole cast connection and restores each provider voice choice without replanning',async()=>{
+ const h=await harness();try{
+  await h.plan();h.$('connectionMode').value='one';h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('status').textContent.startsWith('One TTS now'));
+  h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value='new';await h.click('save',text=>text.includes('retention saved'));await h.play();const planned=h.requests.filter(v=>v.action==='plan').length;
+  h.$('connection').value='b';h.$('connection').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('status').textContent.includes('Provider selected.'));
+  assert.ok(JSON.parse(h.$('planJson').value).segments.every(v=>v.route==='native:b'));await h.click('save',text=>text.includes('retention saved'));const before=h.synthesis.length;await h.play();assert.ok(h.synthesis.slice(before).every(v=>v.connectionId==='b'));
+  h.$('connection').value='a';h.$('connection').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('status').textContent.includes('Provider selected.'));
+  assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'new');assert.ok(JSON.parse(h.$('planJson').value).segments.every(v=>v.route==='native:a'));assert.equal(h.requests.filter(v=>v.action==='plan').length,planned);
+ }finally{await h.close();}
+});
+
+
+test('One TTS rejects an unavailable manually selected voice instead of silently replacing it',async()=>{
+ const h=await harness();try{
+  await h.plan();h.$('connectionMode').value='one';h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('status').textContent.startsWith('One TTS now'));
+  const voice=h.$('fixed').querySelectorAll('[data-choir-voice]')[2],option=document.createElement('option');option.value='missing-voice';option.textContent='Missing';voice.append(option);voice.value='missing-voice';h.$('save').click();await until(()=>h.$('status').classList.contains('et-error'));
+  assert.match(h.$('status').textContent,/voice/i);assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(v=>v.action==='plan').length,1);
+ }finally{await h.close();}
 });

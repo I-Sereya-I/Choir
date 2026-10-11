@@ -87,7 +87,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   };
   try {
     let cleanup=await setup(ctx);
-    const $=name=>root.querySelector(`[data-et="${name}"]`) || settingsRoot.querySelector(`[data-et="${name}"]`);
+    const $=name=>(root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`)) || settingsRoot.querySelector(`[data-et="${name}"]`);
     assert.match(minimalFooter.querySelector('button').title,/Play Choir/);
     assert.match($('planner').textContent,/GPT planner · openai · gpt-text-test/);
     $('planner').value='planner-a';$('testPlanner').click();await until(()=>$('status').textContent.includes('Planner test passed'));
@@ -112,7 +112,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.match(minimalFooter.textContent,/Playback finished/);
     assert.equal($('preview').querySelectorAll('.et-card').length,3);
     assert.equal(store.get('chat:chat-a').casts.gemini[0].speaker,'Guard');
-    assert.equal(store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Mira').voice,'Zephyr');
+    assert.equal(store.get('chat:chat-a').singleVoices.gemini.Mira,'Zephyr');
     assert.equal(store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Mira').gender,'female');
     assert.equal(requests.find(request=>request.action==='plan').input.config.fixed[2].gender,'female');
     $('key').value='test-key';$('play').click();await until(()=>$('status').textContent.includes('finished'));
@@ -131,6 +131,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     $('stop').click();await tick();assert.equal(requests.filter(v=>v.action==='gemini').length,previous);
     assert.ok(audios.at(-1).paused);
     blockAudio=false;
+    $('connectionMode').value='several';$('connectionMode').dispatchEvent(new dom.window.Event('change'));await until(()=>$('status').textContent.startsWith('Several TTS restored'));
     const speakerRoute=$('fixed').querySelectorAll('[data-choir-route]')[2];
     speakerRoute.value='native:native-a';speakerRoute.dispatchEvent(new dom.window.Event('change'));
     await until(()=>$('fixed').querySelectorAll('[data-choir-voice]')[2].textContent.includes('coral'));
@@ -305,7 +306,7 @@ test('pipelined playback begins playing section 1 while subsequent sections are 
   };
   try {
     const cleanup = await setup(ctx);
-    const $ = name => root.querySelector(`[data-et="${name}"]`);
+    const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
     $('key').value = 'test-key';
     messageActions.querySelector('button').click();
     await until(() => audios.length > 0);
@@ -373,7 +374,7 @@ test('auditionVoice synthesizes and plays a voice sample', async () => {
   };
   try {
     const cleanup = await setup(ctx);
-    const $ = name => root.querySelector(`[data-et="${name}"]`);
+    const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
     $('key').value = 'gemini-key-123';
     $('voicePrompt').value = 'voice_custom_audition';
     assert.ok($('auditionVoice'));
@@ -480,7 +481,7 @@ test('autoDesignNPCs setting auto-designs bespoke Gemini voices for new NPCs wit
   };
   try {
     let cleanup = await setup(ctx);
-    const $ = name => root.querySelector(`[data-et="${name}"]`);
+    const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
     assert.ok($('autoDesignNPCs'));
     assert.equal($('autoDesignNPCs').checked, false);
     
@@ -616,7 +617,7 @@ test('detects Fish Audio vs Gemini/Vertex provider and dynamically adapts UI con
   };
   
   const cleanup = await setup(ctx);
-  const $ = name => root.querySelector(`[data-et="${name}"]`);
+  const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
   await until(() => $('fixed')?.querySelectorAll('.et-card')?.length >= 2);
 
   // 1. Initially mode is gemini
@@ -736,7 +737,7 @@ test('opens Fish Audio voice library overlay modal with avatars, audio preview, 
   ctx.onBackendMessage = (fn) => { globalThis.__onBackend = fn; return () => {}; };
 
   const cleanup = await setup(ctx);
-  const $ = name => root.querySelector(`[data-et="${name}"]`);
+  const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
   await until(() => $('fixed')?.querySelectorAll('.et-card')?.length >= 2);
 
   // Switch to Fish Audio
@@ -850,7 +851,7 @@ test('fast classifier setting resolves speech plan locally in 0ms without sendin
 
   try {
     const cleanup = await setup(ctx);
-    const $ = name => root.querySelector(`[data-et="${name}"]`);
+    const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
     $('key').value = 'test-key';
     messageActions.querySelector('button').click();
     await until(() => audios.length > 0 || $('status').textContent.includes('Speech plan ready'));
@@ -907,7 +908,7 @@ test('plannerMode toggles Jev System 1 inputs directly in Speech & Planner secti
 
   try {
     const cleanup = await setup(ctx);
-    const $ = name => root.querySelector(`[data-et="${name}"]`);
+    const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
 
     // Initially in LLM mode
     assert.equal($('plannerMode').value, 'llm');
