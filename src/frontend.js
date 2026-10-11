@@ -784,6 +784,19 @@ export async function setup(ctx) {
         $('extraVoices').placeholder='voice_id | description';
       }
     }
+
+    if($('styleParam')) {
+      if(activeProvider==='fish_audio') {
+        $('styleParam').options[0].textContent='Inline emotion tags (e.g. [cheerful])';
+        for(const opt of $('styleParam').options) if(opt.value) opt.disabled=true;
+        $('styleParam').value='';
+      } else {
+        const connection=nativeConnections.find(v=>v.id===config.connection);
+        const parameters=nativeProviders.find(v=>v.id===connection?.provider)?.capabilities?.parameters || {};
+        const hasAny=['instructions','instruct','prompt'].some(p=>parameters[p]);
+        $('styleParam').options[0].textContent=hasAny ? 'Ignore style' : 'Not supported by this provider';
+      }
+    }
   }
   function setFields() {
     for(const name of ['mode','model','planner','connection','styleParam','apiBase','chunk','plannerTokens','extraVoices','retention'])$(name).value=config[name];
