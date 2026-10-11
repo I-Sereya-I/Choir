@@ -546,3 +546,17 @@ test('action plan falls back to standard LLM if Jev classification fails', async
   assert.ok(res.message.result);
   assert.equal(llmCalled, true, 'LLM planner should be invoked as fallback');
 });
+
+test('testPlanner tests Jev when plannerMode is jev', async () => {
+  let request;
+  const h = await harness(null, async (url, options) => {
+    request = { url, options };
+    return { status: 200, body: JSON.stringify({ choices: ['Alice'] }) };
+  });
+  h.send('testPlanner', { plannerMode: 'jev', jevApiKey: 'test-jev-key' });
+  const result = await h.result();
+  assert.equal(result.message.result.provider, 'TypeSafe AI');
+  assert.equal(result.message.result.model, 'Jev System 1');
+  assert.match(result.message.result.response, /READY/);
+  assert.equal(request.options.headers.Authorization, 'Bearer test-jev-key');
+});

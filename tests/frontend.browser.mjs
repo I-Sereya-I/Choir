@@ -620,7 +620,7 @@ test('detects Fish Audio vs Gemini/Vertex provider and dynamically adapts UI con
   await until(() => $('fixed')?.querySelectorAll('.et-card')?.length >= 2);
 
   // 1. Initially mode is gemini
-  assert.equal($('fishLibraryContainer').hidden, true, 'Fish library should be hidden in Gemini mode');
+  assert.equal($('batchGeminiWrap').hidden, false, 'Batch Gemini should be visible in Gemini mode');
   assert.equal($('voiceDesignBox').hidden, false, 'Gemini voice design should be visible');
   
   // 2. Switch to Fish Audio native connection
@@ -628,9 +628,9 @@ test('detects Fish Audio vs Gemini/Vertex provider and dynamically adapts UI con
   $('mode').dispatchEvent(new dom.window.Event('change'));
   $('connection').value = 'conn-fish';
   $('connection').dispatchEvent(new dom.window.Event('change'));
-  await until(() => !$('fishLibraryContainer').hidden && $('fixed')?.querySelector('input[placeholder*="Fish"]'));
+  await until(() => $('batchGeminiWrap').hidden && $('fixed')?.querySelector('input[placeholder*="Fish"]'));
   
-  assert.equal($('fishLibraryContainer').hidden, false, 'Fish library should be visible when Fish Audio connection is selected');
+  assert.equal($('batchGeminiWrap').hidden, true, 'Batch Gemini turns should be hidden when Fish Audio connection is selected');
   assert.equal($('voiceDesignBox').hidden, true, 'Gemini voice design should be hidden when Fish Audio connection is selected');
   
   // Verify character card controls adapted to Fish Audio
@@ -645,9 +645,9 @@ test('detects Fish Audio vs Gemini/Vertex provider and dynamically adapts UI con
   // 3. Switch to Vertex native connection
   $('connection').value = 'conn-vertex';
   $('connection').dispatchEvent(new dom.window.Event('change'));
-  await until(() => $('fishLibraryContainer').hidden);
+  await until(() => !$('batchGeminiWrap').hidden);
 
-  assert.equal($('fishLibraryContainer').hidden, true, 'Fish library should be hidden for Vertex');
+  assert.equal($('batchGeminiWrap').hidden, false, 'Batch Gemini should be visible for Vertex');
   assert.equal($('voiceDesignBox').hidden, false, 'Voice design should be visible for Vertex');
 
   cleanup?.();
@@ -857,6 +857,79 @@ test('fast classifier setting resolves speech plan locally in 0ms without sendin
     // Zero plan RPC requests because fastClassifyPlan handled it locally!
     assert.equal(requests.filter(r => r.action === 'plan').length, 0);
     cleanup();
+  } finally {
+    Object.assign(globalThis, old);
+    dom.window.close();
+  }
+});
+
+test('plannerMode toggles Jev System 1 inputs directly in Speech & Planner section', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  const requests = [];
+  class FakeAudio {
+    constructor(url) { this.url = url; this.paused = true; }
+    play() { return Promise.resolve(); }
+    pause() {}
+  }
+  globalThis.Audio = FakeAudio;
+  globalThis.fetch = async () => new Response(JSON.stringify({voices: [{id: 'Charon'}], data: []}), {headers: {'Content-Type': 'application/json'}});
+
+  const root = dom.window.document.createElement('div');
+  let onBackend;
+  const ctx = {
+    registerDomDecorator: () => () => {},
+    settings: {
+      get: async () => ({mode: 'gemini', plannerMode: 'llm', casts: {}, fixed: [{speaker: 'Narrator', voice: 'Charon', style: ''}], voices: [{id: 'Charon'}]}),
+      set: async () => {}
+    },
+    messages: { getRecent: () => [], getContent: () => null },
+    state: { subscribe: () => () => {} },
+    connections: { list: () => [] },
+    characters: { get: async () => ({name: 'Mira'}) },
+    getActiveChat: () => ({chatId: 'chat-test', characterId: 'char-1'}),
+    dom: { addStyle: () => () => {} },
+    ui: {
+      registerDrawerTab: () => ({root, activate() {}, destroy() {}}),
+      mount: () => dom.window.document.createElement('div'),
+      registerInputBarAction: () => ({onClick() {}, destroy() {}})
+    },
+    events: { on: () => () => {} },
+    onBackendMessage: fn => { onBackend = fn; return () => null; },
+    sendToBackend: msg => {
+      requests.push(msg);
+      if (msg.action === 'ping') onBackend?.({namespace: 'choir', id: msg.id, result: {ready: true}});
+      if (msg.action === 'testPlanner') onBackend?.({namespace: 'choir', id: msg.id, result: {provider: 'TypeSafe AI', model: 'Jev System 1', response: 'READY · 18ms'}});
+    }
+  };
+
+  try {
+    const cleanup = await setup(ctx);
+    const $ = name => root.querySelector(`[data-et="${name}"]`);
+
+    // Initially in LLM mode
+    assert.equal($('plannerMode').value, 'llm');
+    assert.equal($('llmPlannerBox').hidden, false);
+    assert.equal($('jevPlannerBox').hidden, true);
+
+    // Switch to Jev System 1
+    $('plannerMode').value = 'jev';
+    $('plannerMode').dispatchEvent(new dom.window.Event('change'));
+    assert.equal($('llmPlannerBox').hidden, true);
+    assert.equal($('jevPlannerBox').hidden, false);
+
+    // Enter Jev key and test planner
+    $('jevKey').value = 'test-jev-key';
+    $('testPlanner').click();
+    await until(() => $('status').textContent.includes('Planner test passed') && $('status').textContent.includes('Jev System 1'));
+    const testReq = requests.find(r => r.action === 'testPlanner');
+    assert.ok(testReq);
+    assert.equal(testReq.input.plannerMode, 'jev');
+    assert.equal(testReq.input.jevApiKey, 'test-jev-key');
+
+    cleanup?.();
   } finally {
     Object.assign(globalThis, old);
     dom.window.close();

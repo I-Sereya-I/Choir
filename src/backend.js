@@ -254,6 +254,22 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       send({result:{version:'1.0.18',ready:true}});return;
     }
     if(message.action==='testPlanner') {
+      if (input.plannerMode === 'jev' || input.useJev) {
+        progress({stage:'Testing Jev classification endpoint'});
+        const apiKey = input.apiKey || input.jevApiKey;
+        const endpoint = input.endpoint || input.jevEndpoint;
+        const start = Date.now();
+        const res = await classifyWithJev({
+          items: [{ text: 'Hello there, how are you today?', context: 'Alice smiled at Bob.' }],
+          candidates: ['Alice', 'Bob'],
+          apiKey,
+          endpoint,
+          signal: controller.signal
+        });
+        const duration = Date.now() - start;
+        send({result:{provider:'TypeSafe AI',model:'Jev System 1',response:`READY · Classified in ${duration}ms (choice: ${res[0] || 'Alice'})`}});
+        return;
+      }
       progress({stage:'Resolving saved LLM connection'});
       const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
       if(controller.signal.aborted)return;

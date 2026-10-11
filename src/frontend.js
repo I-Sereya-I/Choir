@@ -110,7 +110,7 @@ export async function setup(ctx) {
     </div>
     <div class="et-grid">
       <label>Default TTS connection<select data-et="mode"><option value="gemini">Gemini 3.8 (style metadata)</option><option value="native">Lumiverse TTS</option></select></label>
-      <label>Planner LLM connection<select data-et="planner"><option value="">Default LLM connection</option></select></label>
+      <label>Planner engine<select data-et="plannerMode"><option value="llm">Standard LLM Connection</option><option value="jev">⚡ Jev System 1 (TypeSafe AI)</option></select></label>
     </div>
     <div data-et="gemini" class="et-grid" style="margin-top:10px">
       <label>Gemini model<select data-et="model"><option>gemini-3.8-flash-tts</option><option>gemini-3.8-flash-lite-tts</option></select></label>
@@ -120,9 +120,17 @@ export async function setup(ctx) {
       <label>Lumiverse connection<select data-et="connection"></select></label>
       <label>Style handling<select data-et="styleParam"><option value="">Ignore style</option><option value="instructions">instructions (OpenAI)</option><option value="instruct">instruct</option><option value="prompt">prompt</option></select></label>
     </div>
-    <div class="et-row" style="margin-top:10px">
+    <div data-et="llmPlannerBox" style="margin-top:10px">
+      <label>Planner LLM connection<select data-et="planner"><option value="">Default LLM connection</option></select></label>
+    </div>
+    <div data-et="jevPlannerBox" hidden class="et-grid" style="margin-top:10px">
+      <label>Jev API key (TypeSafe AI)<input data-et="jevKey" type="password" placeholder="jev_... (~20ms typed classification)"></label>
+      <label>Jev endpoint URL<input data-et="jevEndpoint" placeholder="https://api.typesafe.ai/v1/classify"></label>
+    </div>
+    <div class="et-row" style="margin-top:10px;flex-wrap:wrap;gap:12px">
       <label class="et-check"><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
       <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
+      <label class="et-check"><input data-et="useFastClassifier" type="checkbox"> ⚡ Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
 
     <details>
@@ -133,17 +141,9 @@ export async function setup(ctx) {
         <label>Max characters per request<input data-et="chunk" type="number" min="80" max="2000" value="1800"></label>
         <label>Planner output tokens<input data-et="plannerTokens" type="number" min="1024" max="32768" step="1024" value="8192"></label>
         <label>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
-        <label class="et-check" style="align-self:end"><input data-et="batchGemini" type="checkbox" checked> Batch Gemini turns (2 speakers)</label>
+        <label data-et="batchGeminiWrap" class="et-check" style="align-self:end"><input data-et="batchGemini" type="checkbox" checked> Batch Gemini turns (2 speakers)</label>
       </div>
       <label data-et="autoDesignNPCsWrap" class="et-check" style="margin-top:10px"><input data-et="autoDesignNPCs" type="checkbox"> Auto-design custom voices for new NPCs (Gemini / AI Studio)</label>
-      <label class="et-check" style="margin-top:10px"><input data-et="useFastClassifier" type="checkbox"> ⚡ Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
-      <div data-et="jevBox" style="margin-top:10px;padding:8px 10px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;background:rgba(128,128,128,0.03)">
-        <label class="et-check" style="font-weight:600"><input data-et="useJev" type="checkbox"> ⚡ Jev / System 1 Classifier (~20ms ultra-fast dialogue attribution)</label>
-        <div data-et="jevFields" style="margin-top:6px;display:flex;flex-direction:column;gap:6px">
-          <label>Jev API Key (Typesafe AI)<input data-et="jevKey" type="password" placeholder="jev_..."></label>
-          <label>Jev Endpoint URL<input data-et="jevEndpoint" placeholder="https://api.typesafe.ai/v1/classify"></label>
-        </div>
-      </div>
       <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
       <div data-et="voiceDesignBox" style="margin-top:10px;padding:8px 10px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;background:rgba(128,128,128,0.03)">
         <label style="font-weight:600">Design Voice with Prompt (Gemini / AI Studio)</label>
@@ -152,17 +152,6 @@ export async function setup(ctx) {
           <button data-et="designVoice" type="button" class="et-btn-subtle" style="white-space:nowrap">Design voice</button>
           <button data-et="auditionVoice" type="button" class="et-btn-subtle" style="white-space:nowrap">Audition</button>
         </div>
-      </div>
-    </details>
-
-    <details data-et="fishLibraryContainer" style="margin-top:10px">
-      <summary>Search Community Voices (Fish Audio Library)</summary>
-      <div style="margin-top:8px">
-        <div style="display:flex;gap:6px">
-          <input data-et="voiceSearchQuery" placeholder="Search voices (e.g. Natsuki, Geralt, Glados, Narrator...)" style="flex:1">
-          <button data-et="searchVoicesBtn" type="button" class="et-btn-primary" style="white-space:nowrap">Search</button>
-        </div>
-        <div data-et="voiceSearchResults" style="margin-top:8px;max-height:220px;overflow:auto;display:flex;flex-direction:column;gap:6px"></div>
       </div>
     </details>
 
@@ -257,7 +246,7 @@ export async function setup(ctx) {
   const voiceCatalogues=new Map();
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
   const defaults = () => ({mode:'gemini',model:'gemini-3.8-flash-tts',planner:'',connection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:true,concurrency:1,plannerTokens:8192,
-    extraVoices:'',useStyle:true,auto:false,autoDesignNPCs:false,useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1/classify',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
+    extraVoices:'',useStyle:true,auto:false,autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1/classify',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
       {speaker:'Character',voice:'',style:''} ]});
@@ -744,7 +733,7 @@ export async function setup(ctx) {
       mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:$('batchGemini').checked,concurrency:Number($('concurrency').value),
-      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,autoDesignNPCs:$('autoDesignNPCs').checked,useFastClassifier:$('useFastClassifier')?$('useFastClassifier').checked:false,useJev:$('useJev')?$('useJev').checked:false,jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
+      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,autoDesignNPCs:$('autoDesignNPCs').checked,plannerMode:$('plannerMode')?$('plannerMode').value:(config.plannerMode||'llm'),useFastClassifier:$('useFastClassifier')?$('useFastClassifier').checked:false,useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
   }
   function casting(c=config) {
     const actors=[...c.fixed,...(c.casts[scope(c)] || [])];
@@ -760,6 +749,11 @@ export async function setup(ctx) {
     if(!Number.isInteger(c.plannerTokens) || c.plannerTokens<1024 || c.plannerTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
     if(c.mode==='native' && !nativeConnections.some(v=>v.id===c.connection))throw new Error('Select an existing Lumiverse TTS connection.');
   }
+  function updatePlannerVisibility() {
+    const isJev=$('plannerMode')?.value==='jev';
+    if($('llmPlannerBox'))$('llmPlannerBox').hidden=isJev;
+    if($('jevPlannerBox'))$('jevPlannerBox').hidden=!isJev;
+  }
   function updateProviderVisibility() {
     const activeProvider=detectProvider(config);
     const anyFish=activeProvider==='fish_audio' || [...castRows,...npcRows].some(row=>detectProvider(row.read().route || scope(config))==='fish_audio');
@@ -770,6 +764,7 @@ export async function setup(ctx) {
 
     if($('voiceDesignBox'))$('voiceDesignBox').hidden=!anyGemini;
     if($('autoDesignNPCsWrap'))$('autoDesignNPCsWrap').hidden=!anyGemini;
+    if($('batchGeminiWrap'))$('batchGeminiWrap').hidden=!anyGemini;
     if($('fishLibraryContainer'))$('fishLibraryContainer').hidden=!anyFish;
 
     if($('extraVoicesLabel')) {
@@ -787,15 +782,20 @@ export async function setup(ctx) {
   }
   function setFields() {
     for(const name of ['mode','model','planner','connection','styleParam','apiBase','chunk','plannerTokens','extraVoices','retention'])$(name).value=config[name];
-    $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;$('batchGemini').checked=config.batchGemini;$('concurrency').value=config.concurrency;$('autoDesignNPCs').checked=Boolean(config.autoDesignNPCs);if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);if($('useJev'))$('useJev').checked=Boolean(config.useJev);if($('jevKey'))$('jevKey').value=config.jevApiKey||'';if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';
+    $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;$('batchGemini').checked=config.batchGemini;$('concurrency').value=config.concurrency;$('autoDesignNPCs').checked=Boolean(config.autoDesignNPCs);
+    if($('plannerMode'))$('plannerMode').value=config.plannerMode || (config.useJev ? 'jev' : 'llm');
+    if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);
+    if($('jevKey'))$('jevKey').value=config.jevApiKey||'';
+    if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';
+    updatePlannerVisibility();
     updateProviderVisibility();
   }
   function setBusy(value) {
     busy=value;
-    for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','searchVoicesBtn','add','reset','mode','connection','apply','auto'])$(name).disabled=value;
-    for (const name of ['model','planner','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','voiceSearchQuery','useStyle','key','planJson','retention'])$(name).disabled=value;
-    $('play').disabled=value || !plan;
-    $('batchGemini').disabled=value;$('concurrency').disabled=value;$('autoDesignNPCs').disabled=value;
+    for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','apply','auto'])if($(name))$(name).disabled=value;
+    for (const name of ['model','planner','plannerMode','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention'])if($(name))$(name).disabled=value;
+    if($('play'))$('play').disabled=value || !plan;
+    if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
   }
@@ -1336,11 +1336,21 @@ export async function setup(ctx) {
   }
   $('save').onclick=()=>run(save);
   $('testPlanner').onclick=()=>run(async()=>{
-    stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);status('Testing planner…');
+    stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);
+    const isJev=$('plannerMode')?.value==='jev';
+    status(isJev ? 'Testing Jev classifier…' : 'Testing planner…');
     try {
       await rpc('ping',{},ctrl.signal,8000);
-      const result=await rpc('testPlanner',{connectionId:$('planner').value},ctrl.signal,65000,
-        progress=>status(`Planner test: ${progress.stage}${progress.model?` · ${progress.model}`:''}`));
+      const payload=isJev ? {
+        plannerMode:'jev',
+        useJev:true,
+        jevApiKey:$('jevKey')?.value?.trim() || config.jevApiKey || '',
+        jevEndpoint:$('jevEndpoint')?.value?.trim() || config.jevEndpoint || ''
+      } : {
+        connectionId:$('planner').value
+      };
+      const result=await rpc('testPlanner',payload,ctrl.signal,65000,
+        progress=>status(`${isJev?'Jev':'Planner'} test: ${progress.stage}${progress.model?` · ${progress.model}`:''}`));
       if(token===revision)status(`Planner test passed: ${result.provider} · ${result.model}. Response: ${result.response}`);
     } finally {if(token===revision){controller=null;setBusy(false);}}
   });
@@ -1453,6 +1463,7 @@ export async function setup(ctx) {
   $('searchVoicesBtn')?.addEventListener('click', doSearchVoices);
   $('voiceSearchQuery')?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearchVoices(); } });
   $('load').onclick=()=>run(async()=>{config=capture();loadVersion++;await loadProviders();clearPlan();status('Connections and voices reloaded.');});
+  $('plannerMode')?.addEventListener('change',updatePlannerVisibility);
   for(const name of ['mode','connection'])$(name).onchange=()=>run(async()=>{
     stop(false);clearPlan();config=capture();loadVersion++;setFields();await loadVoices();
     const unavailable=config.fixed.some(v=>v.voice && !voices.some(x=>x.id===v.voice));
