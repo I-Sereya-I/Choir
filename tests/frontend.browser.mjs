@@ -568,3 +568,88 @@ test('character row allows inline voice search and community voice discovery dir
   cleanup?.();
   Object.assign(globalThis, old);
 });
+
+test('detects Fish Audio vs Gemini/Vertex provider and dynamically adapts UI controls, syntax, and libraries', async () => {
+  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
+  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
+  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
+  globalThis.document = dom.window.document;
+  const store = new Map();
+  globalThis.fetch = async (url) => {
+    if (url.includes('/tts-connections/providers')) {
+      return new Response(JSON.stringify({providers: [{id: 'fish_audio'}, {id: 'google_vertex_tts'}]}), {headers: {'Content-Type': 'application/json'}});
+    }
+    if (url.includes('/tts-connections') && !url.includes('/voices')) {
+      return new Response(JSON.stringify({data: [
+        {id: 'conn-fish', name: 'Fish TTS Profile', provider: 'fish_audio', model: 's2.1-pro'},
+        {id: 'conn-vertex', name: 'Vertex Profile', provider: 'google_vertex_tts', model: 'gemini-3.8-flash-tts'}
+      ]}), {headers: {'Content-Type': 'application/json'}});
+    }
+    if (url.includes('/voices')) {
+      if (url.includes('conn-fish')) {
+        return new Response(JSON.stringify({voices: [{id: 'fish-voice-1', name: 'Fish Star', gender: 'female'}]}), {headers: {'Content-Type': 'application/json'}});
+      }
+      return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}]}), {headers: {'Content-Type': 'application/json'}});
+    }
+    return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
+  };
+  const root = dom.window.document.createElement('div');
+  const ctx = {
+    registerDomDecorator: () => () => {},
+    settings: {
+      get: async key => store.get(key) || null,
+      set: async (key, value) => { store.set(key, structuredClone(value)); }
+    },
+    messages: { getRecent: () => [], getContent: () => '' },
+    state: { get: () => null, subscribe: () => () => {} },
+    events: { on: () => () => {} },
+    getActiveChat: () => ({chatId: 'chat-prov', characterId: 'char-1'}),
+    characters: { get: async () => ({name: 'Nia'}) },
+    dom: { addStyle: () => () => {}, getMessageId: () => null },
+    ui: {
+      registerDrawerTab: () => ({root, activate: () => {}, onActivate: (fn) => { fn(); return () => {}; }, destroy: () => {}}),
+      registerInputBarAction: () => ({onClick(){}, destroy(){}}),
+      mount: () => null
+    },
+    onBackendMessage: () => () => {},
+    sendToBackend: () => {}
+  };
+  
+  const cleanup = await setup(ctx);
+  const $ = name => root.querySelector(`[data-et="${name}"]`);
+  await until(() => $('fixed')?.querySelectorAll('.et-card')?.length >= 2);
+
+  // 1. Initially mode is gemini
+  assert.equal($('fishLibraryContainer').hidden, true, 'Fish library should be hidden in Gemini mode');
+  assert.equal($('voiceDesignBox').hidden, false, 'Gemini voice design should be visible');
+  
+  // 2. Switch to Fish Audio native connection
+  $('mode').value = 'native';
+  $('mode').dispatchEvent(new dom.window.Event('change'));
+  $('connection').value = 'conn-fish';
+  $('connection').dispatchEvent(new dom.window.Event('change'));
+  await until(() => !$('fishLibraryContainer').hidden && $('fixed')?.querySelector('input[placeholder*="Fish"]'));
+  
+  assert.equal($('fishLibraryContainer').hidden, false, 'Fish library should be visible when Fish Audio connection is selected');
+  assert.equal($('voiceDesignBox').hidden, true, 'Gemini voice design should be hidden when Fish Audio connection is selected');
+  
+  // Verify character card controls adapted to Fish Audio
+  const firstCard = $('fixed').querySelector('.et-card');
+  const searchInput = firstCard.querySelector('input[placeholder*="Fish"]');
+  assert.ok(searchInput, 'Character card input placeholder should mention Fish library');
+  const searchBtn = firstCard.querySelector('button[title*="Fish"]');
+  assert.ok(searchBtn && !searchBtn.hidden, 'Search button should be visible for Fish Audio');
+  const designBtn = firstCard.querySelector('button[title*="Design"]');
+  assert.ok(designBtn && designBtn.hidden, 'Design button should be hidden for Fish Audio');
+
+  // 3. Switch to Vertex native connection
+  $('connection').value = 'conn-vertex';
+  $('connection').dispatchEvent(new dom.window.Event('change'));
+  await until(() => $('fishLibraryContainer').hidden);
+
+  assert.equal($('fishLibraryContainer').hidden, true, 'Fish library should be hidden for Vertex');
+  assert.equal($('voiceDesignBox').hidden, false, 'Voice design should be visible for Vertex');
+
+  cleanup?.();
+  Object.assign(globalThis, old);
+});

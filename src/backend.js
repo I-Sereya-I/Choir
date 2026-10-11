@@ -56,7 +56,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         // short output limit, stop strings, response format or reasoning budget.
         const request = {type:'raw',userId,model:connection.model,
           connection_id:connection.id,messages,parameters:{max_tokens:maxTokens,
-            ...((['google','aistudio','vertex','google-ai-studio','vertex-ai'].includes(String(connection.provider || '').toLowerCase()))?{responseMimeType:'application/json'}:
+            ...((['google','aistudio','vertex','google-ai-studio','vertex-ai','google_tts','google_vertex_tts'].includes(String(connection.provider || '').toLowerCase()))?{responseMimeType:'application/json'}:
               connection.provider==='openai'?{response_format:{type:'json_object'}}:{})},
           reasoning:{source:'off'},signal:controller.signal};
         let result;

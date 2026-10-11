@@ -133,10 +133,10 @@ export async function setup(ctx) {
         <label>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
         <label class="et-check" style="align-self:end"><input data-et="batchGemini" type="checkbox" checked> Batch Gemini turns (2 speakers)</label>
       </div>
-      <label class="et-check" style="margin-top:10px"><input data-et="autoDesignNPCs" type="checkbox"> Auto-design custom voices for new NPCs (Gemini)</label>
-      <label style="margin-top:10px">Additional voices & community models (ID | description)<textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
-      <div style="margin-top:10px;padding:8px 10px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;background:rgba(128,128,128,0.03)">
-        <label style="font-weight:600">Design Voice with Prompt (Gemini)</label>
+      <label data-et="autoDesignNPCsWrap" class="et-check" style="margin-top:10px"><input data-et="autoDesignNPCs" type="checkbox"> Auto-design custom voices for new NPCs (Gemini / AI Studio)</label>
+      <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
+      <div data-et="voiceDesignBox" style="margin-top:10px;padding:8px 10px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;background:rgba(128,128,128,0.03)">
+        <label style="font-weight:600">Design Voice with Prompt (Gemini / AI Studio)</label>
         <div style="display:flex;gap:6px;margin-top:4px">
           <input data-et="voicePrompt" placeholder="e.g. Gruff Scottish blacksmith, deep gravelly timbre, weary humor" style="flex:1">
           <button data-et="designVoice" type="button" class="et-btn-subtle" style="white-space:nowrap">Design voice</button>
@@ -145,8 +145,8 @@ export async function setup(ctx) {
       </div>
     </details>
 
-        <details style="margin-top:10px">
-      <summary>Search Community Voices (2M+ models)</summary>
+    <details data-et="fishLibraryContainer" style="margin-top:10px">
+      <summary>Search Community Voices (Fish Audio Library)</summary>
       <div style="margin-top:8px">
         <div style="display:flex;gap:6px">
           <input data-et="voiceSearchQuery" placeholder="Search voices (e.g. Natsuki, Geralt, Glados, Narrator...)" style="flex:1">
@@ -258,17 +258,35 @@ export async function setup(ctx) {
   }
   const abortError = () => new DOMException('Stopped','AbortError');
   const scope = c => c.mode === 'gemini' ? 'gemini' : `native:${c.connection}`;
+  const detectProvider = routeOrConfig => {
+    if (!routeOrConfig) return 'gemini';
+    const route = typeof routeOrConfig === 'string'
+      ? routeOrConfig
+      : (routeOrConfig.mode === 'gemini' ? 'gemini' : `native:${routeOrConfig.connection}`);
+    if (route === 'gemini') return 'gemini';
+    const connectionId = route.startsWith('native:') ? route.slice(7) : route;
+    const conn = nativeConnections.find(c => c.id === connectionId);
+    const p = String(conn?.provider || '').toLowerCase();
+    if (p.includes('fish')) return 'fish_audio';
+    if (['google_tts','google_vertex_tts','google','aistudio','vertex','google-ai-studio','vertex-ai','gemini'].includes(p) || p.includes('vertex') || p.includes('aistudio')) return 'gemini';
+    return p || 'generic';
+  };
   async function ensureCatalogue(route) {
     if(voiceCatalogues.has(route))return voiceCatalogues.get(route);
     if(route==='gemini')return GEMINI_VOICES;
     const connectionId=route.startsWith('native:')?route.slice(7):'';
     if(!nativeConnections.some(c=>c.id===connectionId))throw new Error('Select an available TTS connection for this speaker.');
+    const conn=nativeConnections.find(c=>c.id===connectionId);
     const data=await api(`/tts-connections/${encodeURIComponent(connectionId)}/voices`).then(response=>response.json());
     if(data.error && !data.voices?.length)throw new Error(data.error);
     const extra=String(config.extraVoices || '').split('\n').filter(s=>s.trim()).map(line=>{
       const [id,...desc]=line.split('|');return {id:id.trim(),name:id.trim(),description:desc.join('|').trim()};
     });
-    const catalogue=normalizeVoiceCatalogue([...new Map([...(data.voices || []), ...extra].map(v=>[v.id,v])).values()]);
+    let baseVoices=data.voices || [];
+    if(detectProvider(conn?.provider || route)==='gemini' && !baseVoices.some(v=>GEMINI_VOICES.some(gv=>gv.id===v.id))) {
+      baseVoices=[...baseVoices,...GEMINI_VOICES];
+    }
+    const catalogue=normalizeVoiceCatalogue([...new Map([...baseVoices, ...extra].map(v=>[v.id,v])).values()]);
     if(!catalogue.length)throw new Error('This TTS connection returned no voices. Configure its voice catalogue in Lumiverse.');
     voiceCatalogues.set(route,catalogue);return catalogue;
   }
@@ -343,28 +361,19 @@ export async function setup(ctx) {
       voice.value=selected;
     };
     gender.onchange=filterVoices;filterVoices();
-    route.onchange=()=>run(async()=>{
-      const selected=route.value;voice.value='';voice.disabled=true;
-      try {
-        const catalogue=await ensureCatalogue(selected || scope(config));
-        if(route.value!==selected || disposed)return;
-        rowVoices=catalogue;filterVoices();clearPlan();status('Speaker TTS connection selected. Choose a voice or Let LLM choose, then save.');
-        $('gemini').hidden=config.mode!=='gemini' && ![...castRows,...npcRows].some(row=>row.read().route==='gemini');
-      } finally {if(!disposed && route.value===selected)voice.disabled=busy;}
-    });
 
     const voiceWrap=document.createElement('div');
     const voiceSearchRow=document.createElement('div');
     voiceSearchRow.style.cssText='display:flex;gap:4px;margin-bottom:4px';
     const voiceSearchInput=document.createElement('input');
     voiceSearchInput.type='text';
-    voiceSearchInput.placeholder='Filter / search community…';
+    voiceSearchInput.placeholder='Filter voices…';
     voiceSearchInput.style.cssText='font-size:0.85em;padding:4px 6px;flex:1';
     voiceSearchInput.oninput=()=>{searchFilter=voiceSearchInput.value;filterVoices();};
 
     const searchCommBtn=document.createElement('button');
     searchCommBtn.type='button';searchCommBtn.className='et-btn-subtle';
-    searchCommBtn.title='Search community voices';searchCommBtn.textContent='🔍';
+    searchCommBtn.title='Search Fish Audio community models';searchCommBtn.textContent='🔍';
     searchCommBtn.style.cssText='padding:2px 8px';
     const doRowSearch=()=>run(async()=>{
       const q=voiceSearchInput.value.trim();
@@ -391,7 +400,39 @@ export async function setup(ctx) {
       } finally {searchCommBtn.disabled=false;searchCommBtn.textContent='🔍';}
     });
     searchCommBtn.onclick=doRowSearch;
-    voiceSearchInput.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();doRowSearch();}};
+    voiceSearchInput.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();if(!searchCommBtn.hidden)doRowSearch();}};
+
+    const designRowBtn=document.createElement('button');
+    designRowBtn.type='button';designRowBtn.className='et-btn-subtle';
+    designRowBtn.title='Design bespoke voice for this character (Gemini / AI Studio)';designRowBtn.textContent='✨';
+    designRowBtn.style.cssText='padding:2px 8px';
+    designRowBtn.onclick=()=>run(async()=>{
+      const speakerName=name.value.trim() || 'Character';
+      const promptText=(typeof window!=='undefined' && typeof window.prompt==='function')
+        ? (window.prompt(`Describe bespoke voice for ${speakerName}:`,`${speakerName} voice, expressive natural delivery`) || `${speakerName} voice, expressive natural delivery`)
+        : `${speakerName} voice, expressive natural delivery`;
+      if(!promptText)return;
+      designRowBtn.disabled=true;designRowBtn.textContent='…';
+      try {
+        const apiKey=$('key').value.trim();
+        if(!apiKey && (route.value || config.mode)==='gemini')throw new Error('Enter a Gemini API key for this session.');
+        const res=await rpc('designVoice',{prompt:promptText,apiKey},null,15000);
+        const voiceId=res.result.id;
+        const entry=`${voiceId} | ${promptText}`;
+        const existing=String(config.extraVoices || '').trim();
+        if(!existing.includes(voiceId)) {
+          config.extraVoices=existing?`${existing}\n${entry}`:entry;
+          $('extraVoices').value=config.extraVoices;
+        }
+        if(!rowVoices.some(v=>v.id===voiceId)) {
+          rowVoices.push({id:voiceId,name:voiceId,description:promptText});
+        }
+        searchFilter='';voiceSearchInput.value='';filterVoices();
+        voice.value=voiceId;
+        config=capture();if(chatId)await ctx.settings.set(settingsKey(chatId),config);
+        status(`Designed custom voice "${voiceId}" for ${speakerName}.`);
+      } finally {designRowBtn.disabled=false;designRowBtn.textContent='✨';}
+    });
 
     const auditionRowBtn=document.createElement('button');
     auditionRowBtn.type='button';auditionRowBtn.className='et-btn-subtle';
@@ -406,6 +447,7 @@ export async function setup(ctx) {
         let blob;
         const sampleText='Hello! I am your voice for this story.';
         const selectedRoute=route.value || scope(config);
+        const cardProvider=detectProvider(selectedRoute);
         if(selectedRoute==='gemini') {
           const apiKey=$('key').value.trim();
           if(!apiKey)throw new Error('Enter a Gemini API key for this session.');
@@ -416,7 +458,7 @@ export async function setup(ctx) {
           const connectionId=selectedRoute.startsWith('native:')?selectedRoute.slice(7):config.connection;
           const conn=nativeConnections.find(c=>c.id===connectionId) || nativeConnections[0];
           if(!conn)throw new Error('TTS connection not available for audition.');
-          const isFish=/fish/i.test(conn.provider || '');
+          const isFish=cardProvider==='fish_audio';
           const textToSend=isFish ? `[cheerful] ${sampleText}` : sampleText;
           const resp=await api('/tts/synthesize',{
             method:'POST',headers:{'Content-Type':'application/json'},
@@ -431,15 +473,50 @@ export async function setup(ctx) {
       } finally {if(token===revision){controller=null;setBusy(false);}}
     });
 
-    voiceSearchRow.append(voiceSearchInput,searchCommBtn,auditionRowBtn);
+    const style=document.createElement('input');style.value=actor.style || '';style.maxLength=600;
+
+    const updateCardProviderControls=()=>{
+      const cardRoute=route.value || scope(config);
+      const cardProvider=detectProvider(cardRoute);
+      if(cardProvider==='fish_audio') {
+        voiceSearchInput.placeholder='Filter / search Fish library…';
+        searchCommBtn.hidden=false;
+        designRowBtn.hidden=true;
+        style.placeholder='e.g. cheerful, whispering, sigh (Fish cues)';
+      } else if(cardProvider==='gemini') {
+        voiceSearchInput.placeholder='Filter Gemini voices…';
+        searchCommBtn.hidden=true;
+        designRowBtn.hidden=false;
+        style.placeholder='e.g. whispering in fear, sarcastic (Gemini metadata)';
+      } else {
+        voiceSearchInput.placeholder='Filter voices…';
+        searchCommBtn.hidden=true;
+        designRowBtn.hidden=true;
+        style.placeholder='Delivery style instruction';
+      }
+    };
+
+    route.onchange=()=>run(async()=>{
+      const selected=route.value;voice.value='';voice.disabled=true;
+      try {
+        const catalogue=await ensureCatalogue(selected || scope(config));
+        if(route.value!==selected || disposed)return;
+        rowVoices=catalogue;filterVoices();clearPlan();
+        updateCardProviderControls();
+        updateProviderVisibility();
+        status('Speaker TTS connection selected. Choose a voice or Let LLM choose, then save.');
+      } finally {if(!disposed && route.value===selected)voice.disabled=busy;}
+    });
+
+    voiceSearchRow.append(voiceSearchInput,searchCommBtn,designRowBtn,auditionRowBtn);
     voiceWrap.append(voiceSearchRow,voice);
 
-    const style=document.createElement('input');style.value=actor.style || '';style.maxLength=600;
     for (const [label,node] of [['Speaker name',name],['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style]]) {
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);row.append(wrap);
     }
     if(!reserved){const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();};row.append(remove);}
     container.append(row);
+    updateCardProviderControls();
     return {row,read:()=>({speaker:name.value.trim(),voice:voice.value,route:route.value,gender:gender.value,style:style.value.trim()})};
   }
   function renderCast() {
@@ -448,6 +525,7 @@ export async function setup(ctx) {
     const npcs=config.casts[scope(config)] || [];
     npcRows=npcs.map(actor=>makeRow(actor,$('npcs')));
     if(!npcs.length){const p=document.createElement('p');p.textContent='No NPCs cast yet.';$('npcs').append(p);}
+    updateProviderVisibility();
   }
   function capture() {
     return {...config,fixed:castRows.filter(v=>v.row.parentElement===$('fixed')).map(v=>v.read()),
@@ -471,10 +549,35 @@ export async function setup(ctx) {
     if(!Number.isInteger(c.plannerTokens) || c.plannerTokens<1024 || c.plannerTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
     if(c.mode==='native' && !nativeConnections.some(v=>v.id===c.connection))throw new Error('Select an existing Lumiverse TTS connection.');
   }
+  function updateProviderVisibility() {
+    const activeProvider=detectProvider(config);
+    const anyFish=activeProvider==='fish_audio' || [...castRows,...npcRows].some(row=>detectProvider(row.read().route || scope(config))==='fish_audio');
+    const anyGemini=activeProvider==='gemini' || [...castRows,...npcRows].some(row=>detectProvider(row.read().route || scope(config))==='gemini');
+
+    $('gemini').hidden=config.mode!=='gemini' && ![...castRows,...npcRows].some(row=>row.read().route==='gemini');
+    $('native').hidden=config.mode!=='native';
+
+    if($('voiceDesignBox'))$('voiceDesignBox').hidden=!anyGemini;
+    if($('autoDesignNPCsWrap'))$('autoDesignNPCsWrap').hidden=!anyGemini;
+    if($('fishLibraryContainer'))$('fishLibraryContainer').hidden=!anyFish;
+
+    if($('extraVoicesLabel')) {
+      if(activeProvider==='fish_audio') {
+        $('extraVoicesLabel').textContent='Additional Fish Audio voices & reference IDs (ID | description)';
+        $('extraVoices').placeholder='reference_id | description (e.g. Fish Audio model ID or reference voice)';
+      } else if(activeProvider==='gemini') {
+        $('extraVoicesLabel').textContent='Additional Gemini voices & custom IDs (ID | description)';
+        $('extraVoices').placeholder='voice_id | description (e.g. custom designed voice_... ID)';
+      } else {
+        $('extraVoicesLabel').textContent='Additional voices & models (ID | description)';
+        $('extraVoices').placeholder='voice_id | description';
+      }
+    }
+  }
   function setFields() {
     for(const name of ['mode','model','planner','connection','styleParam','apiBase','chunk','plannerTokens','extraVoices','retention'])$(name).value=config[name];
     $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;$('batchGemini').checked=config.batchGemini;$('concurrency').value=config.concurrency;$('autoDesignNPCs').checked=Boolean(config.autoDesignNPCs);
-    $('gemini').hidden=config.mode!=='gemini' && ![...config.fixed,...(config.casts[scope(config)] || [])].some(actor=>actor.route==='gemini');$('native').hidden=config.mode!=='native';
+    updateProviderVisibility();
   }
   function setBusy(value) {
     busy=value;
@@ -528,9 +631,14 @@ export async function setup(ctx) {
     if(config.mode==='gemini') {
       voices=[...new Map([...GEMINI_VOICES,...extra].map(v=>[v.id,v])).values()];
     } else if(config.connection) {
+      const conn=nativeConnections.find(c=>c.id===config.connection);
       const response=await api(`/tts-connections/${encodeURIComponent(config.connection)}/voices`);
       const data=await response.json();if(disposed || version!==loadVersion)return;
-      voices=[...new Map([...(data.voices || []), ...extra].map(v=>[v.id,v])).values()];
+      let baseVoices=data.voices || [];
+      if(detectProvider(conn?.provider || config)==='gemini' && !baseVoices.some(v=>GEMINI_VOICES.some(gv=>gv.id===v.id))) {
+        baseVoices=[...baseVoices,...GEMINI_VOICES];
+      }
+      voices=[...new Map([...baseVoices, ...extra].map(v=>[v.id,v])).values()];
       if(!voices.length)throw new Error('This connection returned no voices. Configure its voice catalogue in Lumiverse.');
     } else {voices=[...extra];}
     voices=normalizeVoiceCatalogue(voices);
@@ -683,7 +791,7 @@ export async function setup(ctx) {
       for(const actor of config.fixed) {
         if(!actor.voice)actor.voice=validated.segments.find(s=>normalizeName(s.speaker)===normalizeName(actor.speaker))?.voice || '';
       }
-      if(config.autoDesignNPCs && config.mode==='gemini' && $('key').value) {
+      if(config.autoDesignNPCs && detectProvider(config)==='gemini' && $('key').value) {
         const apiKey=$('key').value.trim();
         for(const npc of plan.npcs) {
           if(npc.voicePrompt || !npc.voice?.startsWith('voice_')) {
@@ -798,9 +906,9 @@ export async function setup(ctx) {
                 ? (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:undefined)
                 : (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:['instructions','instruct','prompt'].find(p=>supported[p]));
               if(snapshot.useStyle && styleParam && seg.style)parameters[styleParam]=seg.style;
-              const isFish=/fish/i.test(connection.provider || '');
+              const isFish=detectProvider(connection?.provider || route)==='fish_audio';
               const textToSend=isFish && snapshot.useStyle && seg.style && !seg.text.startsWith('[')
-                ? `[${seg.style}] ${seg.text}`
+                ? (seg.style.trim().startsWith('[') ? `${seg.style.trim()} ${seg.text}` : `[${seg.style.trim()}] ${seg.text}`)
                 : seg.text;
               const response=await api('/tts/synthesize',{
                 method:'POST',
@@ -1050,7 +1158,7 @@ export async function setup(ctx) {
       } else {
         const connection=nativeConnections.find(c=>`native:${c.id}`===config.connection) || nativeConnections.find(c=>c.id===config.connection) || nativeConnections[0];
         if(!connection)throw new Error('TTS connection is not available for audition.');
-        const isFish=/fish/i.test(connection.provider || '');
+        const isFish=detectProvider(connection?.provider || config)==='fish_audio';
         const textToSend=isFish ? `[cheerful] ${sampleText}` : sampleText;
         const response=await api('/tts/synthesize',{
           method:'POST',
