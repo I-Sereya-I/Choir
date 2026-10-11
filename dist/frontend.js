@@ -384,14 +384,16 @@ For automatic voice selection, honor each cast entry gender preference: female m
 }
 
 
+const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 380" width="100%" height="100%"><defs><linearGradient id="choirClefGrad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#C72C50"/><stop offset="60%" stop-color="#BA2448"/><stop offset="100%" stop-color="#A81D3E"/></linearGradient><linearGradient id="choirStarGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#F2AE6B"/><stop offset="100%" stop-color="#DE8645"/></linearGradient></defs><g transform="translate(15, 10)"><path fill="url(#choirStarGrad)" d="M 148 10 Q 148 26 158 26 Q 148 26 148 42 Q 148 26 138 26 Q 148 26 148 10 Z"/><path fill="url(#choirClefGrad)" fill-rule="evenodd" d="M 98.4 34.2 C 93.6 34.2 89.2 37.4 87.4 42.3 C 85.5 47.9 86.9 55.5 89.6 64 C 94.4 79 102.6 99.4 111.1 122.2 C 103.4 128.8 96.4 136.6 90.5 145.7 C 81.1 160.3 74.8 176.9 71.7 194.5 C 68.6 212.2 69.2 230 73.7 246.6 C 78.2 263.1 86.9 277 98.8 287.1 C 106.4 293.5 115.2 297.8 125 299.7 L 125 308.8 C 125 320.3 121.9 329.7 115.9 336.6 C 109.9 343.6 101.5 347.2 90.9 347.2 C 83.3 347.2 76.6 345 71.1 340.6 C 65.6 336.2 62.1 330 60.8 322.1 C 65.2 320.9 68.9 318.1 71.4 313.9 C 73.9 309.7 74.9 304.7 73.8 299.5 C 72.7 294.3 69.6 290 65.3 287.3 C 61 284.6 55.7 284 50.8 285.6 C 44.8 287.6 39.9 292 37.4 298.1 C 34.8 304.2 34.6 311.3 37 318 C 40.1 327.1 46 335.2 54.3 341.6 C 63.5 349 75 354 87.9 355.8 C 90.6 356.2 93.3 356.4 96.1 356.4 C 109.3 356.4 121.2 352 130.9 343.4 C 140.7 334.8 145.8 322.6 145.8 307 L 145.8 220 C 153.6 213.3 160.2 204.6 165 194.3 C 170.5 182.8 173.3 170.2 173.3 157.3 C 173.3 141.8 169.2 128.2 161.1 117.1 C 153.4 106.6 142.9 100.2 130.1 98.1 C 126.4 88.1 122.3 77.4 118.2 66.5 C 114.6 56.8 111.4 47.5 109.1 39.7 C 107 33 106.5 27.5 107.2 23.7 L 99.1 22 C 98.1 25.5 98.4 29.8 98.4 34.2 Z M 125 146.8 L 125 197.3 C 129.9 193.5 134.2 188.6 137.6 182.6 C 141.5 175.8 143.5 168.3 143.5 160.3 C 143.5 153.3 141.7 146.9 138.1 141.4 C 134.7 136 130.1 132.5 125 131.1 L 125 146.8 Z M 117.2 145.8 L 117.2 214.3 C 110.5 212 104.7 207.8 100.1 202 C 94.8 195.2 92.1 186.8 92.1 176.9 C 92.1 166.1 95.1 156.2 100.9 146.9 C 105.4 139.8 110.8 133.7 116.9 128.7 L 117.2 145.8 Z M 112.5 73.7 C 110.4 68 108.7 62.5 107.7 57.4 C 106.7 52.3 106.3 47.9 106.9 44.3 C 107.5 40.7 109.1 38.8 111.7 38.8 C 114.3 38.8 116.7 40.8 118.9 44.8 C 121.1 48.8 123.4 55 125.8 63.4 L 112.5 73.7 Z"/></g></svg>`;
+
 export async function setup(ctx) {
-  const tab = ctx.ui.registerDrawerTab({id:'ensemble',title:'Choir',shortName:'Voices',
-    description:'Cast and play your story with multiple voices',keywords:['tts','audio','voices','narrator']});
+  const tab = ctx.ui.registerDrawerTab({id:'ensemble',title:'Choir',shortName:'Choir',iconSvg:CHOIR_ICON_SVG,
+    description:'Cast and play your story with multiple voices',keywords:['tts','audio','choir','voices','narrator']});
   const root=document.createElement('div');
   tab.root.append(root);
-  const settingsTab=ctx.ui.registerSettingsTab?.({id:'choir',title:'Choir',shortName:'Voices',
+  const settingsTab=ctx.ui.registerSettingsTab?.({id:'choir',title:'Choir',shortName:'Choir',iconSvg:CHOIR_ICON_SVG,
     description:'Configure Choir speech providers, narrator, persona and character voices',
-    keywords:['tts','speech','voices','narrator','persona','characters'],position:'bottom'});
+    keywords:['tts','speech','choir','voices','narrator','persona','characters'],position:'bottom'});
   const placementUnsubs=[];
   if(settingsTab) {
     placementUnsubs.push(settingsTab.onActivate(()=>settingsTab.root.replaceChildren(root)));
@@ -1803,7 +1805,7 @@ export async function setup(ctx) {
       renderMessages();
     }));
   }
-  const action=ctx.ui.registerInputBarAction({id:'ensemble',label:'Choir',subtitle:'Cast and play voices',enabled:true});
+  const action=ctx.ui.registerInputBarAction({id:'ensemble',label:'Choir',subtitle:'Cast and play voices',iconSvg:CHOIR_ICON_SVG,enabled:true});
   action.onClick(()=>tab.activate());
   unsubs.push(()=>action.destroy());
   const cleanup=()=>{
