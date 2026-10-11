@@ -76,8 +76,10 @@ export async function setup(ctx) {
     .ensemble-tts .et-check input{width:auto;margin:0;cursor:pointer}
     .ensemble-tts .et-card{padding:10px 12px;border:1px solid rgba(128,128,128,0.25);border-radius:8px;background:rgba(128,128,128,0.03);margin:8px 0}
     .ensemble-tts .et-cast-row{padding:6px 10px;margin:4px 0}
-    .ensemble-tts .et-cast-header{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:28px}
-    .ensemble-tts .et-cast-header strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.9em}
+    .ensemble-tts .et-cast-header{display:flex;align-items:center;justify-content:space-between;position:relative;gap:8px;min-height:28px}
+    .ensemble-tts .et-cast-header strong{position:absolute;left:50%;transform:translateX(-50%);text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.9em;max-width:calc(100% - 110px)}
+    .ensemble-tts .et-cast-header strong[title]{cursor:pointer}
+    .ensemble-tts .et-cast-name-input{position:absolute;left:50%;transform:translateX(-50%);font:inherit;font-weight:bold;text-align:center;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.25);border-radius:4px;color:inherit;padding:1px 6px;max-width:180px;outline:none;z-index:2}
     .ensemble-tts .et-cast-editor{margin-top:10px;padding-top:10px;border-top:1px solid rgba(128,128,128,0.2)}
     .ensemble-tts .et-status{white-space:pre-wrap;padding:8px 12px;border-radius:6px;background:rgba(128,128,128,0.08);font-size:0.88em;margin:8px 0}
     .ensemble-tts [hidden]{display:none!important}
@@ -195,15 +197,15 @@ export async function setup(ctx) {
       </div>
     </div>
     <div class="et-grid">
-      <label>Voice connections<select data-et="connectionMode"><option value="one">One TTS · whole cast</option><option value="several">Several TTS · per character</option></select></label>
-      <label>Default TTS connection<select data-et="mode"><option value="gemini">Gemini 3.8 (style metadata)</option><option value="native">Lumiverse TTS</option></select></label>
+      <label hidden>Voice connections<select data-et="connectionMode"><option value="several">Several TTS · per character</option><option value="one">One TTS · whole cast</option></select></label>
+      <label hidden>Default TTS connection<select data-et="mode"><option value="native">Lumiverse TTS</option><option value="gemini">Gemini 3.8 (style metadata)</option></select></label>
       <label>Planner engine<select data-et="plannerMode"><option value="llm">Standard LLM Connection</option><option value="jev">Jev System 1 (TypeSafe AI)</option></select></label>
     </div>
-    <div data-et="gemini" class="et-grid" style="margin-top:10px">
+    <div data-et="gemini" hidden class="et-grid" style="margin-top:10px">
       <label>Gemini model<select data-et="model"><option>gemini-3.8-flash-tts</option><option>gemini-3.8-flash-lite-tts</option></select></label>
       <label>Gemini API key<input data-et="key" type="password" autocomplete="off" placeholder="Session key (never saved)"></label>
     </div>
-    <div data-et="native" hidden class="et-grid" style="margin-top:10px">
+    <div data-et="native" class="et-grid" style="margin-top:10px">
       <label>Lumiverse connection<select data-et="connection"></select></label>
       <label>Style handling<select data-et="styleParam"><option value="">Ignore style</option><option value="instructions">instructions (OpenAI)</option><option value="instruct">instruct</option><option value="prompt">prompt</option></select></label>
     </div>
@@ -211,9 +213,10 @@ export async function setup(ctx) {
       <label>Planner LLM connection<select data-et="planner"><option value="">Default LLM connection</option></select></label>
     </div>
     <div data-et="jevPlannerBox" hidden class="et-grid" style="margin-top:10px">
-      <label>Jev API key (TypeSafe AI)<input data-et="jevKey" type="password" placeholder="jev_... (~20ms typed classification)"></label>
-      <label>Jev endpoint URL<input data-et="jevEndpoint" placeholder="https://api.typesafe.ai/v1/classify"></label>
-      <label class="et-check"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
+      <label>Decision connection<select data-et="decisionConnection"><option value="">Default Decision connection</option></select></label>
+      <label class="et-check" style="align-self:end"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
+      <input data-et="jevKey" type="hidden">
+      <input data-et="jevEndpoint" type="hidden">
     </div>
     <div class="et-row" style="margin-top:10px;flex-wrap:wrap;gap:12px">
       <label class="et-check"><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
@@ -351,8 +354,8 @@ export async function setup(ctx) {
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
   const voiceCatalogues=new Map();
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
-  const defaults = () => ({mode:'gemini',model:'gemini-3.8-flash-tts',planner:'',connection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:false,concurrency:1,plannerTokens:8192,
-    prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,sectionButtons:false,connectionMode:'one',singleVoices:{},
+  const defaults = () => ({mode:'native',model:'gemini-3.8-flash-tts',planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:false,concurrency:1,plannerTokens:8192,
+    prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,sectionButtons:false,connectionMode:'several',singleVoices:{},
     extraVoices:'',useStyle:true,auto:false,muteNarrator:false,enableSfx:true,freesoundApiKey:'',autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1/classify',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
@@ -821,7 +824,7 @@ export async function setup(ctx) {
     const header=document.createElement('div');header.className='et-cast-header';
     const heading=document.createElement('strong'),edit=document.createElement('button');edit.type='button';edit.className='et-btn-subtle';edit.dataset.choirEdit='';
     const editor=document.createElement('div');editor.className='et-grid et-cast-editor';editor.dataset.choirCastEditor='';editor.id=`choir-cast-editor-${++castEditorId}`;editor.hidden=!open;edit.setAttribute('aria-controls',editor.id);
-    const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;
+    const name=document.createElement('input');name.value=actor.speaker;name.disabled=reserved;name.style.display='none';editor.prepend(name);
     const refreshHeading=()=>{const speaker=name.value.trim() || 'Character';heading.textContent=speaker;edit.textContent=editor.hidden?'Edit':'Done';edit.setAttribute('aria-label',editor.hidden?`Edit ${speaker}`:`Close ${speaker} editor`);edit.setAttribute('aria-expanded',String(!editor.hidden));};
     if(!reserved){
       const delBtn=document.createElement('button');delBtn.type='button';delBtn.className='et-btn-subtle';delBtn.title='Remove character';delBtn.setAttribute('aria-label','Remove character');delBtn.innerHTML=ICON_CLOSE;
@@ -831,10 +834,36 @@ export async function setup(ctx) {
       delBtn.onclick=(e)=>{e.preventDefault();e.stopPropagation();row.remove();};
       header.append(delBtn);
     }
-    name.addEventListener('input',refreshHeading);edit.onclick=()=>{editor.hidden=!editor.hidden;refreshHeading();};refreshHeading();header.append(heading,edit);row.append(header,editor);
+    name.addEventListener('input',refreshHeading);edit.onclick=()=>{editor.hidden=!editor.hidden;refreshHeading();};refreshHeading();
+    edit.style.marginLeft='auto';
+    if(!reserved){
+      heading.title='Click to change name';
+      heading.onclick=(e)=>{
+        e.stopPropagation();
+        const current=name.value.trim() || 'Character';
+        const input=document.createElement('input');
+        input.type='text';input.value=current;input.className='et-cast-name-input';
+        const saveName=()=>{
+          const val=input.value.trim();
+          if(val && val!==name.value){
+            name.value=val;actor.speaker=val;scheduleSettingsSave();renderMixer();
+          }
+          refreshHeading();
+          if(input.parentNode)input.replaceWith(heading);
+        };
+        input.onkeydown=(ev)=>{
+          if(ev.key==='Enter'){ev.preventDefault();saveName();}
+          else if(ev.key==='Escape'){ev.preventDefault();refreshHeading();if(input.parentNode)input.replaceWith(heading);}
+        };
+        input.onblur=saveName;
+        heading.replaceWith(input);
+        input.focus();input.select();
+      };
+    }
+    header.append(heading,edit);row.append(header,editor);
     const voice=document.createElement('select');
     const route=document.createElement('select');route.dataset.choirRoute='';
-    option(route,'','Use chat default');option(route,'gemini','Gemini style metadata');
+    option(route,'','Use chat default');
     for(const connection of nativeConnections)option(route,`native:${connection.id}`,`${connection.name} · ${connection.provider}`);
     if(actor.route && ![...route.options].some(option=>option.value===actor.route))option(route,actor.route,`${actor.route} · unavailable`);
     const single=config.connectionMode==='one';route.value=single?'':actor.route || '';
@@ -1017,7 +1046,7 @@ export async function setup(ctx) {
     voiceSearchRow.append(voiceSearchInput,searchCommBtn,designRowBtn,auditionRowBtn);
     voiceWrap.append(voiceSearchRow,voice);
 
-    for (const [label,node] of [['Speaker name',name],['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Pronunciation instruction',pronunciation],['Accent preference',accent]]) {
+    for (const [label,node] of [['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Pronunciation instruction',pronunciation],['Accent preference',accent]]) {
       if(node!==route)(node===voiceWrap?voice:node).dataset.choirPersist='';
       const wrap=document.createElement('label');wrap.textContent=label;wrap.append(node);editor.append(wrap);
       if(node===route)wrap.hidden=single;
@@ -1042,7 +1071,7 @@ export async function setup(ctx) {
     return {...config,fixed:castRows.filter(v=>v.row.parentElement===$('fixed')).map(v=>v.read()),
       singleVoices:config.connectionMode==='one'?{...config.singleVoices,[scope(config)]:Object.fromEntries([...castRows,...npcRows].filter(v=>v.row.isConnected || v.row.parentElement).map(v=>v.voiceChoice()))}:config.singleVoices,
       casts:{...config.casts,[scope(config)]:npcRows.filter(v=>v.row.parentElement===$('npcs')).map(v=>v.read())},
-      mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,
+      mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,decisionConnection:$('decisionConnection')?$('decisionConnection').value:(config.decisionConnection||''),
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,concurrency:Number($('concurrency').value),
       prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,
@@ -1115,20 +1144,23 @@ export async function setup(ctx) {
     }
 
     if($('styleParam')) {
-      if(activeProvider==='fish_audio') {
-        $('styleParam').options[0].textContent='Inline emotion tags (e.g. [cheerful])';
-        for(const opt of $('styleParam').options) if(opt.value) opt.disabled=true;
+      const conn=nativeConnections.find(v=>v.id===config.connection);
+      const provId=String(conn?.provider || '').toLowerCase();
+      const hideStyle=activeProvider==='fish_audio' || activeProvider==='gemini' ||
+        provId.includes('fish') || provId.includes('aistudio') || provId.includes('vertex');
+      const styleLabel=$('styleParam').closest('label');
+      if(styleLabel)styleLabel.hidden=hideStyle;
+      if(hideStyle) {
         $('styleParam').value='';
       } else {
-        const connection=nativeConnections.find(v=>v.id===config.connection);
-        const parameters=nativeProviders.find(v=>v.id===connection?.provider)?.capabilities?.parameters || {};
+        const parameters=nativeProviders.find(v=>v.id===conn?.provider)?.capabilities?.parameters || {};
         const hasAny=['instructions','instruct','prompt'].some(p=>parameters[p]);
         $('styleParam').options[0].textContent=hasAny ? 'Ignore style' : 'Not supported by this provider';
       }
     }
   }
   function setFields() {
-    for(const name of ['mode','model','planner','connection','styleParam','apiBase','chunk','plannerTokens','extraVoices','retention'])$(name).value=config[name];
+    for(const name of ['mode','model','planner','connection','decisionConnection','styleParam','apiBase','chunk','plannerTokens','extraVoices','retention'])if($(name))$(name).value=config[name] || '';
     $('connectionMode').value=config.connectionMode;
     $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;
     if($('muteNarrator'))$('muteNarrator').checked=Boolean(config.muteNarrator);
@@ -1175,11 +1207,18 @@ export async function setup(ctx) {
   async function loadProviders() {
     const version=loadVersion;
     const results=await Promise.allSettled([
-      api('/tts-connections?limit=200').then(r=>r.json()),api('/tts-connections/providers').then(r=>r.json()),api('/connections?limit=200').then(r=>r.json())
+      api('/tts-connections?limit=200').then(r=>r.json()),api('/tts-connections/providers').then(r=>r.json()),api('/connections?limit=200').then(r=>r.json()),api('/decision-connections?limit=200').then(r=>r.json())
     ]);
     if(disposed || version!==loadVersion)return;
     nativeConnections=results[0].status==='fulfilled' ? results[0].value.data || [] : [];
     nativeProviders=results[1].status==='fulfilled' ? results[1].value.providers || [] : [];
+    const decisionConnections=results[3].status==='fulfilled' ? results[3].value.data || [] : [];
+    if(config.mode==='native' && !nativeConnections.length) {
+      config.mode='gemini';
+      if($('mode'))$('mode').value='gemini';
+    } else if(config.mode==='native' && !config.connection && nativeConnections.length) {
+      config.connection=nativeConnections[0].id;
+    }
     $('connection').replaceChildren();option($('connection'),'','Choose connection');
     nativeConnections.forEach(c=>option($('connection'),c.id,`${c.name} · ${c.provider}`));
     $('connection').value=config.connection;
@@ -1188,6 +1227,17 @@ export async function setup(ctx) {
     for(const c of plannerConnections)option($('planner'),c.id,`${c.name} · ${c.provider || ''} · ${c.model || 'No model configured'}`);
     if(config.planner && !plannerConnections.some(c=>c.id===config.planner))option($('planner'),config.planner,'Saved planner connection · unavailable');
     $('planner').value=config.planner;
+    if($('decisionConnection')) {
+      $('decisionConnection').replaceChildren();
+      option($('decisionConnection'),'','Default Decision connection');
+      for(const c of decisionConnections) {
+        option($('decisionConnection'),c.id,`${c.name} · ${c.provider}${c.model ? ` (${c.model})` : ''}`);
+      }
+      if(config.decisionConnection && !decisionConnections.some(c=>c.id===config.decisionConnection)) {
+        option($('decisionConnection'),config.decisionConnection,'Saved Decision connection · unavailable');
+      }
+      $('decisionConnection').value=config.decisionConnection || '';
+    }
     await loadVoices(version);
     if(config.mode==='native' && results[0].status==='rejected')throw results[0].reason;
   }
@@ -1410,6 +1460,7 @@ export async function setup(ctx) {
           const result = await rpc('planJev', {
             transcript,
             config: snapshot,
+            decisionConnection: snapshot.decisionConnection || $('decisionConnection')?.value || '',
             apiKey: jevKey,
             endpoint: jevEndpoint
           }, ctrl.signal, 15000);
@@ -1964,6 +2015,7 @@ export async function setup(ctx) {
       const payload=isJev ? {
         plannerMode:'jev',
         useJev:true,
+        decisionConnection:$('decisionConnection')?.value || config.decisionConnection || '',
         jevApiKey:$('jevKey')?.value?.trim() || config.jevApiKey || '',
         jevEndpoint:$('jevEndpoint')?.value?.trim() || config.jevEndpoint || ''
       } : {

@@ -806,15 +806,16 @@ async function classifyWithJev({ items = [], candidates = [], apiKey, endpoint, 
   return choices;
 }
 
-async function planWithJev({ transcript, config, apiKey, endpoint, context = '', signal } = {}) {
+async function planWithJev({ transcript, config, apiKey, endpoint, context = '', decisionConnection, signal } = {}) {
   if (typeof transcript !== 'string' || !transcript.trim()) {
     throw new Error('Choose a message with text to plan.');
   }
   if (!config) throw new Error('Configuration required for planning.');
   validateCastConfig(config);
 
+  const hasSpindleDecisions = typeof spindle !== 'undefined' && typeof spindle?.decisions?.evaluate === 'function';
   const key = apiKey || config.jevApiKey;
-  if (!key || typeof key !== 'string' || !key.trim()) {
+  if (!hasSpindleDecisions && (!key || typeof key !== 'string' || !key.trim())) {
     throw new Error('Enter a Jev API key for this session.');
   }
   const ep = endpoint || config.jevEndpoint;
@@ -848,36 +849,87 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   let emotionChoices = [];
 
   if (dialogueUnits.length > 0) {
-    const items = dialogueUnits.map(u => {
-      const contextStart = Math.max(0, u.start - 300);
-      const contextEnd = Math.min(transcript.length, u.end + 300);
-      const localContext = transcript.slice(contextStart, contextEnd);
-      const castAliases=allCast.filter(actor=>actor.aliases?.length).map(actor=>`${actor.speaker}: ${(actor.aliases || []).join(', ')}`).join('; ');
-      const fullContext = [castAliases?`Character aliases: ${castAliases}`:'',context.slice(-1000),localContext].filter(Boolean).join('\n');
-      return { text: u.text, context: fullContext };
-    });
+    if (hasSpindleDecisions) {
+      const questions = {};
+      dialogueUnits.forEach((u, i) => {
+        if (candidates.length >= 2) {
+          const criteria = {};
+          for (const c of candidates) criteria[c] = c;
+          questions[`speaker_${i}`] = {
+            type: 'choice',
+            instructions: `Which character speaks this dialogue: "${u.text}"?`,
+            criteria
+          };
+        }
+        if (config.useStyle !== false) {
+          questions[`emotion_${i}`] = {
+            type: 'choice',
+            instructions: `What is the emotional delivery style for: "${u.text}"?`,
+            criteria: {
+              neutral: 'Normal speaking tone',
+              cheerful: 'Cheerful or happy',
+              whispering: 'Whispering or soft',
+              angry: 'Angry or irritated',
+              sad: 'Sad or sorrowful',
+              sigh: 'Sighing or weary'
+            }
+          };
+        }
+      });
+      if (Object.keys(questions).length > 0) {
+        const evalResult = await spindle.decisions.evaluate({
+          connection_id: decisionConnection || config.decisionConnection || undefined,
+          state: {
+            transcript: transcript.slice(-4000),
+            characters: candidates
+          },
+          questions
+        }, { signal });
+        for (let i = 0; i < dialogueUnits.length; i++) {
+          if (candidates.length >= 2) {
+            speakerChoices[i] = evalResult.answers?.[`speaker_${i}`]?.choice || candidates[0];
+          } else {
+            speakerChoices[i] = candidates[0];
+          }
+          if (config.useStyle !== false) {
+            emotionChoices[i] = evalResult.answers?.[`emotion_${i}`]?.choice || 'neutral';
+          }
+        }
+      } else {
+        speakerChoices = dialogueUnits.map(() => candidates[0]);
+      }
+    } else {
+      const items = dialogueUnits.map(u => {
+        const contextStart = Math.max(0, u.start - 300);
+        const contextEnd = Math.min(transcript.length, u.end + 300);
+        const localContext = transcript.slice(contextStart, contextEnd);
+        const castAliases=allCast.filter(actor=>actor.aliases?.length).map(actor=>`${actor.speaker}: ${(actor.aliases || []).join(', ')}`).join('; ');
+        const fullContext = [castAliases?`Character aliases: ${castAliases}`:'',context.slice(-1000),localContext].filter(Boolean).join('\n');
+        return { text: u.text, context: fullContext };
+      });
 
-    speakerChoices = await classifyWithJev({
-      items,
-      candidates,
-      apiKey: key,
-      endpoint: ep,
-      signal
-    });
+      speakerChoices = await classifyWithJev({
+        items,
+        candidates,
+        apiKey: key,
+        endpoint: ep,
+        signal
+      });
 
-    if (config.useStyle !== false) {
-      const emotions = ["neutral", "cheerful", "whispering", "angry", "sad", "sigh"];
-      try {
-        emotionChoices = await classifyWithJev({
-          items,
-          candidates: emotions,
-          apiKey: key,
-          endpoint: ep,
-          signal
-        });
-      } catch (error) {
-        if(signal?.aborted)throw error;
-        emotionChoices = [];
+      if (config.useStyle !== false) {
+        const emotions = ["neutral", "cheerful", "whispering", "angry", "sad", "sigh"];
+        try {
+          emotionChoices = await classifyWithJev({
+            items,
+            candidates: emotions,
+            apiKey: key,
+            endpoint: ep,
+            signal
+          });
+        } catch (error) {
+          if(signal?.aborted)throw error;
+          emotionChoices = [];
+        }
       }
     }
   }
@@ -966,7 +1018,24 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     }
     if(message.action==='testPlanner') {
       if (input.plannerMode === 'jev' || input.useJev) {
-        progress({stage:'Testing Jev classification endpoint'});
+        progress({stage:'Testing Decision model classification'});
+        if (typeof spindle !== 'undefined' && typeof spindle?.decisions?.evaluate === 'function') {
+          const start = Date.now();
+          const evalRes = await spindle.decisions.evaluate({
+            connection_id: input.decisionConnection || input.config?.decisionConnection || undefined,
+            state: { context: 'Alice smiled at Bob.' },
+            questions: {
+              speaker: {
+                type: 'choice',
+                instructions: 'Which character speaks: "Hello there, how are you today?"?',
+                criteria: { Alice: 'Alice', Bob: 'Bob' }
+              }
+            }
+          }, { signal: controller.signal });
+          const duration = Date.now() - start;
+          send({result:{provider:evalRes.provider || 'TypeSafe AI',model:evalRes.model || 'Jev System 1',response:`READY · Classified in ${duration}ms (choice: ${evalRes.answers?.speaker?.choice || 'Alice'})`}});
+          return;
+        }
         const apiKey = input.apiKey || input.jevApiKey;
         const endpoint = input.endpoint || input.jevEndpoint;
         const start = Date.now();
@@ -1003,6 +1072,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         config: input.config,
         apiKey,
         endpoint,
+        decisionConnection: input.decisionConnection || input.config?.decisionConnection,
         context: input.context,
         signal: controller.signal
       });
@@ -1025,7 +1095,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     if (message.action === 'plan') {
       if (typeof input.transcript !== 'string' || !input.transcript.trim()) throw new Error('Choose a message with text to plan.');
       validateCastConfig(input.config);
-      if (input.config?.useJev) {
+      if (input.config?.useJev || input.config?.plannerMode === 'jev') {
         try {
           progress({stage:'Classifying with Jev System 1'});
           const plan = await planWithJev({
@@ -1033,6 +1103,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
             config: input.config,
             apiKey: input.apiKey || input.config.jevApiKey,
             endpoint: input.endpoint || input.config.jevEndpoint,
+            decisionConnection: input.decisionConnection || input.config?.decisionConnection,
             context: input.context,
             signal: controller.signal
           });

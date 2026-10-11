@@ -88,6 +88,8 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   try {
     let cleanup=await setup(ctx);
     const $=name=>(root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`)) || settingsRoot.querySelector(`[data-et="${name}"]`);
+    $('mode').value='gemini';$('mode').dispatchEvent(new dom.window.Event('change'));
+    $('connectionMode').value='one';$('connectionMode').dispatchEvent(new dom.window.Event('change'));await tick();
     assert.match(minimalFooter.querySelector('button').title,/Play Choir/);
     assert.match($('planner').textContent,/GPT planner · openai · gpt-text-test/);
     $('planner').value='planner-a';$('testPlanner').click();await until(()=>$('status').textContent.includes('Planner test passed'));
@@ -485,7 +487,9 @@ test('autoDesignNPCs setting auto-designs bespoke Gemini voices for new NPCs wit
     assert.ok($('autoDesignNPCs'));
     assert.equal($('autoDesignNPCs').checked, false);
     
-    // Enable auto-design of NPCs
+    // Enable auto-design of NPCs (requires Gemini mode)
+    $('mode').value = 'gemini';
+    $('mode').dispatchEvent(new dom.window.Event('change'));
     $('autoDesignNPCs').checked = true;
     $('key').value = 'gemini-key-test';
     
@@ -620,7 +624,9 @@ test('detects Fish Audio vs Gemini/Vertex provider and dynamically adapts UI con
   const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
   await until(() => $('fixed')?.querySelectorAll('.et-card')?.length >= 2);
 
-  // 1. Initially mode is gemini
+  // 1. In Gemini mode
+  $('mode').value = 'gemini';
+  $('mode').dispatchEvent(new dom.window.Event('change'));
   assert.equal($('batchGeminiWrap').hidden, true, 'Mixer uses individual passages in Gemini mode');
   assert.equal($('voiceDesignBox').hidden, false, 'Gemini voice design should be visible');
   

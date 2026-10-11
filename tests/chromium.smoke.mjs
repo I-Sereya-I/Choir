@@ -39,7 +39,7 @@ try{
   assert.equal(await page.getByText('Guided setup',{exact:true}).count(),0);
   const cast=page.locator('[data-et="fixed"]');assert.equal(await cast.locator('[data-choir-cast-editor]').first().isVisible(),false);
   const narratorBounds=await cast.locator('.et-card').first().boundingBox();assert.ok(narratorBounds.height<55);
-  await cast.getByRole('button',{name:'Edit Narrator',exact:true}).click();assert.equal(await cast.getByLabel('Speaker name',{exact:true}).first().isVisible(),true);
+  await cast.getByRole('button',{name:'Edit Narrator',exact:true}).click();assert.equal(await cast.getByLabel('TTS connection',{exact:true}).first().isVisible(),true);
   await cast.getByRole('button',{name:'Close Narrator editor',exact:true}).click();assert.equal(await cast.locator('[data-choir-cast-editor]').first().isVisible(),false);
   const launcher=page.getByRole('button',{name:'Open Choir voice mixer',exact:true});
   const iconBounds=await launcher.boundingBox();assert.equal(Math.round(iconBounds.width),44);assert.equal(Math.round(iconBounds.height),44);

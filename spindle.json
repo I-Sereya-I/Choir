@@ -10,7 +10,8 @@
     "generation",
     "cors_proxy",
     "ui_panels",
-    "event_tracking"
+    "event_tracking",
+    "decisions"
   ],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js",
