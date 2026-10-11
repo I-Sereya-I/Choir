@@ -1,6 +1,14 @@
-# Choir 1.1.1 for Lumiverse staging
+# Choir 1.1.2 for Lumiverse staging
 
 An installable Spindle extension for narrated roleplay with multiple voices.
+
+## What's new in 1.1.2
+
+- Removed the guided setup. **Test planner** and **Test TTS** remain beside the Speech & Planner settings, and voice previews remain inside each cast editor.
+- Lead and NPC cast entries start as compact **Narrator · Edit** rows. Click **Edit** to change voices, routes, aliases, pronunciation, accent, or exclusions; **Done** closes the editor. Adding a character opens its editor immediately. Hidden fields remain saved and do not trigger new attribution.
+- Circular **Previous** and **Next** controls move between spoken blocks (narration or a character's turn), including saved recordings. Next skips any remaining chunks of the current block. Previous reuses cached audio. Paused navigation stays paused, and neither control replans the message.
+- A draggable playback bar appears in the mixer, the drawer and the active message. It seeks within the audio part currently playing, preserves paused playback, and saves the new resume position. Long blocks can contain several audio parts; seeking does not generate other parts.
+- Skipping retains completed audio and avoids starting unrequested remaining chunks. Already prefetched audio remains cached. Provider failures in a skipped chunk do not prevent the next block from playing.
 
 ## What's new in 1.1.1
 
@@ -40,7 +48,7 @@ In Lumiverse, open **Extensions → Add → Install from source**, paste [https:
 
 Open its controls through **Settings → Choir**, or click Choir's **Settings** button in Extensions and then **Open Choir settings**. The Choir/Voices drawer and input-bar shortcut open the same controls.
 
-Already installed? Update Choir to **1.1.1**, restart it, then reload. GitHub updates use the repository and branch selected when installing Choir. Choir pipelines multi-section planning and playback and strips tracker/status/state blocks, details panels, HTML comments, and HUD panels. Nested and unfinished metadata blocks are handled. Older recordings containing removed metadata need regeneration. Existing complete recordings can still replay; new playback uses passage caches.
+Already installed? Update Choir to **1.1.2**, restart it, then reload. GitHub updates use the repository and branch selected when installing Choir. Choir pipelines multi-section planning and playback and strips tracker/status/state blocks, details panels, HTML comments, and HUD panels. Nested and unfinished metadata blocks are handled. Older recordings containing removed metadata need regeneration. Existing complete recordings can still replay; new playback uses passage caches.
 
 ## Install locally
 
@@ -83,7 +91,7 @@ The manifest points to the GitHub repository above. Ready-built `dist/` files ar
 2. Select `gemini-3.8-flash-tts` (the default) or `gemini-3.8-flash-lite-tts`.
 3. Enter a Gemini API key with access to the selected TTS model. This key is kept in the page session and sent through Spindle's backend proxy; it is never written to extension settings. Enter it again after a reload.
 4. Choose a **Planner LLM connection**, or leave the field at **Default LLM connection**. The planner must support text generation; it is separate from the TTS model.
-5. Check the fixed speaker names and choose voices. The active persona and main character names are prefilled on first use where available. You can edit the persona name and add additional main characters. `Narrator` is reserved.
+5. Click **Edit** beside each fixed speaker to choose voices and optional preferences. The active persona and main character names are prefilled on first use where available. You can edit the persona name and add additional main characters. `Narrator` is reserved.
 6. Set optional base styles such as “measured storytelling” or “soft French accent.” Leave **Use delivery styles** checked for LLM-generated turn styles.
 7. Click **Save cast and settings**, then **Plan latest reply**, inspect the speech plan, and click **Play plan**.
 
