@@ -151,6 +151,8 @@ try{
   const panel=await mixer.boundingBox();assert.ok(panel.x>=0 && panel.y>=0 && panel.x+panel.width<=320 && panel.y+panel.height<=420);
   assert.equal(await mixer.evaluate(node=>node.scrollWidth<=node.clientWidth+1 && node.scrollHeight<=node.clientHeight+1),true);
   const channels=mixer.locator('.cm-channels');assert.equal(await channels.evaluate(node=>node.scrollHeight>node.clientHeight && node.scrollWidth<=node.clientWidth+1),true);
+  const sfxChannel=mixer.locator('[data-speaker="SFX"]');assert.equal(await sfxChannel.isVisible(),true);assert.equal(await sfxChannel.getByRole('slider',{name:'SFX volume',exact:true}).isVisible(),true);assert.equal(await sfxChannel.getByRole('button',{name:'SFX silent',exact:true}).isVisible(),true);
+  assert.equal(await sfxChannel.getByRole('button',{name:'SFX no voice',exact:true}).count(),0);assert.equal(await sfxChannel.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   const longRow=mixer.locator('[data-speaker="A character with a very long name that must fit without hiding controls"]');await longRow.scrollIntoViewIfNeeded();
   assert.equal(await longRow.locator('.cm-channel-name').evaluate(node=>node.scrollWidth>node.clientWidth),true);
   const toggle=longRow.getByRole('button',{name:'A character with a very long name that must fit without hiding controls silent',exact:true});await toggle.press('Space');
@@ -165,6 +167,15 @@ try{
   await page.evaluate(()=>{window.__CHOIR_API__.setNarratorMuted(false);const silent=document.querySelector('[aria-label="Narrator silent"]');if(silent.getAttribute('aria-pressed')==='true')silent.click();window.fixtureMessage.content='The page snapped under her thumb.';});
   await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   const gainStart=await page.evaluate(()=>window.gains.length);
+  await page.locator('[data-choir-action="playback"]').click();
+  await page.waitForFunction(()=>document.querySelector('[data-speaker="SFX"]').getAttribute('aria-current')==='true' && document.querySelector('[data-choir-mixer]').dataset.playState==='playing');
+  await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>window.audios.at(-1).paused);
+  const sfxGain=await page.evaluate(()=>window.gains.at(-1).gain.value),sfxVolume=sfxChannel.getByRole('slider',{name:'SFX volume',exact:true});
+  await sfxVolume.press('Home');await sfxVolume.press('ArrowRight');assert.equal(await sfxVolume.getAttribute('aria-valuetext'),'1 percent');assert.equal(await sfxChannel.locator('.cm-percent').innerText(),'1%');
+  assert.ok(Math.abs(await page.evaluate(()=>window.gains.at(-1).gain.value)/sfxGain-0.01)<0.000001);
+  await sfxChannel.getByRole('button',{name:'SFX silent',exact:true}).click();assert.equal(await page.evaluate(()=>window.gains.at(-1).gain.value),0);assert.equal(await page.evaluate(()=>document.activeElement.getAttribute('aria-label')),'SFX silent');
+  await sfxChannel.getByRole('button',{name:'SFX silent',exact:true}).press('Space');await sfxVolume.press('End');assert.ok(Math.abs(await page.evaluate(()=>window.gains.at(-1).gain.value)-sfxGain)<0.000001);
+  await page.waitForFunction(()=>window.fixtureStore.get('ui:mixer').channels.SFX.volume===1 && window.fixtureStore.get('ui:mixer').channels.SFX.mute===false);
   await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
   assert.equal(await page.evaluate(()=>window.foleySearches),1);assert.equal(await page.evaluate(()=>window.foleyDownloads),1);
   const foleyGains=await page.evaluate(start=>window.gains.slice(start).map(g=>g.gain.value),gainStart);assert.equal(foleyGains.length,3);assert.ok(Math.abs(foleyGains[1]/foleyGains[0]-0.45)<0.001);

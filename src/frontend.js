@@ -147,6 +147,7 @@ export async function setup(ctx) {
     .choir-mixer .cm-channel-name{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
     .choir-mixer .cm-channel[data-no-voice="true"] .cm-channel-name{color:var(--cm-muted)}
     .choir-mixer .cm-channel-controls{display:grid;grid-template-columns:minmax(0,1fr) 53px 67px;align-items:center;gap:7px}
+    .choir-mixer .cm-channel[data-kind="sfx"] .cm-channel-controls{grid-template-columns:minmax(0,1fr) 67px}
     .choir-mixer .cm-toggle{height:26px;border:1px solid #ffffff16;border-radius:7px;background:#ffffff04;font-size:10px;font-weight:500;color:#aeb8cc;white-space:nowrap}
     .choir-mixer .cm-toggle[data-kind="silent"][aria-pressed="true"]{background:#f3cb841c;border-color:#f3cb8440;color:#f3cb84}
     .choir-mixer .cm-toggle[data-kind="no-voice"][aria-pressed="true"]{background:#c4b5fd1c;border-color:#c4b5fd40;color:#d0c3ff}
@@ -407,7 +408,7 @@ export async function setup(ctx) {
   const mixerStop=document.createElement('button');mixerStop.type='button';mixerStop.dataset.choirAction='stop';mixerStop.innerHTML=ICON_STOP;mixerStop.title='Stop playback';mixerStop.setAttribute('aria-label','Stop');mixerStop.onclick=()=>stop();
   const transport=document.createElement('div');transport.className='cm-transport';transport.append(mixerPrevious,mixerPlay,mixerNext,mixerStop);
   const mixerSeek=makeSeekControl(),legend=document.createElement('small');legend.className='cm-legend';legend.textContent='Silent = mute · No voice = skip & don’t generate';
-  const channelsTitle=document.createElement('div');channelsTitle.className='cm-channels-title';channelsTitle.innerHTML='<span>Cast levels</span>';
+  const channelsTitle=document.createElement('div');channelsTitle.className='cm-channels-title';channelsTitle.innerHTML='<span>Channel levels</span>';
   const channelCount=document.createElement('span');channelCount.setAttribute('aria-hidden','true');channelsTitle.append(channelCount);
   const autoPlanRow=document.createElement('div');autoPlanRow.className='cm-auto-plan';
   const mixerAutoPlan=document.createElement('button');mixerAutoPlan.type='button';mixerAutoPlan.dataset.choirAction='auto-plan';mixerAutoPlan.setAttribute('aria-label','Auto-plan new replies');mixerAutoPlan.onclick=()=>run(toggleAutoPlan);
@@ -486,10 +487,10 @@ export async function setup(ctx) {
     updateNextControls();
     channelsRoot.replaceChildren();speakerLabel.replaceChildren();
     if(currentSpeaker){const prefix=doc.createElement('span');prefix.className='cm-sr-only';prefix.textContent='Speaking: ';speakerLabel.append(prefix,doc.createTextNode(currentSpeaker));}else speakerLabel.textContent='Ready to play';
-    const speakers=new Set([...(config?.fixed || []),...(config?.casts?.[scope(config)] || []),...(plan?.segments || [])].map(s=>s.speaker));channelCount.textContent=String(speakers.size);
+    const speakers=new Set(['SFX',...[...(config?.fixed || []),...(config?.casts?.[scope(config)] || []),...(plan?.segments || [])].map(s=>s.speaker)]);channelCount.textContent=String(speakers.size);
     for(const speaker of speakers){
       const channel=Object.hasOwn(mixerState.channels,speaker)?mixerState.channels[speaker]:{volume:1,mute:false};Object.defineProperty(mixerState.channels,speaker,{value:channel,writable:true,enumerable:true,configurable:true});
-      const row=doc.createElement('div');row.className='cm-channel';row.dataset.speaker=speaker;row.dataset.noVoice=String(speakerExcluded(speaker));
+      const row=doc.createElement('div');row.className='cm-channel';row.dataset.speaker=speaker;row.dataset.kind=speaker==='SFX'?'sfx':'voice';row.dataset.noVoice=String(speakerExcluded(speaker));
       row.setAttribute('aria-current',String(currentSpeaker===speaker));const name=doc.createElement('span');name.className='cm-channel-name';name.textContent=speaker;name.title=speaker;
       const head=doc.createElement('div');head.className='cm-channel-head';
       const dot=doc.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
@@ -498,7 +499,11 @@ export async function setup(ctx) {
       const volume=doc.createElement('input');volume.type='range';volume.min='0';volume.max='1';volume.step='0.01';volume.value=channel.volume;volume.setAttribute('aria-label',`${speaker} volume`);
       showVolume(volume,readout,channel.volume);volume.oninput=()=>{channel.volume=Number(volume.value);showVolume(volume,readout,channel.volume);applyVolume();};volume.onchange=persistMixer;
       const silent=doc.createElement('button');silent.type='button';silent.className='cm-toggle';silent.dataset.kind='silent';silent.textContent=channel.mute?'✓ Silent':'Silent';silent.setAttribute('aria-label',`${speaker} silent`);silent.setAttribute('aria-pressed',String(Boolean(channel.mute)));silent.title='Mute playback. Audio can still be generated and cached.';silent.onclick=()=>{channel.mute=!channel.mute;applyVolume();renderMixer();persistMixer();};
-      const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.textContent=speakerExcluded(speaker)?'✓ No voice':'No voice';noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='Skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));controls.append(volume,silent,noVoice);row.append(head,controls);
+      controls.append(volume,silent);
+      if(speaker!=='SFX'){
+        const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.textContent=speakerExcluded(speaker)?'✓ No voice':'No voice';noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='Skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));controls.append(noVoice);
+      }
+      row.append(head,controls);
       channelsRoot.append(row);
     }
     positionMixer();

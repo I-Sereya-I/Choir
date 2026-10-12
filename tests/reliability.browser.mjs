@@ -132,6 +132,25 @@ test('Freesound failures stay visible, continue speech, and retry without regene
  }
 });
 
+test('SFX mixer channel changes live effects independently, applies to Cue and cached replay, and persists after reload',async()=>{
+ const h=await harness();try{
+  const level=(actual,expected)=>assert.ok(Math.abs(actual-expected)<0.000001,`Expected volume ${expected}, got ${actual}`);
+  h.$('showMixer').click();const mixer=document.querySelector('[data-choir-mixer]'),sfxRow=()=>mixer.querySelector('[data-speaker="SFX"]');
+  assert.equal(mixer.querySelector('.cm-channel'),sfxRow());assert.equal(sfxRow().querySelector('[aria-label="SFX no voice"]'),null);
+  await configureFoley(h);h.message.content='The page snapped under her thumb.';await h.plan();h.state.blockAudio=true;h.$('play').click();
+  await until(()=>h.audios.length===1 && !h.audios[0].paused);const narrator=h.audios[0];assert.equal(narrator.volume,1);narrator.onended();
+  await until(()=>sfxRow().getAttribute('aria-current')==='true' && h.audios.length===2 && !h.audios[1].paused);const effect=h.audios[1];assert.equal(effect.volume,0.45);
+  const volume=sfxRow().querySelector('[aria-label="SFX volume"]');volume.value='0.4';volume.dispatchEvent(new h.dom.window.Event('input'));volume.dispatchEvent(new h.dom.window.Event('change'));level(effect.volume,0.18);assert.equal(sfxRow().querySelector('.cm-percent').textContent,'40%');
+  const master=mixer.querySelector('[aria-label="Master volume"]');master.value='0.5';master.dispatchEvent(new h.dom.window.Event('input'));master.dispatchEvent(new h.dom.window.Event('change'));level(effect.volume,0.09);
+  sfxRow().querySelector('[aria-label="SFX silent"]').click();assert.equal(effect.volume,0);sfxRow().querySelector('[aria-label="SFX silent"]').click();level(effect.volume,0.09);
+  assert.equal(mixer.querySelector('[aria-label="Narrator volume"]').value,'1');h.state.blockAudio=false;effect.onended();await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.audios.at(-1).volume,0.5);
+  const cueStart=h.audios.length;await globalThis.__CHOIR_API__.playParagraph({text:h.message.content});level(h.audios[cueStart+1].volume,0.09);assert.equal(h.audios[cueStart].volume,0.5);
+  sfxRow().querySelector('[aria-label="SFX silent"]').click();await until(()=>h.store.get('ui:mixer')?.channels.SFX.mute===true);await h.reload();
+  assert.equal(document.querySelector('[aria-label="SFX volume"]').value,'0.4');assert.equal(document.querySelector('[aria-label="SFX silent"]').getAttribute('aria-pressed'),'true');
+  const replayStart=h.audios.length,generated=h.synthesis.length;await h.play();assert.equal(h.audios[replayStart+1].volume,0);assert.equal(h.audios[replayStart].volume,0.5);assert.equal(h.synthesis.length,generated);assert.equal(h.requests.filter(request=>request.action==='freesound').length,1);
+ }finally{await h.close();}
+});
+
 test('Stop cancels Freesound search and preview downloads and late results cannot start audio',async()=>{
  for(const stage of ['search','preview']){
   const h=await harness();try{
