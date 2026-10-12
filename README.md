@@ -13,7 +13,7 @@ An installable Lumiverse Spindle extension for multi-voice narration, dialogue a
 
 </div>
 
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.11** adds a captured **Default setup** as a stable basis for new chats, including lead voice choices that remain editable per chat. It retains **Paste voice ID** for Fish Audio, Auto-plan completion recovery, the compact **Plan latest** control beside Previous, latest-reply playback, **SFX On / Off** beside the automation toggles, and mixer channels for voices in the current plan or playback. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
+This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.12** lets the planner LLM choose sound effects and looping ambience beds in any story language, with an **Ambience** level in the mixer; lets the Decision model pick the best-matching Freesound clip; gives Jev each line in its passage; moves direct Jev keys to `/v1/systemone`; and keeps plans and audio when an edit leaves the spoken text unchanged. It retains the captured **Default setup**, **Paste voice ID** for Fish Audio, Auto-plan completion recovery, the compact **Plan latest** control beside Previous, latest-reply playback, **SFX On / Off** beside the automation toggles, and mixer channels for voices in the current plan or playback. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
 
 
 ## Overview
