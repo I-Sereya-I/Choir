@@ -151,20 +151,22 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
   if (dialogueUnits.length > 0) {
     if (hasSpindleDecisions) {
       const questions = {};
+      // Each question carries its line in place: a bare quote such as "Robots?" cannot be attributed on its own.
+      const passage = u => `${transcript.slice(Math.max(0, u.start - 300), u.start)}[[${u.text}]]${transcript.slice(u.end, u.end + 300)}`;
       dialogueUnits.forEach((u, i) => {
         if (candidates.length >= 2) {
           const criteria = {};
           for (const c of candidates) criteria[c] = c;
           questions[`speaker_${i}`] = {
             type: 'choice',
-            instructions: `Which character speaks this dialogue: "${u.text}"?`,
+            instructions: `Which character speaks the line marked [[ ]] in this passage: "${passage(u)}"?`,
             criteria
           };
         }
         if (config.useStyle !== false) {
           questions[`emotion_${i}`] = {
             type: 'choice',
-            instructions: `What is the emotional delivery style for: "${u.text}"?`,
+            instructions: `What is the emotional delivery style of the line marked [[ ]] in this passage: "${passage(u)}"?`,
             criteria: {
               neutral: 'Normal speaking tone',
               cheerful: 'Cheerful or happy',
@@ -181,7 +183,7 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
           userId: userId || undefined,
           connection_id: decisionConnection || config.decisionConnection || undefined,
           state: {
-            transcript: transcript.slice(-4000),
+            transcript,
             characters: candidates
           },
           questions
