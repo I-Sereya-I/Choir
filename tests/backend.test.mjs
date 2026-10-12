@@ -83,10 +83,10 @@ test('an incomplete stream is never accepted as a finished speech plan',async()=
   h.send('plan',{transcript:'Hello.',config});
   assert.match((await h.result()).message.error,/stream ended before completion/);
 });
-async function harness(generate, cors, provider, deadline, stream) {
+async function harness(generate, cors, provider, deadline, stream, decisions) {
   let handler;const sent=[];let wake;
   const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider};
-  vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate,rawStream:stream},connections:{get:async()=>connection,list:async()=>[connection]},cors},
+  vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate,rawStream:stream},connections:{get:async()=>connection,list:async()=>[connection]},cors,decisions},
     console,Map,Set,AbortController,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView,fetch:globalThis.fetch});
   return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
     result:()=>sent.some(item=>item.message.result || item.message.error)?Promise.resolve(sent.findLast(item=>item.message.result || item.message.error)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
@@ -621,4 +621,35 @@ test('testPlanner tests Jev when plannerMode is jev', async () => {
   assert.equal(result.message.result.model, 'Jev System 1');
   assert.match(result.message.result.response, /READY/);
   assert.equal(request.options.headers.Authorization, 'Bearer test-jev-key');
+});
+
+
+test('Jev with spindle.decisions passes userId to evaluate for operator-scoped host calls',async()=>{
+  let evalInput;
+  const decisions={
+    evaluate:async(input)=>{
+      evalInput=input;
+      return {provider:'TypeSafe AI',model:'Jev System 1',answers:{speaker_0:{choice:'Alice'}}};
+    }
+  };
+  const h=await harness(null,null,null,null,null,decisions);
+  h.send('planJev',{transcript:'"Hello."',config:{...config,voices:[{id:'Charon'},{id:'Kore'}],fixed:[{speaker:'Narrator',voice:'Charon',style:''},{speaker:'Alice',voice:'Kore',style:''},{speaker:'Bob',voice:'Charon',style:''}],useStyle:false}});
+  const result=await h.result();
+  assert.equal(evalInput.userId,'user-a');
+  assert.equal(result.message.result.segments[0].speaker,'Alice');
+});
+
+test('testPlanner with Jev and spindle.decisions passes userId to evaluate',async()=>{
+  let evalInput;
+  const decisions={
+    evaluate:async(input)=>{
+      evalInput=input;
+      return {provider:'TypeSafe AI',model:'Jev System 1',answers:{speaker:{choice:'Alice'}}};
+    }
+  };
+  const h=await harness(null,null,null,null,null,decisions);
+  h.send('testPlanner',{plannerMode:'jev'});
+  const result=await h.result();
+  assert.equal(evalInput.userId,'user-a');
+  assert.match(result.message.result.response,/READY/);
 });

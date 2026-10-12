@@ -106,7 +106,7 @@ export async function classifyWithJev({ items = [], candidates = [], apiKey, end
   return choices;
 }
 
-export async function planWithJev({ transcript, config, apiKey, endpoint, context = '', decisionConnection, signal } = {}) {
+export async function planWithJev({ transcript, config, apiKey, endpoint, context = '', decisionConnection, signal, userId } = {}) {
   if (typeof transcript !== 'string' || !transcript.trim()) {
     throw new Error('Choose a message with text to plan.');
   }
@@ -178,6 +178,7 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
       });
       if (Object.keys(questions).length > 0) {
         const evalResult = await spindle.decisions.evaluate({
+          userId: userId || undefined,
           connection_id: decisionConnection || config.decisionConnection || undefined,
           state: {
             transcript: transcript.slice(-4000),
@@ -322,6 +323,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         if (typeof spindle !== 'undefined' && typeof spindle?.decisions?.evaluate === 'function') {
           const start = Date.now();
           const evalRes = await spindle.decisions.evaluate({
+            userId: userId || input.userId || undefined,
             connection_id: input.decisionConnection || input.config?.decisionConnection || undefined,
             state: { context: 'Alice smiled at Bob.' },
             questions: {
@@ -374,7 +376,8 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         endpoint,
         decisionConnection: input.decisionConnection || input.config?.decisionConnection,
         context: input.context,
-        signal: controller.signal
+        signal: controller.signal,
+        userId: userId || input.userId
       });
       if (controller.signal.aborted) return;
       send({result:plan});return;
@@ -405,7 +408,8 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
             endpoint: input.endpoint || input.config.jevEndpoint,
             decisionConnection: input.decisionConnection || input.config?.decisionConnection,
             context: input.context,
-            signal: controller.signal
+            signal: controller.signal,
+            userId: userId || input.userId
           });
           if (controller.signal.aborted) return;
           send({result:plan});return;
