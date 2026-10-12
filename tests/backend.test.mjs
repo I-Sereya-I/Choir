@@ -183,9 +183,9 @@ test('an incomplete stream is never accepted as a finished speech plan',async()=
   h.send('plan',{transcript:'Hello.',config});
   assert.match((await h.result()).message.error,/stream ended before completion/);
 });
-async function harness(generate, cors, provider, deadline, stream, decisions) {
+async function harness(generate, cors, provider, deadline, stream, decisions,connectionOverrides={}) {
   let handler;const sent=[];let wake;
-  const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider};
+  const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider,...connectionOverrides};
   vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate,rawStream:stream},connections:{get:async()=>connection,list:async()=>[connection]},cors,decisions},
     console,Map,Set,AbortController,TextEncoder,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView,fetch:globalThis.fetch});
   return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
@@ -764,6 +764,44 @@ test('testPlanner with Jev and spindle.decisions passes userId to evaluate',asyn
   const result=await h.result();
   assert.equal(evalInput.userId,'user-a');
   assert.match(result.message.result.response,/READY/);
+});
+
+test('DeepSeek sound choices request JSON mode and recover a truncated response once',async()=>{
+ for(const provider of ['deepseek','custom']){
+  const requests=[];
+  const h=await harness(async input=>{requests.push(input);return requests.length===1?{content:'{"cues":[',finish_reason:'length'}:{content:'{"cues":[{"segment":0,"trigger":"The door slammed","query":"door slam"}],"ambience":[]}',finish_reason:'stop'};},null,provider,null,null,null,{name:'DSmol',model:'deepseek-v4-pro'});
+  h.send('sfx',{segments:[{speaker:'Narrator',text:'The door slammed shut.'}],connectionId:'llm-a'});
+  const result=await h.result();assert.ok(result.message.result);assert.equal(result.message.result.cues[0].query,'door slam');
+  assert.equal(requests.length,2);assert.deepEqual(requests.map(request=>request.parameters.max_tokens),[2048,4096]);
+  for(const request of requests){
+    assert.equal(request.parameters.response_format.type,'json_object');
+    if(provider==='custom'){
+      assert.deepEqual(JSON.parse(JSON.stringify(request.parameters.thinking)),{type:'disabled'});
+      assert.deepEqual(JSON.parse(JSON.stringify(request.reasoning)),{source:'custom',apiReasoning:true,effort:'auto'});
+    }else assert.equal(request.reasoning.source,'off');
+  }
+  assert.match(requests[1].messages.at(-1).content,/complete JSON object/);
+ }
+});
+
+test('invalid sound choices stop after one correction and report the selected connection',async()=>{
+  let calls=0;const h=await harness(async()=>{calls++;return {content:'',finish_reason:'length'};},null,'deepseek');
+  h.send('sfx',{segments:[{speaker:'Narrator',text:'The door slammed shut.'}],connectionId:'llm-a'});
+  assert.match((await h.result()).message.error,/deepseek.*gemini-flash-text.*no text.*length/i);assert.equal(calls,2);
+});
+
+test('custom DeepSeek planner tests disable thinking while keeping the READY response in plain text',async()=>{
+  let request;const h=await harness(async input=>{request=input;return {content:'READY'};},null,'custom',null,null,null,{model:'deepseek-v4-pro'});
+  h.send('testPlanner',{connectionId:'llm-a'});assert.match((await h.result()).message.result.response,/READY/);
+  assert.equal(request.parameters.thinking.type,'disabled');assert.equal(request.reasoning.source,'custom');assert.equal(request.reasoning.effort,'auto');assert.equal(request.parameters.response_format,undefined);
+});
+
+test('sound-choice provider failures and cancellation never trigger a correction request',async()=>{
+  let calls=0;const failed=await harness(async()=>{calls++;throw Error('Provider quota exhausted');});
+  failed.send('sfx',{segments:[{text:'The door slammed.'}]});assert.match((await failed.result()).message.error,/quota exhausted/);assert.equal(calls,1);
+  calls=0;let release;const canceled=await harness(async()=>{calls++;return new Promise(resolve=>release=resolve);});
+  canceled.send('sfx',{segments:[{text:'The door slammed.'}]});await new Promise(resolve=>setTimeout(resolve,0));canceled.send('cancel',{});release({content:'invalid json'});await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(calls,1);assert.equal(canceled.sent.filter(item=>item.message.result || item.message.error).length,0);
 });
 
 test('sound effect choices use the planner connection and return only cues and ambience that match the segments',async()=>{

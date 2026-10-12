@@ -702,14 +702,28 @@ Return {"cues":[],"ambience":[]} when nothing fits.`},
 }
 
 function parseSoundCues(content, segments) {
-  const text = String(content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  let parsed;
-  try { parsed = JSON.parse(text); }
-  catch {
-    try { parsed = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)); }
-    catch { throw new Error('the sound effect response was not valid JSON'); }
+  const text = String(content || '').replace(/<(think|analysis|reasoning)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,'').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  if(!text)throw new Error('the sound effect response returned no text');
+  let parsed,hasJson=false;
+  try { parsed = JSON.parse(text);hasJson=true; } catch {}
+  if(!Array.isArray(parsed?.cues)){
+    // Extract complete objects independently; braces in prose or JSON strings
+    // must not join separate examples and the final answer into invalid JSON.
+    for(let start=text.indexOf('{');start>=0;start=text.indexOf('{',start+1)){
+      let depth=0,quoted=false,escaped=false;
+      for(let end=start;end<text.length;end++){
+        const char=text[end];
+        if(quoted){if(escaped)escaped=false;else if(char==='\\')escaped=true;else if(char==='"')quoted=false;}
+        else if(char==='"')quoted=true;
+        else if(char==='{')depth++;
+        else if(char==='}' && --depth===0){
+          try{const candidate=JSON.parse(text.slice(start,end+1));if(Array.isArray(candidate?.cues))parsed=candidate;}catch{}
+          break;
+        }
+      }
+    }
   }
-  if (!Array.isArray(parsed?.cues)) throw new Error('the sound effect response has no cues list');
+  if (!Array.isArray(parsed?.cues)) throw new Error(hasJson?'the sound effect response has no cues list':'the sound effect response was not valid JSON');
   const valid = (entries, stops) => (Array.isArray(entries) ? entries : []).flatMap(entry => {
     if (!Number.isInteger(entry?.segment) || !segments[entry.segment]) return [];
     const cue = segmentSoundCues(entry, segments[entry.segment].text, stops);
@@ -938,8 +952,11 @@ export async function setup(ctx) {
       </div>
     </div>
     <p data-et="latestNotice" role="status" hidden>latest already planned, click on plan latest to redo it</p>
-    <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
-    <div class="et-status" data-et="statusActions" hidden></div>
+    <div data-et="feedback" role="group" aria-label="Choir status and errors">
+      <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
+      <div class="et-status" data-et="statusActions" hidden></div>
+      <div class="et-status" data-et="sfxStatus" role="status" aria-live="polite" hidden></div>
+    </div>
     <div class="et-section-header">
       <h3>Lead Cast</h3>
       <button data-et="add" class="et-btn-subtle">+ Add character</button>
@@ -992,8 +1009,6 @@ export async function setup(ctx) {
       <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
-
-    <p data-et="sfxStatus" role="status" hidden style="font-size:.85em"></p>
 
     <details data-et="defaultSetup">
       <summary>Default setup</summary>

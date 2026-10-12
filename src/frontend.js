@@ -210,8 +210,11 @@ export async function setup(ctx) {
       </div>
     </div>
     <p data-et="latestNotice" role="status" hidden>latest already planned, click on plan latest to redo it</p>
-    <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
-    <div class="et-status" data-et="statusActions" hidden></div>
+    <div data-et="feedback" role="group" aria-label="Choir status and errors">
+      <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
+      <div class="et-status" data-et="statusActions" hidden></div>
+      <div class="et-status" data-et="sfxStatus" role="status" aria-live="polite" hidden></div>
+    </div>
     <div class="et-section-header">
       <h3>Lead Cast</h3>
       <button data-et="add" class="et-btn-subtle">+ Add character</button>
@@ -264,8 +267,6 @@ export async function setup(ctx) {
       <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
-
-    <p data-et="sfxStatus" role="status" hidden style="font-size:.85em"></p>
 
     <details data-et="defaultSetup">
       <summary>Default setup</summary>

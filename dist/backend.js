@@ -702,14 +702,28 @@ Return {"cues":[],"ambience":[]} when nothing fits.`},
 }
 
 function parseSoundCues(content, segments) {
-  const text = String(content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  let parsed;
-  try { parsed = JSON.parse(text); }
-  catch {
-    try { parsed = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)); }
-    catch { throw new Error('the sound effect response was not valid JSON'); }
+  const text = String(content || '').replace(/<(think|analysis|reasoning)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,'').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  if(!text)throw new Error('the sound effect response returned no text');
+  let parsed,hasJson=false;
+  try { parsed = JSON.parse(text);hasJson=true; } catch {}
+  if(!Array.isArray(parsed?.cues)){
+    // Extract complete objects independently; braces in prose or JSON strings
+    // must not join separate examples and the final answer into invalid JSON.
+    for(let start=text.indexOf('{');start>=0;start=text.indexOf('{',start+1)){
+      let depth=0,quoted=false,escaped=false;
+      for(let end=start;end<text.length;end++){
+        const char=text[end];
+        if(quoted){if(escaped)escaped=false;else if(char==='\\')escaped=true;else if(char==='"')quoted=false;}
+        else if(char==='"')quoted=true;
+        else if(char==='{')depth++;
+        else if(char==='}' && --depth===0){
+          try{const candidate=JSON.parse(text.slice(start,end+1));if(Array.isArray(candidate?.cues))parsed=candidate;}catch{}
+          break;
+        }
+      }
+    }
   }
-  if (!Array.isArray(parsed?.cues)) throw new Error('the sound effect response has no cues list');
+  if (!Array.isArray(parsed?.cues)) throw new Error(hasJson?'the sound effect response has no cues list':'the sound effect response was not valid JSON');
   const valid = (entries, stops) => (Array.isArray(entries) ? entries : []).flatMap(entry => {
     if (!Number.isInteger(entry?.segment) || !segments[entry.segment]) return [];
     const cue = segmentSoundCues(entry, segments[entry.segment].text, stops);
@@ -1006,10 +1020,22 @@ if (typeof globalThis !== 'undefined') {
   globalThis.planWithJev = planWithJev;
 }
 
+const customDeepSeek = connection => String(connection.provider || '').toLowerCase()==='custom' && /(?:^|\/)deepseek(?:[-/]|$)/i.test(connection.model || '');
 const jsonResponseParameters = connection =>
   ['google','aistudio','vertex','google-ai-studio','vertex-ai','google_tts','google_vertex_tts'].includes(String(connection.provider || '').toLowerCase())
     ? {responseMimeType:'application/json'}
-    : connection.provider==='openai' ? {response_format:{type:'json_object'}} : {};
+    : ['openai','deepseek'].includes(String(connection.provider || '').toLowerCase()) ||
+      customDeepSeek(connection)
+      ? {response_format:{type:'json_object'}} : {};
+
+function textGenerationOptions(connection,parameters){
+  // Lumiverse strips thinking fields for source:'off', but its custom provider
+  // has no DeepSeek off switch. Preserve the explicit provider parameter and
+  // disable inherited reasoning settings with an automatic custom override.
+  return customDeepSeek(connection)
+    ? {parameters:{...parameters,thinking:{type:'disabled'}},reasoning:{source:'custom',apiReasoning:true,effort:'auto'}}
+    : {parameters,reasoning:{source:'off'}};
+}
 
 // Freesound ranks clips by their words alone, so a Decision model picks the clip that is heard in the story moment.
 async function chooseSound(sounds, input, userId, signal) {
@@ -1048,7 +1074,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.5-staging.18',ready:true}});return;
+      send({result:{version:'1.1.5-staging.19',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);
@@ -1098,7 +1124,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       if(!connection?.model)throw new Error('Select a Planner LLM connection with a configured text-generation model.');
       progress({stage:'Waiting for a short LLM test response',provider:connection.provider,model:connection.model});
       const result=await spindle.generate.raw({type:'raw',userId,model:connection.model,connection_id:connection.id,
-        messages:[{role:'user',content:'Reply with the single word READY.'}],parameters:{max_tokens:64},reasoning:{source:'off'},signal:controller.signal});
+        messages:[{role:'user',content:'Reply with the single word READY.'}],...textGenerationOptions(connection,{max_tokens:64}),signal:controller.signal});
       if(controller.signal.aborted)return;
       if(!String(result.content || '').trim())throw new Error(`Planner test returned no text: ${connection.provider} · ${connection.model}. Check model access and response settings.`);
       send({result:{provider:connection.provider || 'Saved connection',model:connection.model,response:String(result.content).trim().slice(0,200)}});return;
@@ -1182,8 +1208,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         // Raw calls use the saved connection credentials without inheriting a chat preset's
         // short output limit, stop strings, response format or reasoning budget.
         const request = {type:'raw',userId,model:connection.model,
-          connection_id:connection.id,messages,parameters:{max_tokens:maxTokens,...jsonResponseParameters(connection)},
-          reasoning:{source:'off'},signal:controller.signal};
+          connection_id:connection.id,messages,...textGenerationOptions(connection,{max_tokens:maxTokens,...jsonResponseParameters(connection)}),signal:controller.signal};
         let result;
         if(typeof spindle.generate.rawStream==='function') {
           let content='',lastUpdate=0,received=0,completed=false;
@@ -1223,11 +1248,24 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
       if(controller.signal.aborted)return;
       if(!connection?.model)throw new Error('Select a Planner LLM connection with a text-generation model to choose sound effects.');
-      progress({stage:'Waiting for sound effect choices',provider:connection.provider,model:connection.model});
-      const result=await spindle.generate.raw({type:'raw',userId,model:connection.model,connection_id:connection.id,messages:soundCuePrompt(segments),
-        parameters:{max_tokens:2048,...jsonResponseParameters(connection)},reasoning:{source:'off'},signal:controller.signal});
-      if(controller.signal.aborted)return;
-      send({result:parseSoundCues(result.content,segments)});return;
+      const messages=soundCuePrompt(segments);let failure,finishReason;
+      for(let attempt=0;attempt<2;attempt++){
+        if(controller.signal.aborted)return;
+        progress({stage:`Waiting for sound effect choices (attempt ${attempt+1}/2)`,provider:connection.provider,model:connection.model});
+        const result=await spindle.generate.raw({type:'raw',userId,model:connection.model,connection_id:connection.id,messages,
+          ...textGenerationOptions(connection,{max_tokens:2048*(attempt+1),...jsonResponseParameters(connection)}),signal:controller.signal});
+        if(controller.signal.aborted)return;
+        finishReason=result.finish_reason;
+        try{send({result:parseSoundCues(result.content,segments)});return;}
+        catch(error){
+          failure=error;
+          if(attempt===0){
+            if(result.content?.trim())messages.push({role:'assistant',content:result.content});
+            messages.push({role:'user',content:`The previous response failed: ${error.message}. Return one complete JSON object with cues and ambience arrays. No reasoning, commentary or code fences. Return {"cues":[],"ambience":[]} when no sounds fit. Keep searches to 1 to 3 English words.`});
+          }
+        }
+      }
+      throw new Error(`Sound-effect choices failed for ${connection.name || connection.id} (${connection.provider} · ${connection.model}): ${failure.message}.${finishReason?` Finish reason: ${finishReason}.`:''}`);
     }
     if (message.action === 'designVoice') {
       if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Gemini API key for this session.');
