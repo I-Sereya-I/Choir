@@ -1,6 +1,7 @@
 // Optional real-browser check: install playwright, then npm run test:chromium.
 import {createRequire} from 'node:module';
 import {createServer} from 'node:http';
+import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -36,7 +37,25 @@ const server=createServer(async(request,response)=>{
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 let browser;
 try{
-  browser=await chromium.launch({headless:true,channel:process.env.CHOIR_BROWSER_CHANNEL || 'chrome',args:['--disable-crash-reporter']});
+  browser=await chromium.launch({headless:true,channel:process.env.CHOIR_BROWSER_CHANNEL || 'chrome',args:['--disable-crash-reporter','--host-resolver-rules=MAP choir-http.test 127.0.0.1','--no-proxy-server']});
+  const httpPage=await browser.newPage({viewport:{width:1440,height:1000}});httpPage.on('pageerror',error=>errors.push(error.message));
+  await httpPage.goto(`http://choir-http.test:${server.address().port}`);
+  assert.deepEqual(await httpPage.evaluate(()=>({secure:isSecureContext,uuid:typeof crypto.randomUUID,subtle:typeof crypto.subtle,random:typeof crypto.getRandomValues})),{secure:false,uuid:'undefined',subtle:'undefined',random:'function'});
+  await httpPage.waitForFunction(()=>window.ready);
+  assert.equal(await httpPage.getByRole('heading',{name:'Choir',exact:true}).isVisible(),true);
+  assert.equal(await httpPage.getByRole('button',{name:'Open Choir voice mixer',exact:true}).isVisible(),true);
+  await httpPage.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
+  await httpPage.locator('[data-et="latest"]').click();await httpPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+  await httpPage.locator('[data-choir-action="playback"]').click();await httpPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
+  const httpSaved=await httpPage.evaluate(()=>({namespace:window.fixtureStore.get('audio:namespace'),plans:window.plans,speech:window.calls.length,keys:[...window.fixtureStore.keys()]}));
+  assert.ok(httpSaved.speech>0);assert.ok(httpSaved.keys.includes('plan:'+createHash('sha256').update(JSON.stringify(['fixture','reply'])).digest('hex')));
+  await httpPage.evaluate(async()=>{window.cleanup();window.cleanup=await window.mountChoir();});
+  await httpPage.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
+  await httpPage.locator('[data-choir-action="playback"]').click();await httpPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
+  assert.deepEqual(await httpPage.evaluate(()=>({namespace:window.fixtureStore.get('audio:namespace'),plans:window.plans,speech:window.calls.length})),{namespace:httpSaved.namespace,plans:httpSaved.plans,speech:httpSaved.speech});
+  assert.equal(await httpPage.getByRole('heading',{name:'Choir',exact:true}).isVisible(),true);assert.equal(await httpPage.locator('[data-choir-mixer]').count(),1);
+  await httpPage.evaluate(()=>window.cleanup());await httpPage.close();
+  console.log('PASS: Chrome on an insecure HTTP hostname without randomUUID or SubtleCrypto loads the drawer and mixer, plans, plays, and remounts with saved plans and cached audio.');
   const page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',error=>errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.ready);
   assert.equal(await page.locator('[data-et="muteNarrator"]').count(),0);assert.equal(await page.getByText('Mute narrator (dialogue only)',{exact:true}).count(),0);
