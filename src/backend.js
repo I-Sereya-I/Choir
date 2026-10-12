@@ -1,4 +1,4 @@
-import { MAX_SPEECH_CHARS, validateCastConfig, validatePlan, parsePlanJson, resolvePlanReferences, plannerPrompt, geminiRequest, extractGeminiAudio, speechSourceUnits, normalizeName, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues } from './core.js';
+import { MAX_SPEECH_CHARS, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, plannerPrompt, geminiRequest, extractGeminiAudio, speechSourceUnits, normalizeName, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -247,13 +247,15 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
       });
     } else {
       const chosenName = dialogueSpeakerMap.get(u.id) || candidates[0] || 'Narrator';
-      const actor = allCast.find(a => normalizeName(a.speaker) === normalizeName(chosenName))
+      let actor = allCast.find(a => normalizeName(a.speaker) === normalizeName(chosenName))
         || { speaker: chosenName, voice: '', style: '', gender: 'auto' };
+      const npc=!config.fixed.some(a=>normalizeName(a.speaker)===normalizeName(chosenName));
+      if(npc)actor=npcCastActor(actor,config);
       const style = dialogueEmotionMap.get(u.id) || '';
       let voice = actor.voice || '';
       if (!voice && config.voices?.length) {
         const route = actor.route || config.defaultRoute || '';
-        const match = config.voices.find(v => (v.route || '') === route) || config.voices[0];
+        const match = config.voices.find(v => (v.route || '') === route && (!npc || config.npcPolicy?.mode!=='preferred' || config.npcPolicy.voices.includes(v.id)));
         voice = match?.id || '';
       }
       rawSegments.push({
@@ -332,7 +334,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.5-staging.24',ready:true}});return;
+      send({result:{version:'1.1.5-staging.25',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);

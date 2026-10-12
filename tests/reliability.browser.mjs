@@ -182,12 +182,64 @@ test('autosave hides the manual save button and exposes a working retry only aft
 const configureFoley=async(h,key='test-freesound-key')=>{h.$('freesoundApiKey').value=key;h.$('freesoundApiKey').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');};
 const playedFoley=async h=>(await Promise.all(h.audioBlobs.map(blob=>blob.text()))).filter(text=>text==='FREESOUND_PREVIEW').length;
 
+const captureDefault=h=>{h.$('captureDefaults').click();const dialog=()=>document.querySelector('[role="dialog"][aria-label="Set default"]');[...dialog().querySelectorAll('button')].find(button=>button.textContent==='Use current chat settings').click();[...dialog().querySelectorAll('button')].find(button=>button.textContent==='Save default').click();};
+
+test('default popup edits all settings and lead roles without changing this chat, and cancel and navigation discard drafts',async()=>{
+ const h=await harness();try{
+  const current=structuredClone(h.store.get('chat:chat-a')),get=()=>document.querySelector('[role="dialog"][aria-label="Set default"]'),button=name=>[...get().querySelectorAll('button')].find(item=>item.textContent===name);
+  h.$('captureDefaults').click();assert.ok(get());assert.equal(get().getAttribute('aria-modal'),'true');
+  const field=get().querySelector('[data-default-field="chunk"]');field.value='8000';
+  button('Lead cast').click();const connection=get().querySelector('[aria-label="Default {{char}} connection"]');connection.value='native:a';connection.dispatchEvent(new h.dom.window.Event('change'));
+  await until(()=>!get().querySelector('[aria-label="Default {{char}} voice"]').disabled);const voice=get().querySelector('[aria-label="Default {{char}} voice"]');voice.value='';voice.dispatchEvent(new h.dom.window.Event('change'));
+  assert.ok([...voice.options].some(item=>item.value==='' && item.textContent==='Let the LLM decide'));
+  button('Lead cast').focus();get().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Tab',shiftKey:true,bubbles:true}));assert.equal(document.activeElement,button('Save default'));
+  get().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Tab',bubbles:true}));assert.equal(document.activeElement,button('Lead cast'));
+  button('Cancel').click();assert.equal(get(),null);assert.equal(h.store.has('settings:captured-defaults'),false);assert.deepEqual(h.store.get('chat:chat-a'),current);
+  h.$('captureDefaults').click();get().querySelector('[data-default-field="chunk"]').value='8000';button('Lead cast').click();
+  const automatic=get().querySelector('[aria-label="Default {{char}} voice"]');automatic.value='';automatic.dispatchEvent(new h.dom.window.Event('change'));button('Save default').click();
+  await until(()=>!get());const preset=structuredClone(h.store.get('settings:captured-defaults'));assert.equal(preset.preferences.chunk,8000);assert.equal(preset.leadVoices[2].voice,'');assert.deepEqual(h.store.get('chat:chat-a'),current);assert.equal(h.$('chunk').value,'500');
+  h.$('captureDefaults').click();assert.equal(get().querySelector('[data-default-field="chunk"]').value,'8000');get().querySelector('[data-default-field="chunk"]').value='9000';
+  h.state.active='chat-new';h.state.character={name:'Mira'};h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');assert.equal(get(),null);assert.equal(h.$('chunk').value,'8000');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'');
+  assert.deepEqual(h.store.get('settings:captured-defaults'),preset);assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+ }finally{await h.close();}
+});
+
+test('NPC default modes can be applied per chat, skip synthesis or enforce shared and preferred voices, and persist independently',async()=>{
+ for(const routing of ['several','one'])for(const mode of ['skip','single','preferred','llm']){
+  const h=await harness();try{
+   if(routing==='one'){h.$('connectionMode').value='one';h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Settings saved');}
+   const before=structuredClone(h.store.get('chat:chat-a'));
+   h.$('captureDefaults').click();const dialog=document.querySelector('[role="dialog"][aria-label="Set default"]'),change=(name,value)=>{const input=dialog.querySelector(`[aria-label="${name}"]`);input.value=value;input.dispatchEvent(new h.dom.window.Event('change'));return input;};
+   [...dialog.querySelectorAll('button')].find(button=>button.textContent==='NPC cast').click();change('Default NPC casting',mode);
+   if(mode==='single')change('Default Shared NPC voice','m');
+   if(mode==='preferred'){const pool=dialog.querySelector('[aria-label="Default Preferred NPC voices"]');[...pool.options].forEach(option=>option.selected=['m','new'].includes(option.value));pool.dispatchEvent(new h.dom.window.Event('change'));}
+   [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Save default').click();await until(()=>!dialog.isConnected);
+   const preset=structuredClone(h.store.get('settings:captured-defaults'));assert.equal(preset.preferences.npcPolicy.mode,mode);assert.deepEqual(h.store.get('chat:chat-a'),before);
+   h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));
+   if(routing==='one'){const stored=structuredClone(h.store.get('chat:chat-a'));stored.npcPolicy.route='native:b';h.store.set('chat:chat-a',stored);await h.reload();}
+   h.state.planForCatalogue=mode==='preferred';h.message.content='At dawn. "Hello." "Wait."';await h.plan();await h.play();
+   if(mode==='skip')assert.ok(!h.synthesis.some(request=>request.text.includes('Wait')));
+   else{const npc=h.synthesis.find(request=>request.text.includes('Wait'));assert.ok(npc);assert.equal(npc.voice,mode==='single'?'m':mode==='preferred'?'new':'g');}
+   assert.equal(h.synthesis.find(request=>request.text.includes('Hello')).voice,'m');assert.equal(h.synthesis.find(request=>request.text.includes('At dawn')).voice,'n');
+   assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+   h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+   const paragraph='Guard said, "A new sentence."',bridge=globalThis.__CHOIR_API__,cuePlan=bridge.planParagraph(paragraph);assert.equal(cuePlan.segments.at(-1).speaker,'Guard');
+   const start=h.synthesis.length;await bridge.playParagraph({text:paragraph});const cue=h.synthesis.slice(start).find(request=>request.text.includes('A new sentence'));
+   if(mode==='skip')assert.equal(cue,undefined);else{assert.ok(cue);assert.equal(cue.voice,mode==='single'?'m':mode==='preferred'?'new':'g');assert.equal(cue.connectionId,'a');}
+   await h.reload();assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="NPC casting"]').value,mode);
+   const selection=h.$('npcPolicyRoot').querySelector('[aria-label="NPC casting"]');selection.value=mode==='llm'?'skip':'llm';selection.dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Saved automatically');
+   assert.deepEqual(h.store.get('settings:captured-defaults'),preset);await h.reload();assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="NPC casting"]').value,mode==='llm'?'skip':'llm');
+   if(mode==='skip'){await h.play();assert.ok(h.synthesis.some(request=>request.text.includes('Wait')));}
+  }finally{await h.close();}
+ }
+});
+
 test('captured defaults stay stable across chats and carry lead voices by role with fresh character identities',async()=>{
  for(const mode of ['one','several']){
   const h=await harness();try{
    h.$('connectionMode').value=mode;h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Settings saved');
    h.$('planner').value='planner';h.$('chunk').value='8000';h.$('enableSfx').checked=false;h.$('normalizeLoudness').checked=false;h.$('auto-plan').click();
-   h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default captured.'));
+   captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));
    const preset=structuredClone(h.store.get('settings:captured-defaults'));
    assert.equal(preset.preferences.chunk,8000);assert.equal(preset.preferences.planner,'planner');assert.equal(preset.preferences.autoPlan,true);assert.equal(preset.preferences.enableSfx,false);
    assert.deepEqual(preset.leadVoices.map(actor=>actor.voice),['n','y','m']);assert.ok(!JSON.stringify(preset).includes('Mira'));assert.ok(!JSON.stringify(preset).includes('Guard'));
@@ -203,7 +255,7 @@ test('captured defaults stay stable across chats and carry lead voices by role w
    await h.reload();assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'new');assert.deepEqual(h.store.get('settings:captured-defaults'),preset);
    h.state.active='existing';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Saved settings restored' && h.$('fixed').children[2]?.querySelector('input').value==='Existing character');assert.equal(h.$('chunk').value,'9999');
    h.state.character={name:'Jev'};h.state.active='chat-next';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');assert.equal(h.$('fixed').children[2].querySelector('input').value,'Jev');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');
-   h.$('fixed').children[2].querySelector('[data-choir-voice]').value='';h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default captured.'));assert.equal(h.store.get('settings:captured-defaults').leadVoices[2].voice,'');
+   h.$('fixed').children[2].querySelector('[data-choir-voice]').value='';captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));assert.equal(h.store.get('settings:captured-defaults').leadVoices[2].voice,'');
    h.state.character={name:'Sable'};h.state.active='chat-automatic';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded' && h.$('fixed').children[2]?.querySelector('input').value==='Sable');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'');
    assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
   }finally{await h.close();}
@@ -214,7 +266,7 @@ test('applying a captured default restores preferences and lead voices while ret
  for(const mode of ['one','several']){
   const h=await harness();try{
    h.$('connectionMode').value=mode;h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Settings saved');
-   h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default captured.'));const preset=structuredClone(h.store.get('settings:captured-defaults'));
+   captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));const preset=structuredClone(h.store.get('settings:captured-defaults'));
    const name=h.$('fixed').children[2].querySelector('input');name.value='Captain Mira';name.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
    const voice=h.$('fixed').children[2].querySelector('[data-choir-voice]');voice.value='new';voice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
    h.$('chunk').value='10000';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
@@ -229,17 +281,17 @@ test('applying a captured default restores preferences and lead voices while ret
 
 test('default capture rejects invalid settings and retains the previous snapshot when storage fails',async()=>{
  const h=await harness();try{
-  h.$('key').value='session-gemini-secret';h.$('jevKey').value='session-jev-secret';h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default captured.'));
+  h.$('key').value='session-gemini-secret';h.$('jevKey').value='session-jev-secret';captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));
   const preset=structuredClone(h.store.get('settings:captured-defaults'));assert.ok(!JSON.stringify(preset).includes('session-'));
-  h.$('chunk').value='10001';h.$('captureDefaults').click();await until(()=>h.$('status').textContent.includes('whole number from'));assert.deepEqual(h.store.get('settings:captured-defaults'),preset);
-  h.$('chunk').value='8000';h.state.failDefaultsSave=true;h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.includes('capture failed'));assert.deepEqual(h.store.get('settings:captured-defaults'),preset);assert.equal(h.$('captureDefaults').disabled,false);
-  h.state.failDefaultsSave=false;h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default captured.'));assert.equal(h.store.get('settings:captured-defaults').preferences.chunk,8000);
+  h.$('chunk').value='10001';captureDefault(h);await until(()=>document.querySelector('[data-default-feedback]')?.textContent.includes('whole number from'));assert.deepEqual(h.store.get('settings:captured-defaults'),preset);
+  h.$('chunk').value='8000';h.state.failDefaultsSave=true;captureDefault(h);await until(()=>h.$('defaultStatus').textContent.includes('save failed'));assert.deepEqual(h.store.get('settings:captured-defaults'),preset);assert.equal(h.$('captureDefaults').disabled,false);
+  h.state.failDefaultsSave=false;captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));assert.equal(h.store.get('settings:captured-defaults').preferences.chunk,8000);
  }finally{await h.close();}
 });
 
 test('applying defaults reports save failure and never changes another chat during a slow navigation',async()=>{
  const h=await harness();try{
-  h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default captured.'));
+  captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));
   h.$('chunk').value='8000';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
   h.state.failConfigSave=true;h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.includes('could not be applied'));assert.match(h.$('saveState').textContent,/Save failed/);assert.equal(h.store.get('chat:chat-a').chunk,8000);
   h.state.failConfigSave=false;await h.click('save',text=>text.includes('retention saved'));assert.equal(h.store.get('chat:chat-a').chunk,500);
@@ -456,6 +508,45 @@ test('volume buttons and percent entry change live playback, clamp values, toler
  }finally{await h.close();}
 });
 
+test('all speaker and SFX controls amplify to 300% without loudness matching while Master stays at 100%',async()=>{
+ for(const mobile of [false,true]){
+  const originalContext=globalThis.AudioContext,graphs=[];let decodes=0;
+  globalThis.AudioContext=class{
+   destination={};async resume(){}async close(){}
+   async decodeAudioData(){decodes++;throw Error('Loudness matching is off');}
+   createMediaElementSource(audio){return {connect(gain){graphs.push({audio,gain});},disconnect(){}};}
+   createGain(){return {gain:{value:1},connect(){},disconnect(){}};}
+  };
+  let h;
+  try{
+   h=await harness(undefined,mobile);h.$('showMixer').click();await toggle(h,'normalizeLoudness',false);await configureFoley(h);
+   h.message.content='At dawn. The page snapped under her thumb. "Hello." "Wait."';await h.plan();
+   const find=label=>document.querySelector(`[aria-label="${label}"]`),type=(name,value)=>{const input=find(`${name} volume percent`);input.value=value;input.dispatchEvent(new h.dom.window.Event('input'));};
+   for(const name of ['Narrator','Mira','Guard','SFX','Ambience']){
+    assert.equal(find(`${name} volume`).max,'3');assert.equal(find(`${name} volume percent`).max,'300');assert.equal(find(`${name} volume percent`).value,'100');type(name,'300');
+   }
+   assert.equal(find('Master volume').max,'1');type('Master','300');assert.equal(find('Master volume percent').value,'100');
+   h.state.blockAudio=true;h.$('play').click();await until(()=>graphs.length===1 && graphs[0].audio.paused===false);assert.equal(graphs[0].gain.gain.value,3);
+   find('Narrator silent').click();assert.equal(graphs[0].gain.gain.value,0);find('Narrator silent').click();assert.equal(graphs[0].gain.gain.value,3);
+   type('Master','50');assert.equal(graphs[0].gain.gain.value,1.5);graphs[0].audio.onended();
+   let index=1;
+   while(true){
+    await until(()=>graphs.length===index+1 && graphs[index].audio.paused===false);
+    if(await h.audioBlobs[h.audios.indexOf(graphs[index].audio)].text()==='FREESOUND_PREVIEW')break;
+    assert.equal(graphs[index].gain.gain.value,1.5);graphs[index++].audio.onended();
+   }
+   const effect=graphs[index];assert.ok(Math.abs(effect.gain.gain.value-0.675)<0.000001);
+   type('SFX','200');assert.equal(find('SFX volume').getAttribute('aria-valuetext'),'200 percent');assert.ok(Math.abs(effect.gain.gain.value-0.45)<0.000001);
+   type('SFX','999');assert.equal(find('SFX volume percent').value,'300');assert.ok(Math.abs(effect.gain.gain.value-0.675)<0.000001);
+   h.state.blockAudio=false;effect.audio.onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+   assert.ok(graphs.slice(index+1).every(graph=>graph.gain.gain.value===1.5));assert.equal(decodes,0);
+   const generated=h.synthesis.length;await until(()=>h.store.get('ui:mixer')?.channels?.Mira?.volume===3 && h.store.get('ui:mixer')?.sfx===3);await h.reload();
+   for(const name of ['Narrator','Mira','Guard','SFX','Ambience'])assert.equal(find(`${name} volume percent`).value,'300');
+   assert.equal(find('Master volume percent').value,'50');await h.play();assert.equal(h.synthesis.length,generated);assert.equal(decodes,0);
+  }finally{if(h)await h.close();globalThis.AudioContext=originalContext;}
+ }
+});
+
 test('compact mute and skip icons remain distinct, accessible and reversible without losing percent entries',async()=>{
  const h=await harness();try{
   await h.plan();const get=kind=>document.querySelector(`[aria-label="Mira ${kind}"]`),mute=get('silent'),skip=get('no voice');
@@ -595,7 +686,7 @@ test('Ambience can boost above the old volume cap on desktop and mobile, follows
    h.$('showMixer').click();
    const find=label=>document.querySelector(`[aria-label="${label}"]`),range=()=>find('Ambience volume'),number=()=>find('Ambience volume percent');
    const type=(label,value)=>{const input=find(label);input.value=value;input.dispatchEvent(new h.dom.window.Event('input'));};
-   assert.equal(range().max,'3');assert.equal(number().max,'300');assert.equal(number().value,'100');assert.equal(find('Master volume').max,'1');assert.equal(find('SFX volume').max,'1');
+   assert.equal(range().max,'3');assert.equal(number().max,'300');assert.equal(number().value,'100');assert.equal(find('Master volume').max,'1');assert.equal(find('SFX volume').max,'3');
    await configureFoley(h);h.message.content='Rain drummed on the roof. "Hello."';await h.plan();h.state.blockAudio=true;h.$('play').click();
    await until(()=>beds(h).length===1 && beds(h)[0].volume===0.25);const rain=beds(h)[0],speech=voices(h)[0];
    type('Ambience volume','2');assert.equal(rain.volume,0.5);assert.equal(number().value,'200');assert.equal(speech.volume,1);

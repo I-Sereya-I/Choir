@@ -206,6 +206,13 @@ function validateCastConfig(config) {
     names.add(name);
   }
   if (!names.has('narrator')) throw new Error('The fixed cast must include Narrator.');
+  const policy=config.npcPolicy;
+  if(policy){
+    if(!['llm','skip','single','preferred'].includes(policy.mode))throw new Error('Choose a valid NPC casting mode.');
+    const route=policy.route || config.defaultRoute || '',available=id=>config.voices.some(v=>v.id===id && (v.route || '')===route);
+    if(policy.mode==='single' && !available(policy.voice))throw new Error('Choose an available shared NPC voice.');
+    if(policy.mode==='preferred' && (!Array.isArray(policy.voices) || !policy.voices.length || policy.voices.some(id=>!available(id))))throw new Error('Select at least one available preferred NPC voice.');
+  }
   if (!Array.isArray(config.npcs) || config.npcs.length > 500) throw new Error('Invalid NPC cast.');
   for (const npc of config.npcs) {
     if(!config.voices.some(v=>(v.route || '')===(npc.route || config.defaultRoute || '')))throw new Error(`Load the voice catalogue for ${npc.speaker}'s TTS connection.`);
@@ -228,11 +235,19 @@ function validateCastConfig(config) {
   return config;
 }
 
+function npcCastActor(actor,config){
+  const policy=config.npcPolicy;
+  if(policy?.mode==='single')return {...actor,route:policy.route || config.defaultRoute || '',voice:policy.voice,gender:'auto'};
+  if(policy?.mode==='preferred')return {...actor,route:policy.route || config.defaultRoute || '',voice:(actor.route || config.defaultRoute || '')===(policy.route || config.defaultRoute || '') && policy.voices.includes(actor.voice)?actor.voice:''};
+  return actor;
+}
+
 function validatePlan(raw, transcript, config) {
   validateCastConfig(config);
   if (!raw || !Array.isArray(raw.segments) || !raw.segments.length) throw new Error('Expected at least one speech segment.');
   const voices = new Set(config.voices.map(v => v.id));
-  const cast = new Map([...config.fixed, ...config.npcs].map(v => [normalizeName(v.speaker), {...v}]));
+  const cast = new Map([...config.fixed, ...config.npcs.map(actor=>npcCastActor(actor,config))].map(v => [normalizeName(v.speaker), {...v}]));
+  const fixedNames=new Set(config.fixed.map(actor=>normalizeName(actor.speaker)));
   const aliases = new Map([...config.fixed, ...config.npcs].flatMap(actor=>(actor.aliases || []).map(alias=>[normalizeName(alias),normalizeName(actor.speaker)])));
   const available=(voice,route)=>config.voices.some(v=>v.id===voice && (v.route || '')===route);
   const checkAutomaticGender=(voice,gender,route)=>{
@@ -274,8 +289,9 @@ function validatePlan(raw, transcript, config) {
     if (!key || key.length > 100) throw new Error(`Segment ${index+1} has an invalid speaker.`);
     let actor = cast.get(key);
     if (!actor) {
-      const route=config.defaultRoute || segment.route || '';
-      if (!available(segment.voice,route)) throw new Error(`NPC ${segment.speaker} needs a voice from its selected TTS connection's catalogue.`);
+      const policy=config.npcPolicy,route=policy?.route || config.defaultRoute || segment.route || '';
+      const voice=policy?.mode==='single'?policy.voice:segment.voice;
+      if (!available(voice,route)) throw new Error(`NPC ${segment.speaker} needs a voice from its selected TTS connection's catalogue.`);
       if (cast.size >= 550) throw new Error('Too many NPCs. Reset the NPC cast.');
       const rawNpc = rawNPCMap.get(key);
       const voicePrompt = typeof segment.voicePrompt === 'string'
@@ -283,10 +299,10 @@ function validatePlan(raw, transcript, config) {
         : (typeof rawNpc?.voicePrompt === 'string'
           ? rawNpc.voicePrompt.slice(0, 300)
           : (typeof actor?.voicePrompt === 'string' ? actor.voicePrompt : ''));
-      actor = {speaker:segment.speaker.trim(), voice:segment.voice, style:'',
+      actor = npcCastActor({speaker:segment.speaker.trim(), voice, style:'',
         voicePrompt,
         ...(route?{route}:{}),
-        gender:['female','male','neutral'].includes(segment.gender)?segment.gender:'auto'};
+        gender:['female','male','neutral'].includes(segment.gender)?segment.gender:'auto'},config);
       checkAutomaticGender(actor.voice,actor.gender,route);
       cast.set(key, actor);
     } else if (!actor.voicePrompt && (typeof segment.voicePrompt === 'string' || typeof rawNPCMap.get(key)?.voicePrompt === 'string')) {
@@ -299,6 +315,7 @@ function validatePlan(raw, transcript, config) {
       checkAutomaticGender(segment.voice,actor.gender,route);
       actor.voice=segment.voice;
     }
+    if(!fixedNames.has(key) && config.npcPolicy?.mode==='preferred' && !config.npcPolicy.voices.includes(actor.voice))throw new Error(`NPC ${actor.speaker} must use one of the preferred voices.`);
     // Assigned voices always win; blank fixed voices are cast once by the planner.
     const delivery = typeof segment.style === 'string' ? segment.style.trim() : '';
     if (delivery.length > 600) throw new Error('Turn styles must be at most 600 characters.');
@@ -326,9 +343,13 @@ function restoreAttribution(saved, transcript, config) {
   return validatePlan({segments:saved.segments.map(segment=>{
     const actor=actors.find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker) || (a.aliases || []).some(alias=>normalizeName(alias)===normalizeName(segment.speaker)));
     const route=actor?.route || config.defaultRoute || '';
-    const catalogue=config.voices.filter(v=>(v.route || '')===route);
-    const voice=actor?.voice || catalogue.find(v=>!actor?.gender || actor.gender==='auto' || v.gender===actor.gender)?.id;
-    return {...segment,voice,route};
+    const npc=!config.fixed.includes(actor);
+    const policy=npc?config.npcPolicy:null;
+    const selectedActor=npc?npcCastActor(actor || {route:policy?.route || route,voice:''},config):actor;
+    const selectedRoute=selectedActor?.route || policy?.route || route;
+    const choices=config.voices.filter(v=>(v.route || '')===selectedRoute && (policy?.mode!=='preferred' || policy.voices.includes(v.id)));
+    const voice=selectedActor?.voice || choices.find(v=>!selectedActor?.gender || selectedActor.gender==='auto' || v.gender===selectedActor.gender)?.id;
+    return {...segment,voice,route:selectedRoute};
   })},transcript,config);
 }
 
@@ -344,9 +365,11 @@ function passageKey(segment, settings, connection, parameters={}) {
     settings.allowVoiceFallback===true,canonical(effectiveParameters)]);
 }
 
+const MAX_CHANNEL_VOLUME=3;
+
 function mixerVolume(master, speaker, channels) {
   const channel=Object.hasOwn(channels,speaker)?channels[speaker]:{}, solo=Object.values(channels).some(c=>c.solo);
-  return Math.max(0,Math.min(1,Number(master ?? 1)*Number(channel.volume ?? 1)*(channel.mute || (solo && !channel.solo)?0:1)));
+  return Math.max(0,Math.min(1,Number(master ?? 1)))*Math.max(0,Math.min(MAX_CHANNEL_VOLUME,Number(channel.volume ?? 1)))*(channel.mute || (solo && !channel.solo)?0:1);
 }
 
 function loudnessGain(channels, target=0.12) {
@@ -562,6 +585,7 @@ function audioBytes(base64, mimeType) {
 function plannerPrompt(transcript, config, context) {
   return [
     {role:'system',content:`You are an audiobook casting director. Return ONLY JSON {"segments":[{"speaker":"name","voice":"catalogue ID","route":"TTS route ID","gender":"auto|female|male|neutral","style":"brief delivery instruction","unit_ids":[0]}],"newNPCs":[{"name":"character name","voice":"voice_name","route":"gemini or native:id","voicePrompt":"timbre, age, accent"}]}.
+NPC casting policy: ${JSON.stringify(config.npcPolicy || {mode:'llm'})}. It applies only to NPCs and overrides the general NPC voice guidance below. single: use its voice and route for every NPC. preferred: select NPC voices only from its voices list and route. llm: choose suitable available voices on its route. skip: keep NPC attribution and text, but NPC speech will be skipped during playback. An empty policy route uses defaultRoute. Never apply NPC restrictions to the fixed lead cast.
 Assign speakers to the supplied numbered sourceUnits. Return unit_ids arrays covering ALL source unit IDs exactly once, in increasing order, without gaps or duplicates. Do not return a text field or copy the transcript into your answer. The app reconstructs text from the original source. Source units with kind narration MUST use Narrator. Only kind dialogue (text inside straight or curly double quotes) may use character voices. Actions, descriptions and thoughts outside double quotes always use Narrator, even if they describe a character. Infer the speaker of each quoted unit from nearby attribution and conversation context. You may group consecutive units with the same speaker and delivery.
 Fixed speaker names identify the user's persona and main characters. Match dialogue to those exact names; their nonempty voice assignments are immutable. A blank voice means you must choose a suitable availableVoices ID for that speaker, including Narrator, and reuse it for every turn. Reuse existing NPC names and voices. For each new NPC, use its actual story name if given, otherwise a stable descriptive identity such as "Gate guard" or "Unknown speaker 1". Uncertain dialogue attribution should retain a separate speaker identity rather than become narration. Do not invent personal names or new characters for narration alone. Choose a real availableVoices ID for every new NPC using character cues. Avoid reusing occupied voices when suitable alternatives exist. Keep NPC identity stable across spelling variations. New NPCs may include a voicePrompt (a 1-sentence description of the voice: timbre, age, accent, pitch). The words "name", "voice" and "catalogue ID" in the schema are placeholders, never speaker names or voice IDs.
 For example, if source units 0 and 2 are narration and 1 and 3 are quoted dialogue, assign units [0] to Narrator, [1] to the first speaker, [2] to Narrator and [3] to the second speaker. A reply without double-quoted dialogue uses Narrator throughout.
@@ -1043,13 +1067,15 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
       });
     } else {
       const chosenName = dialogueSpeakerMap.get(u.id) || candidates[0] || 'Narrator';
-      const actor = allCast.find(a => normalizeName(a.speaker) === normalizeName(chosenName))
+      let actor = allCast.find(a => normalizeName(a.speaker) === normalizeName(chosenName))
         || { speaker: chosenName, voice: '', style: '', gender: 'auto' };
+      const npc=!config.fixed.some(a=>normalizeName(a.speaker)===normalizeName(chosenName));
+      if(npc)actor=npcCastActor(actor,config);
       const style = dialogueEmotionMap.get(u.id) || '';
       let voice = actor.voice || '';
       if (!voice && config.voices?.length) {
         const route = actor.route || config.defaultRoute || '';
-        const match = config.voices.find(v => (v.route || '') === route) || config.voices[0];
+        const match = config.voices.find(v => (v.route || '') === route && (!npc || config.npcPolicy?.mode!=='preferred' || config.npcPolicy.voices.includes(v.id)));
         voice = match?.id || '';
       }
       rawSegments.push({
@@ -1128,7 +1154,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.5-staging.24',ready:true}});return;
+      send({result:{version:'1.1.5-staging.25',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);
