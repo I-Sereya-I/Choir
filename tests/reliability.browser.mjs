@@ -352,6 +352,35 @@ const bedName=(h,audio)=>h.audioBlobs[h.audios.indexOf(audio)].text();
 const scene='Night fell. Rain drummed on the roof. "Hello." The tavern door swung open. "Wait."';
 const toggle=async(h,name,checked)=>{h.$(name).checked=checked;h.$(name).dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');};
 
+test('volume buttons and percent entry change live playback, clamp values, tolerate blank edits and retain all levels after reload',async()=>{
+ const h=await harness();try{
+  await h.plan();h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios[0]?.paused===false);
+  const find=label=>document.querySelector(`[aria-label="${label}"]`),number=name=>find(`${name} volume percent`),range=name=>find(`${name} volume`);
+  const type=(name,value)=>{const input=number(name);input.value=value;input.dispatchEvent(new h.dom.window.Event('input'));};
+  find('Decrease Master volume').click();assert.equal(number('Master').value,'95');assert.equal(h.audios[0].volume,0.95);
+  type('Master','37');assert.equal(range('Master').value,'0.37');assert.equal(h.audios[0].volume,0.37);
+  type('Master','');assert.equal(h.audios[0].volume,0.37);number('Master').dispatchEvent(new h.dom.window.Event('blur'));assert.equal(number('Master').value,'37');
+  type('Master','150');assert.equal(number('Master').value,'100');assert.equal(find('Increase Master volume').disabled,true);
+  type('Master','-4');assert.equal(number('Master').value,'0');assert.equal(find('Decrease Master volume').disabled,true);assert.equal(h.audios[0].volume,0);
+  type('Master','80');type('Narrator','25');assert.equal(h.audios[0].volume,0.2);type('SFX','43');type('Ambience','61');assert.equal(h.audios[0].volume,0.2);
+  find('Increase SFX volume').click();assert.equal(number('SFX').value,'48');
+  const desktop=range('Ambience');desktop.value='0.32';desktop.dispatchEvent(new h.dom.window.Event('input'));desktop.dispatchEvent(new h.dom.window.Event('change'));assert.equal(number('Ambience').value,'32');
+  await until(()=>h.store.get('ui:mixer')?.ambience===0.32 && h.store.get('ui:mixer')?.sfx===0.48);h.$('stop').click();await h.reload();
+  assert.equal(number('Master').value,'80');assert.equal(number('Narrator').value,'25');assert.equal(number('SFX').value,'48');assert.equal(number('Ambience').value,'32');
+ }finally{await h.close();}
+});
+
+test('compact mute and skip icons remain distinct, accessible and reversible without losing percent entries',async()=>{
+ const h=await harness();try{
+  await h.plan();const get=kind=>document.querySelector(`[aria-label="Mira ${kind}"]`),mute=get('silent'),skip=get('no voice');
+  assert.equal(mute.textContent,'');assert.equal(skip.textContent,'');assert.equal(mute.querySelectorAll('svg').length,1);assert.equal(skip.querySelectorAll('svg').length,1);assert.notEqual(mute.innerHTML,skip.innerHTML);
+  const unmuted=mute.innerHTML,enabled=skip.innerHTML;mute.click();assert.equal(get('silent').getAttribute('aria-pressed'),'true');assert.notEqual(get('silent').innerHTML,unmuted);
+  get('no voice').click();await until(()=>get('no voice').getAttribute('aria-pressed')==='true');assert.notEqual(get('no voice').innerHTML,enabled);
+  get('silent').click();get('no voice').click();await until(()=>get('no voice').getAttribute('aria-pressed')==='false');assert.equal(get('silent').innerHTML,unmuted);assert.equal(get('no voice').innerHTML,enabled);
+  assert.equal(document.querySelector('[aria-label="Mira volume percent"]').value,'100');
+ }finally{await h.close();}
+});
+
 test('Channel levels collapse independently, persist their state and hide disabled sound levels while retaining voice controls',async()=>{
  const h=await harness();try{
   h.$('showMixer').click();const mixer=()=>document.querySelector('[data-choir-mixer]'),menu=()=>mixer().querySelector('[aria-label="Channel levels"]'),body=()=>mixer().querySelector('.cm-levels-body');

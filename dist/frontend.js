@@ -717,6 +717,9 @@ const ICON_SEARCH = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="
 const ICON_SPARKLE = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg>`;
 const ICON_CLOSE = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`;
 const ICON_SOUND = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4z"/><path d="M15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"/></svg>`;
+const ICON_MUTED = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4zM16 9l6 6M22 9l-6 6"/></svg>`;
+const ICON_MIC = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>`;
+const ICON_MIC_OFF = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 2 20 20M9 9v3a3 3 0 0 0 5 2M9 5V5a3 3 0 0 1 6 0v6M5 10v2a7 7 0 0 0 12 5M19 10v2M12 19v3M8 22h8"/></svg>`;
 const ICON_STOP = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`;
 const ICON_PLAN = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 6 1 1 2-2M10 6h11M3 12l1 1 2-2M10 12h11M3 18l1 1 2-2M10 18h11"/></svg>`;
 
@@ -857,12 +860,21 @@ export async function setup(ctx) {
     .choir-mixer .cm-channel[aria-current="true"] .cm-channel-dot{background:var(--cm-accent);box-shadow:0 0 0 3px #c4b5fd15}
     .choir-mixer .cm-channel-name{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
     .choir-mixer .cm-channel[data-no-voice="true"] .cm-channel-name{color:var(--cm-muted)}
-    .choir-mixer .cm-channel-controls{display:grid;grid-template-columns:minmax(0,1fr) 53px 67px;align-items:center;gap:7px}
+    .choir-mixer .cm-channel-controls{display:grid;grid-template-columns:minmax(0,1fr) 28px 28px;align-items:center;gap:7px}
     .choir-mixer .cm-channel[data-kind="sfx"] .cm-channel-controls,.choir-mixer .cm-channel[data-kind="ambience"] .cm-channel-controls{grid-template-columns:minmax(0,1fr)}
     .choir-mixer .cm-toggle{height:26px;border:1px solid #ffffff16;border-radius:7px;background:#ffffff04;font-size:10px;font-weight:500;color:#aeb8cc;white-space:nowrap}
+    .choir-mixer .cm-toggle svg{width:16px;height:16px}
+    .choir-mixer .cm-volume{min-width:0}
+    .choir-mixer .cm-volume-steps{display:none;grid-template-columns:44px minmax(0,1fr) 44px;align-items:center;gap:4px;min-width:0}
+    .choir-mixer .cm-volume-steps button{height:44px;border:1px solid #ffffff25;border-radius:8px;background:#ffffff04;font-size:22px}
+    .choir-mixer .cm-volume-entry{display:flex;align-items:center;gap:2px;min-width:0;border:1px solid #ffffff25;border-radius:8px;background:#ffffff04;height:44px;padding:0 5px}
+    .choir-mixer .cm-volume-entry input{appearance:textfield;min-width:0;width:100%;height:100%;padding:0;border:0;background:transparent;color:inherit;text-align:center;font:16px system-ui;outline-offset:0}
+    .choir-mixer .cm-volume-entry input::-webkit-inner-spin-button,.choir-mixer .cm-volume-entry input::-webkit-outer-spin-button{appearance:none;margin:0}
+    .choir-mixer .cm-volume-entry span{font-size:11px;color:var(--cm-muted)}
     .choir-mixer .cm-toggle[data-kind="silent"][aria-pressed="true"]{background:#f3cb841c;border-color:#f3cb8440;color:#f3cb84}
     .choir-mixer .cm-toggle[data-kind="no-voice"][aria-pressed="true"]{background:#c4b5fd1c;border-color:#c4b5fd40;color:#d0c3ff}
     .choir-mixer .cm-legend{display:block;padding:9px 14px 11px;margin:0;font-size:10px;color:var(--cm-muted);border-top:1px solid var(--cm-line);flex-shrink:0}
+    .choir-mixer .cm-legend span{display:flex;align-items:center;gap:5px}.choir-mixer .cm-legend svg{width:13px;height:13px}
     .choir-mixer input[type="range"]{appearance:none;-webkit-appearance:none;display:block;width:100%;min-width:0;height:20px;margin:0;padding:0;border:0;border-radius:0;background:transparent;cursor:pointer;--choir-level:100%;--cm-track:linear-gradient(to right,var(--cm-accent) 0%,var(--cm-accent) var(--choir-level),#ffffff14 var(--choir-level),#ffffff14 100%)}
     .choir-mixer input[type="range"]::-webkit-slider-runnable-track{height:3px;border-radius:4px;background:var(--cm-track)}
     .choir-mixer input[type="range"]::-moz-range-track{height:3px;border-radius:4px;background:var(--cm-track)}
@@ -876,6 +888,7 @@ export async function setup(ctx) {
     @keyframes choir-level{to{transform:scaleY(.35)}}
     @media(prefers-reduced-motion:reduce){.choir-mixer .cm-activity i{animation:none!important}.choir-mixer button{transition:none}}
     @media(pointer:coarse){.choir-mixer .cm-transport{height:44px;gap:6px;padding:0}.choir-mixer .cm-transport button,.choir-mixer .cm-transport button[data-choir-action]{position:static;min-width:44px;min-height:44px}.choir-mixer .cm-auto-plan button,.choir-mixer .cm-channels-title{min-height:44px}}
+    @media(pointer:coarse),(max-width:600px){.choir-mixer .cm-volume>input[type="range"]{display:none}.choir-mixer .cm-volume-steps{display:grid}.choir-mixer .cm-master{grid-template-columns:auto minmax(0,1fr)}.choir-mixer .cm-master .cm-percent,.choir-mixer .cm-channel-head .cm-percent{display:none}.choir-mixer .cm-channel-controls{grid-template-columns:minmax(0,1fr) 44px 44px;gap:4px}.choir-mixer .cm-toggle{height:44px}.choir-mixer .cm-toggle svg{width:19px;height:19px}}
   `);
   root.innerHTML = `<div class="ensemble-tts">
     <div class="et-header">
@@ -1122,9 +1135,23 @@ export async function setup(ctx) {
   const nowText=document.createElement('div'),playbackCaption=document.createElement('span');playbackCaption.className='cm-caption';nowText.append(playbackCaption,speakerLabel);
   const activity=document.createElement('span');activity.className='cm-activity';activity.setAttribute('aria-hidden','true');activity.innerHTML='<i></i><i></i><i></i><i></i>';nowPlaying.append(nowText,activity);
   function showVolume(input,readout,value){const percent=Math.round(Number(value)*100);readout.textContent=`${percent}%`;input.style.setProperty('--choir-level',`${percent}%`);input.setAttribute('aria-valuetext',`${percent} percent`);}
-  const master=document.createElement('input');master.type='range';master.min='0';master.max='1';master.step='0.01';master.value=mixerState.master;master.setAttribute('aria-label','Master volume');
-  const masterLabel=document.createElement('label');masterLabel.className='cm-master';masterLabel.textContent='Master';
-  const masterReadout=document.createElement('span');masterReadout.className='cm-percent';masterReadout.setAttribute('aria-hidden','true');showVolume(master,masterReadout,mixerState.master);masterLabel.append(master,masterReadout);
+  function makeMixerVolume(name,value,readout,onValue){
+    const root=document.createElement('div');root.className='cm-volume';
+    const range=document.createElement('input');range.type='range';range.min='0';range.max='1';range.step='0.01';range.setAttribute('aria-label',`${name} volume`);
+    const steps=document.createElement('div');steps.className='cm-volume-steps';
+    const minus=document.createElement('button'),plus=document.createElement('button');minus.type=plus.type='button';minus.textContent='−';plus.textContent='+';minus.setAttribute('aria-label',`Decrease ${name} volume`);plus.setAttribute('aria-label',`Increase ${name} volume`);
+    const entry=document.createElement('div');entry.className='cm-volume-entry';const number=document.createElement('input');number.type='number';number.min='0';number.max='100';number.step='1';number.inputMode='numeric';number.setAttribute('aria-label',`${name} volume percent`);
+    const unit=document.createElement('span');unit.textContent='%';unit.setAttribute('aria-hidden','true');entry.append(number,unit);steps.append(minus,entry,plus);root.append(range,steps);
+    let percent=Math.max(0,Math.min(100,Math.round(Number(value)*100)));
+    const sync=()=>{range.value=percent/100;number.value=String(percent);showVolume(range,readout,percent/100);minus.disabled=percent===0;plus.disabled=percent===100;};
+    const change=(next,save)=>{percent=Math.max(0,Math.min(100,Math.round(next)));sync();onValue(percent/100);if(save)void persistMixer();};
+    range.oninput=()=>change(Number(range.value)*100,false);range.onchange=()=>persistMixer();
+    number.oninput=()=>{if(number.value.trim() && Number.isFinite(Number(number.value)))change(Number(number.value),true);};
+    number.onblur=sync;number.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();number.blur();}};
+    minus.onclick=()=>change(percent-5,true);plus.onclick=()=>change(percent+5,true);sync();return root;
+  }
+  const masterLabel=document.createElement('div');masterLabel.className='cm-master';masterLabel.textContent='Master';
+  const masterReadout=document.createElement('span');masterReadout.className='cm-percent';masterReadout.setAttribute('aria-hidden','true');const masterVolume=makeMixerVolume('Master',mixerState.master,masterReadout,value=>{mixerState.master=value;applyVolume();});masterLabel.append(masterVolume,masterReadout);
   const mixerPlay=document.createElement('button');mixerPlay.type='button';mixerPlay.dataset.choirAction='playback';
   mixerPlay.onclick=()=>{if(currentAudio){if(currentAudio.paused){currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));pauseBeds(false);}else{currentAudio.pause();pauseBeds(true);updateTransport();}}else if(!busy && !controller){mixerPlay.disabled=true;status('Loading playback…');run(async()=>{const latest=latestReply();if(!latest)throw new Error('No assistant reply in the active chat.');if(plan && planSource?.chatId===chatId && planSource.messageId===latest.id && sameSpeech(planSource.content,ctx.messages.getContent(latest.id)))await play({resume:true});else await playMessage(latest.id);});}};
   const mixerPlanLatest=document.createElement('button');mixerPlanLatest.type='button';mixerPlanLatest.dataset.choirAction='plan-latest';mixerPlanLatest.innerHTML=ICON_PLAN;mixerPlanLatest.title='Plan latest reply without starting audio';mixerPlanLatest.setAttribute('aria-label','Plan latest reply');mixerPlanLatest.onclick=()=>run(planLatest);
@@ -1133,7 +1160,7 @@ export async function setup(ctx) {
   mixerNext.dataset.choirAction='next';mixerPrevious.dataset.choirAction='previous';
   const mixerStop=document.createElement('button');mixerStop.type='button';mixerStop.dataset.choirAction='stop';mixerStop.innerHTML=ICON_STOP;mixerStop.title='Stop playback';mixerStop.setAttribute('aria-label','Stop');mixerStop.onclick=()=>stop();
   const transport=document.createElement('div');transport.className='cm-transport';transport.append(mixerPlanLatest,mixerPrevious,mixerPlay,mixerNext,mixerStop);
-  const mixerSeek=makeSeekControl(),legend=document.createElement('small');legend.className='cm-legend';legend.textContent='Silent = mute · No voice = skip & don’t generate';
+  const mixerSeek=makeSeekControl(),legend=document.createElement('small');legend.className='cm-legend';legend.innerHTML=`<span>${ICON_MUTED} Silent = mute</span><span>${ICON_MIC_OFF} No voice = skip & don’t generate</span>`;
   const levels=document.createElement('div'),levelsBody=document.createElement('div');levels.className='cm-levels';levelsBody.className='cm-levels-body';levelsBody.id=`choir-channel-levels-${crypto.randomUUID()}`;
   const channelsTitle=document.createElement('button');channelsTitle.type='button';channelsTitle.className='cm-channels-title';channelsTitle.setAttribute('aria-label','Channel levels');channelsTitle.setAttribute('aria-controls',levelsBody.id);
   const levelsArrow=document.createElement('span');levelsArrow.setAttribute('aria-hidden','true');const levelsTitle=document.createElement('span');levelsTitle.textContent='Channel levels';channelsTitle.append(levelsArrow,levelsTitle);
@@ -1233,7 +1260,6 @@ export async function setup(ctx) {
   }
   let suppressMixerClick=false;
   collapse.onclick=event=>{if(suppressMixerClick && event.detail!==0){suppressMixerClick=false;return;}suppressMixerClick=false;mixerState.collapsed=!mixerState.collapsed;positionMixer();persistMixer();};
-  master.oninput=()=>{mixerState.master=Number(master.value);showVolume(master,masterReadout,mixerState.master);applyVolume();};master.onchange=persistMixer;
   let drag;
   mixerHeader.addEventListener('pointerdown',event=>{suppressMixerClick=false;if(event.button!==0 || (!mixerState.collapsed && event.target.closest('button')))return;drag={x:event.clientX,y:event.clientY,left:mixerState.x,top:mixerState.y,moved:false};(event.target.closest('button') || mixerHeader).setPointerCapture?.(event.pointerId);});
   mixerHeader.addEventListener('pointermove',event=>{if(!drag)return;const dx=event.clientX-drag.x,dy=event.clientY-drag.y;if(!drag.moved && Math.hypot(dx,dy)<5)return;drag.moved=true;mixerState.x=drag.left+dx;mixerState.y=drag.top+dy;positionMixer();});
@@ -1260,11 +1286,10 @@ export async function setup(ctx) {
       const dot=doc.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
       const readout=doc.createElement('span');readout.className='cm-percent';readout.setAttribute('aria-hidden','true');head.append(dot,name,readout);
       const controls=doc.createElement('div');controls.className='cm-channel-controls';
-      const volume=doc.createElement('input');volume.type='range';volume.min='0';volume.max='1';volume.step='0.01';volume.value=channel.volume;volume.setAttribute('aria-label',`${speaker} volume`);
-      showVolume(volume,readout,channel.volume);volume.oninput=()=>{channel.volume=Number(volume.value);showVolume(volume,readout,channel.volume);applyVolume();};volume.onchange=persistMixer;
-      const silent=doc.createElement('button');silent.type='button';silent.className='cm-toggle';silent.dataset.kind='silent';silent.textContent=channel.mute?'✓ Silent':'Silent';silent.setAttribute('aria-label',`${speaker} silent`);silent.setAttribute('aria-pressed',String(Boolean(channel.mute)));silent.title='Mute playback. Audio can still be generated and cached.';silent.onclick=()=>{channel.mute=!channel.mute;applyVolume();renderMixer();persistMixer();};
+      const volume=makeMixerVolume(speaker,channel.volume,readout,value=>{channel.volume=value;applyVolume();});
+      const silent=doc.createElement('button');silent.type='button';silent.className='cm-toggle';silent.dataset.kind='silent';silent.innerHTML=channel.mute?ICON_MUTED:ICON_SOUND;silent.setAttribute('aria-label',`${speaker} silent`);silent.setAttribute('aria-pressed',String(Boolean(channel.mute)));silent.title='Silent: mute playback. Audio can still be generated and cached.';silent.onclick=()=>{channel.mute=!channel.mute;applyVolume();renderMixer();persistMixer();};
       controls.append(volume,silent);
-      const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.textContent=speakerExcluded(speaker)?'✓ No voice':'No voice';noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='Skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));controls.append(noVoice);
+      const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.innerHTML=speakerExcluded(speaker)?ICON_MIC_OFF:ICON_MIC;noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='No voice: skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));controls.append(noVoice);
       row.append(head,controls);
       channelsRoot.append(row);
     }
@@ -1274,8 +1299,7 @@ export async function setup(ctx) {
       const head=doc.createElement('div');head.className='cm-channel-head';const dot=doc.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
       const label=doc.createElement('span');label.className='cm-channel-name';label.textContent=name;
       const readout=doc.createElement('span');readout.className='cm-percent';readout.setAttribute('aria-hidden','true');head.append(dot,label,readout);
-      const controls=doc.createElement('div');controls.className='cm-channel-controls';const volume=doc.createElement('input');volume.type='range';volume.min='0';volume.max='1';volume.step='0.01';volume.value=mixerState[kind];volume.setAttribute('aria-label',`${name} volume`);
-      showVolume(volume,readout,mixerState[kind]);volume.oninput=()=>{mixerState[kind]=Number(volume.value);showVolume(volume,readout,mixerState[kind]);applyVolume();};volume.onchange=persistMixer;
+      const controls=doc.createElement('div');controls.className='cm-channel-controls';const volume=makeMixerVolume(name,mixerState[kind],readout,value=>{mixerState[kind]=value;applyVolume();});
       controls.append(volume);row.append(head,controls);channelsRoot.append(row);
     }
     channelCount.textContent=String(channelsRoot.querySelectorAll('.cm-channel').length);legend.hidden=!speakers.size;
