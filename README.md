@@ -6,10 +6,10 @@
 
 [![Version](https://img.shields.io/badge/version-1.1.5--staging.11-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-193%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-200%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, and sound effects.
+An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects and ambience.
 
 </div>
 
@@ -25,7 +25,7 @@ Choir separates narration and character dialogue from chat messages, assigns dis
 - **Multi-voice casting.** Cast distinct voices for the Narrator, player persona, and any number of characters or NPCs. Choose voices manually or let the planner cast them automatically.
 - **Dual connection modes.** Use one TTS connection across the whole cast, or assign different providers to individual characters.
 - **Choice of attribution engine.** Heuristic mode classifies narration and clear dialogue locally, without LLM requests. Ambiguous dialogue stops with guidance to choose Jev or LLM. Jev uses your Decision connection; LLM fallback requires the explicit opt-in. Standard LLM mode uses your selected planner connection.
-- **Foley sound effects.** Your planner LLM picks the moments that should be audible and writes an English Freesound search for each, in any story language. Choir plays the matching clips right before those words, with pre-fetching and volume balancing.
+- **Foley sound effects.** Your planner LLM picks the moments that should be audible and writes an English Freesound search for each, in any story language. Choir plays the matching clips right before those words, with pre-fetching and volume balancing. Quiet looping ambience beds such as rain, a tavern crowd or wind play under the narration of sustained scenes.
 - **Narrator controls.** Use the mixer's Narrator **Silent** button to mute audio or **No voice** to skip narration and synthesis. Cue's narrator controls remain supported.
 - **Companion extension bridge.** Exposes `window.__CHOIR_API__` so reading interfaces like Cue Living Novel can request speech turn planning and seamless paragraph playback.
 - **Floating voice mixer.** A draggable sound icon expands into a transport with master and individual speaker volume controls, mute toggles, seeking, and skip buttons.
@@ -36,6 +36,8 @@ Choir separates narration and character dialogue from chat messages, assigns dis
 Click the small draggable speaker icon to open the compact player. The small **Plan latest** icon beside Previous plans the latest assistant reply without starting audio. The central **Play** button plays the latest reply, planning it first when needed, and pauses or resumes active playback. Previous and Next move between spoken blocks; the playback bar seeks within the current audio part. **Voices in this reply** shows only speakers used in the current plan, saved recording, or Cue paragraph. Hidden speakers retain their saved levels, and speakers with **No voice** remain listed so you can turn them back on. **Silent** mutes playback. **No voice** skips that character's playback and new synthesis while retaining text and cached audio.
 
 The **SFX On / Off** button beside Auto-plan and Auto-play stays synchronized with **Sound effects (Foley cues)** in the drawer and saves automatically. Turning it off skips effects in Choir and Cue, including cached playback, while speech continues. SFX has no channel row; effects follow the master level at 45% of speech volume. Old SFX channel volume and mute preferences no longer override the switch.
+
+The **Ambience** slider below Master sets the level of background beds, which play at 25% of speech volume at full slider. It applies immediately in Choir and Cue, including cached playback, and saves with the mixer. To stop fetching and playing beds entirely, turn off **Ambient sound** in the drawer.
 
 Cast and connection changes save automatically with Saving / Saved / Save failed feedback. A **Retry save** button appears only after saving fails; normal edits need no Save button. Each chat retains its cast and settings. Gemini and Jev API keys remain session-only. Saved plans and completed audio survive navigation and provider failures.
 
@@ -103,15 +105,17 @@ For a Fish Audio speaker, open its cast editor and click **Paste voice ID** besi
 
 ### Foley sound effects
 
-1. Check **Sound effects (Foley cues)** in Speech & Planner.
+1. Check **Sound effects (Foley cues)** and/or **Ambient sound** in Speech & Planner.
 2. In Advanced Settings, add your Freesound API key.
-3. After attribution, Choir makes one small request to your Planner LLM connection, in every planner mode. The model picks concrete sounds that happen in the scene, such as doors, footsteps, weather, fire or weapons, and anchors each to the words where it happens. It skips voices, music and imagined sounds. Choir then searches Freesound and plays the clips at balanced background levels.
+3. After attribution, Choir makes one small request to your Planner LLM connection, in every planner mode. The model picks concrete sounds that happen in the scene, such as doors, footsteps, weather, fire or weapons, and anchors each to the words where it happens. It skips voices, music and imagined sounds. Each search is 1 to 3 English words naming the sound the way Freesound files are named, such as `door slam` or `egg crack`; when a search finds nothing, Choir retries without its last word. Choir then searches Freesound and plays the clips at balanced background levels.
 
-No sound effect request is made while effects are off or no Freesound key is set. The choices are saved with the plan, so replays and reloads reuse them. Plans made before effects were enabled get their effects chosen once, on the next play; passages that gain an effect are synthesized again.
+The same request also picks up to three ambience entries for sustained environments. A bed starts right before its anchor words and loops quietly under the speech until the next bed, an explicit stop, or the end of the message, crossfading over about 1.5 seconds. Beds use Freesound sounds of 10 to 120 seconds, never delay speech while they download, pause with the speech, and follow Next, Previous and resume to the bed in effect at the new position.
 
-Effects play at detected cues in both Choir's chat player and companion paragraph playback. Cue requests a paragraph through Choir's bridge; Choir chooses the effects once per paragraph, searches Freesound, and plays the preview audio. Turning off **Sound effects (Foley cues)** disables effects in both players, including saved replays. Muting the narrator keeps effects available.
+No sound request is made while both effects and ambience are off or no Freesound key is set; with only one enabled, the request still runs and only that kind plays. The choices are saved with the plan, so replays and reloads reuse them. Plans made before effects were enabled get their effects chosen once, on the next play; passages that gain an effect are synthesized again.
 
-A valid Freesound API key is required for uncached effects. Missing keys, failed searches, and unavailable or invalid previews show **SFX skipped** in Choir while speech continues. Failed effects are not cached as silence; retry playback after correcting the key or service problem. Freesound searches use its [current search API](https://freesound.org/docs/api/resources_apiv2.html) and token authentication. Completed chat audio, including effects, survives reloads under your selected retention policy.
+Effects and beds play in both Choir's chat player and companion paragraph playback. Cue requests a paragraph through Choir's bridge; Choir chooses the sounds once per paragraph, searches Freesound, and plays the preview audio. In Cue, a bed keeps running across consecutive paragraphs of the same chat until another bed, a stop, Stop or cancellation. Turning off **Sound effects (Foley cues)** or **Ambient sound** disables that kind in both players, including saved replays. Muting the narrator keeps effects available.
+
+A valid Freesound API key is required for uncached effects and beds. Missing keys, failed searches, and unavailable or invalid previews show **SFX skipped** in Choir while speech continues. Failed sounds are not cached as silence; retry playback after correcting the key or service problem. Freesound searches use its [current search API](https://freesound.org/docs/api/resources_apiv2.html) and token authentication. Completed chat audio, including effects and beds, survives reloads under your selected retention policy.
 
 ## Companion bridge
 
@@ -133,7 +137,7 @@ interface ChoirBridge {
 
 Companion interfaces listen for the `choir-available-v1` event on `window` to bind controls.
 
-Paragraph plans may contain `kind: 'sfx'` audio parts when effects are enabled. `playParagraph` handles those parts internally, retains speech when an effect fails, and reports optional SFX warnings alongside the actual number of played audio parts. The bridge remains version 1.
+Paragraph plans may contain `kind: 'sfx'` audio parts when effects are enabled and `kind: 'ambience'` markers where a bed starts or stops. `playParagraph` handles those parts internally, retains speech when an effect or bed fails, and reports optional SFX warnings alongside the actual number of played audio parts; ambience markers are not counted. The bridge remains version 1.
 
 ## Development
 
@@ -147,4 +151,4 @@ npm run test:ui
 
 If the environment prevents spawning test workers, use `node --test --test-isolation=none --test-concurrency=1 tests/*.test.mjs tests/*.browser.mjs` after building.
 
-`npm test` validates core parsing, Jev integration, sound effect cue validation, and cast validation. `npm run test:ui` executes browser-environment DOM, mixer, and companion bridge integration tests.
+`npm test` validates core parsing, Jev integration, sound effect and ambience cue validation, and cast validation. `npm run test:ui` executes browser-environment DOM, mixer, and companion bridge integration tests.

@@ -231,10 +231,10 @@ function validatePlan(raw, transcript, config) {
     // Assigned voices always win; blank fixed voices are cast once by the planner.
     const delivery = typeof segment.style === 'string' ? segment.style.trim() : '';
     if (delivery.length > 600) throw new Error('Turn styles must be at most 600 characters.');
-    const sfx = segmentSoundCues(segment.sfx, text);
+    const sfx = segmentSoundCues(segment.sfx, text), ambience = segmentSoundCues(segment.ambience, text, true);
     return {speaker:actor.speaker, voice:actor.voice,...((actor.route || config.defaultRoute)?{route:actor.route || config.defaultRoute}:{}), gender:actor.gender || 'auto', text,
       style: config.useStyle === false ? '' : [actor.style, delivery].filter(Boolean).join('. '),
-      ...(sfx ? {sfx} : {})};
+      ...(sfx ? {sfx} : {}), ...(ambience ? {ambience} : {})};
   });
   if (transcript.slice(cursor).trim()) throw new Error('The plan omits the end of the original message.');
   const fixed = new Set(config.fixed.map(v => normalizeName(v.speaker)));
@@ -246,7 +246,7 @@ function attributionPlan(plan, config) {
   return {segments:plan.segments.map(segment=>{
     const actor=[...config.fixed,...config.npcs].find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker));
     const prefix=actor?.style?`${actor.style}. `:'';
-    return {speaker:segment.speaker,text:segment.text,style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style,...(segment.sfx?{sfx:segment.sfx}:{})};
+    return {speaker:segment.speaker,text:segment.text,style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style,...(segment.sfx?{sfx:segment.sfx}:{}),...(segment.ambience?{ambience:segment.ambience}:{})};
   })};
 }
 
@@ -450,7 +450,7 @@ function speechBatches(segments,maxChars,defaultRoute,batchGemini=true,limitsFor
       if(turns && previous.route===route && names.size<=2 && turns.length<200 && fits && new TextEncoder().encode(joined).length+metadataBytes<=GEMINI_SPEECH_BYTES) {
         turns.push(segment);previous.text+='\n'+segment.text;previous.speaker=[...names].join(' / ');
       } else batches.push({...segment,route,turns:[segment]});
-    } else if(previous && previous.kind!=='sfx' && segment.kind!=='sfx' && !previous.turns && previous.route===route && previous.voice===segment.voice && previous.speaker===segment.speaker && previous.style===segment.style && fits)previous.text+='\n'+segment.text;
+    } else if(previous && !previous.kind && !segment.kind && !previous.turns && previous.route===route && previous.voice===segment.voice && previous.speaker===segment.speaker && previous.style===segment.style && fits)previous.text+='\n'+segment.text;
     else batches.push({...segment,route});
     }
   }
@@ -648,15 +648,19 @@ function cueOffset(text, trigger) {
   return exact >= 0 ? exact : text.toLowerCase().indexOf(trigger.toLowerCase());
 }
 
-function segmentSoundCues(value, text) {
+// Ambience entries may also be {stop:true}, which ends the current bed.
+function segmentSoundCues(value, text, stops=false) {
   const cues = (Array.isArray(value) ? value : value ? [value] : []).flatMap(cue => {
     const query = typeof cue?.query === 'string' ? cue.query.trim().replace(/\s+/g, ' ') : '';
-    if (!query) return [];
+    const stop = stops && cue?.stop === true;
+    if (!query && !stop) return [];
     const trigger = typeof cue.trigger === 'string' ? cue.trigger.trim() : '';
-    return [{query, trigger: trigger && cueOffset(text, trigger) >= 0 ? trigger : ''}];
+    return [{...(stop ? {stop} : {query}), trigger: trigger && cueOffset(text, trigger) >= 0 ? trigger : ''}];
   });
   return cues.length ? cues : null;
 }
+
+const AMBIENCE_LIMIT = 3;
 
 function soundCueLimit(segments) {
   const characters = segments.reduce((total, segment) => total + String(segment.text || '').length, 0);
@@ -665,10 +669,12 @@ function soundCueLimit(segments) {
 
 function soundCuePrompt(segments) {
   return [
-    {role:'system',content:`You are the Foley editor for an audiobook. Choose short sound effects that make the scene audible. Return ONLY JSON {"cues":[{"segment":0,"trigger":"exact words","query":"freesound search"}]}.
+    {role:'system',content:`You are the Foley editor for an audiobook. Choose short sound effects and looping background ambience that make the scene audible. Return ONLY JSON {"cues":[{"segment":0,"trigger":"exact words","query":"freesound search"}],"ambience":[{"segment":0,"trigger":"exact words","query":"freesound search"},{"segment":3,"trigger":"exact words","stop":true}]}.
 Choose only concrete physical sounds that happen in the scene as it is told: objects, movement, impacts, doors, footsteps, weather, fire, water, animals, vehicles, machines, weapons, crowds. Skip sounds that are remembered, imagined, hypothetical, negated or metaphorical. Skip voices and vocal sounds such as speech, laughter, sighs, gasps, screams and singing, because the voice actors perform those. Skip music.
-segment is the index of the numbered segment where the sound happens. trigger copies 2 to 6 consecutive words exactly as written in that segment, in the original language, from the start of the sentence or clause where the sound happens; the effect plays right before those words. query is a short English Freesound search of 2 to 5 words describing the sound itself, such as "wooden door slam", "rain on window" or "sword clash metal", whatever language the story uses.
-Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments. Return {"cues":[]} when nothing fits.`},
+segment is the index of the numbered segment where the sound happens. trigger copies 2 to 6 consecutive words exactly as written in that segment, in the original language, from the start of the sentence or clause where the sound happens; the effect plays right before those words. query is an English Freesound search of 1 to 3 words naming the sound source and action the way sound files are named, such as "door slam", "bottle clink", "egg crack" or "sword clash", whatever language the story uses. Never add places or scene details: every search word must match.
+Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments.
+ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.
+Return {"cues":[],"ambience":[]} when nothing fits.`},
     {role:'user',content:JSON.stringify({segments:segments.map((segment, index) => ({index, speaker:segment.speaker, text:segment.text}))})}
   ];
 }
@@ -682,17 +688,19 @@ function parseSoundCues(content, segments) {
     catch { throw new Error('the sound effect response was not valid JSON'); }
   }
   if (!Array.isArray(parsed?.cues)) throw new Error('the sound effect response has no cues list');
-  return parsed.cues.flatMap(cue => {
-    if (!Number.isInteger(cue?.segment) || !segments[cue.segment]) return [];
-    const valid = segmentSoundCues(cue, segments[cue.segment].text);
-    return valid ? [{segment:cue.segment, ...valid[0]}] : [];
-  }).slice(0, soundCueLimit(segments));
+  const valid = (entries, stops) => (Array.isArray(entries) ? entries : []).flatMap(entry => {
+    if (!Number.isInteger(entry?.segment) || !segments[entry.segment]) return [];
+    const cue = segmentSoundCues(entry, segments[entry.segment].text, stops);
+    return cue ? [{segment:entry.segment, ...cue[0]}] : [];
+  });
+  return {cues:valid(parsed.cues).slice(0, soundCueLimit(segments)), ambience:valid(parsed.ambience, true).slice(0, AMBIENCE_LIMIT)};
 }
 
-function applySoundCues(segments, cues) {
+function applySoundCues(segments, {cues=[], ambience=[]}={}) {
+  const own = (entries, index) => entries.filter(entry => entry.segment === index).map(({segment, ...entry}) => entry);
   return segments.map((segment, index) => {
-    const own = cues.filter(cue => cue.segment === index).map(({query, trigger}) => ({query, trigger}));
-    return own.length ? {...segment, sfx: own} : segment;
+    const sfx = own(cues, index), beds = own(ambience, index);
+    return sfx.length || beds.length ? {...segment, ...(sfx.length ? {sfx} : {}), ...(beds.length ? {ambience:beds} : {})} : segment;
   });
 }
 
@@ -931,6 +939,7 @@ export async function setup(ctx) {
       <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
       <label class="et-check"><input data-et="showAutoPlanAction" type="checkbox"> Show Auto-plan in chat toolbar</label>
       <label class="et-check"><input data-et="enableSfx" type="checkbox" checked> Sound effects (Foley cues)</label>
+      <label class="et-check"><input data-et="enableAmbience" type="checkbox" checked> Ambient sound</label>
       <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show section play buttons</label>
       <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
@@ -1084,7 +1093,7 @@ export async function setup(ctx) {
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
   const defaults = () => ({mode:'native',model:'gemini-3.8-flash-tts',planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
-    extraVoices:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,freesoundApiKey:'',autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1/classify',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
+    extraVoices:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,freesoundApiKey:'',autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1/classify',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
       {speaker:'Character',voice:'',style:''} ]});
@@ -1093,9 +1102,9 @@ export async function setup(ctx) {
     const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([chat,message])));
     return `plan:${Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join('')}`;
   };
-  let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged,mixerPlaybackSegments=null;
+  let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged,mixerPlaybackSegments=null,bed=null,bedsPaused=false;
   // Keep the launcher unobtrusive on every load, including existing expanded preferences.
-  const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),...(savedMixer||{}),collapsed:true};
+  const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,ambience:1,channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),...(savedMixer||{}),collapsed:true};
   // Solo is no longer exposed; old solo preferences must not silently mute other voices.
   for(const channel of Object.values(mixerState.channels))delete channel.solo;
   // Effects now use the SFX switch and master level; hidden legacy mute levels must not override SFX On.
@@ -1114,8 +1123,11 @@ export async function setup(ctx) {
   const master=document.createElement('input');master.type='range';master.min='0';master.max='1';master.step='0.01';master.value=mixerState.master;master.setAttribute('aria-label','Master volume');
   const masterLabel=document.createElement('label');masterLabel.className='cm-master';masterLabel.textContent='Master';
   const masterReadout=document.createElement('span');masterReadout.className='cm-percent';masterReadout.setAttribute('aria-hidden','true');showVolume(master,masterReadout,mixerState.master);masterLabel.append(master,masterReadout);
+  const ambienceLevel=document.createElement('input');ambienceLevel.type='range';ambienceLevel.min='0';ambienceLevel.max='1';ambienceLevel.step='0.01';ambienceLevel.value=mixerState.ambience;ambienceLevel.setAttribute('aria-label','Ambience volume');
+  const ambienceLabel=document.createElement('label');ambienceLabel.className='cm-master';ambienceLabel.textContent='Ambience';ambienceLabel.title='Background bed level under speech. Effects follow Master.';
+  const ambienceReadout=document.createElement('span');ambienceReadout.className='cm-percent';ambienceReadout.setAttribute('aria-hidden','true');showVolume(ambienceLevel,ambienceReadout,mixerState.ambience);ambienceLabel.append(ambienceLevel,ambienceReadout);
   const mixerPlay=document.createElement('button');mixerPlay.type='button';mixerPlay.dataset.choirAction='playback';
-  mixerPlay.onclick=()=>{if(currentAudio){if(currentAudio.paused)currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));else{currentAudio.pause();updateTransport();}}else if(!busy && !controller){mixerPlay.disabled=true;status('Loading playback…');run(async()=>{const latest=latestReply();if(!latest)throw new Error('No assistant reply in the active chat.');if(plan && planSource?.chatId===chatId && planSource.messageId===latest.id && planSource.content===ctx.messages.getContent(latest.id))await play({resume:true});else await playMessage(latest.id);});}};
+  mixerPlay.onclick=()=>{if(currentAudio){if(currentAudio.paused){currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));pauseBeds(false);}else{currentAudio.pause();pauseBeds(true);updateTransport();}}else if(!busy && !controller){mixerPlay.disabled=true;status('Loading playback…');run(async()=>{const latest=latestReply();if(!latest)throw new Error('No assistant reply in the active chat.');if(plan && planSource?.chatId===chatId && planSource.messageId===latest.id && planSource.content===ctx.messages.getContent(latest.id))await play({resume:true});else await playMessage(latest.id);});}};
   const mixerPlanLatest=document.createElement('button');mixerPlanLatest.type='button';mixerPlanLatest.dataset.choirAction='plan-latest';mixerPlanLatest.innerHTML=ICON_PLAN;mixerPlanLatest.title='Plan latest reply without starting audio';mixerPlanLatest.setAttribute('aria-label','Plan latest reply');mixerPlanLatest.onclick=()=>run(planLatest);
   const mixerNext=document.createElement('button');mixerNext.type='button';mixerNext.innerHTML=ICON_NEXT;mixerNext.title='Next spoken block';mixerNext.setAttribute('aria-label','Next spoken block');mixerNext.disabled=true;mixerNext.onclick=()=>advancePlayback?.();
   const mixerPrevious=document.createElement('button');mixerPrevious.type='button';mixerPrevious.innerHTML=ICON_PREVIOUS;mixerPrevious.title='Previous spoken block';mixerPrevious.setAttribute('aria-label','Previous spoken block');mixerPrevious.disabled=true;mixerPrevious.onclick=()=>advancePlayback?.(-1);
@@ -1129,7 +1141,7 @@ export async function setup(ctx) {
   const mixerAutoPlan=document.createElement('button');mixerAutoPlan.type='button';mixerAutoPlan.dataset.choirAction='auto-plan';mixerAutoPlan.setAttribute('aria-label','Auto-plan new replies');mixerAutoPlan.onclick=()=>run(toggleAutoPlan);
   const mixerAutoPlay=document.createElement('button');mixerAutoPlay.type='button';mixerAutoPlay.dataset.choirAction='auto-play';mixerAutoPlay.setAttribute('aria-label','Auto-play new replies');mixerAutoPlay.title='Automatically plan and play new assistant replies with the selected engine and cast voices.';mixerAutoPlay.onclick=()=>run(toggleAutoPlay);
   const mixerSfx=document.createElement('button');mixerSfx.type='button';mixerSfx.dataset.choirAction='sfx';mixerSfx.setAttribute('aria-label','Sound effects');mixerSfx.title='Enable or disable Freesound effects in Choir and Cue. Speech continues separately.';mixerSfx.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableSfx').checked=!$('enableSfx').checked;scheduleSettingsSave();syncSfxPlayback();});autoPlanRow.append(mixerAutoPlan,mixerAutoPlay,mixerSfx);
-  player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,autoPlanRow,channelsTitle,channelsRoot,legend);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
+  player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,ambienceLabel,autoPlanRow,channelsTitle,channelsRoot,legend);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
   unsubs.push(()=>{autoPlanAction?.destroy();autoPlanAction=null;toolbarAutoPlan.remove();});
   function refreshAutoPlanControls(){
     mixerAutoPlan.textContent=`Auto-plan ${config?.autoPlan?'On':'Off'}`;
@@ -1167,7 +1179,33 @@ export async function setup(ctx) {
     const sfxScale=isEffect?(config?.enableSfx===false?0:0.45):1;
     if(currentGain)currentGain.gain.value=volume*currentNormalize*sfxScale;
     else if(currentAudio)currentAudio.volume=Math.max(0, Math.min(1, volume*sfxScale));
+    for(const layer of [bed,...fadingBeds])if(layer)bedVolume(layer);
   }
+  // One looping ambience bed plays under speech; a replaced bed fades out while the next fades in.
+  const AMBIENCE_LEVEL=0.25,AMBIENCE_FADE_MS=1500,AMBIENCE_FILTER='duration:[10 TO 120]',fadingBeds=new Set();
+  const bedVolume=layer=>{if(layer.audio)layer.audio.volume=mixerVolume(mixerState.master*mixerState.ambience,'',{})*AMBIENCE_LEVEL*layer.level;};
+  function fadeBed(layer,to,done){
+    clearInterval(layer.timer);const from=layer.level,start=Date.now();
+    layer.timer=setInterval(()=>{const progress=Math.min(1,(Date.now()-start)/AMBIENCE_FADE_MS);layer.level=progress<1?from+(to-from)*progress:to;bedVolume(layer);if(progress===1){clearInterval(layer.timer);done?.();}},50);
+  }
+  function dropBed(layer){clearInterval(layer.timer);layer.loading.abort();layer.audio?.pause();if(layer.url)URL.revokeObjectURL(layer.url);fadingBeds.delete(layer);}
+  function followBed(entry,load){
+    const key=entry?.query?foleyKey(entry):'';
+    if(key===(bed?.key || ''))return;
+    if(bed){const old=bed;fadingBeds.add(old);fadeBed(old,0,()=>dropBed(old));}
+    // A carried bed keeps loading after the paragraph that started it is cancelled.
+    const layer=bed=key?{key,level:0,loading:new AbortController()}:null;updateTransport();
+    if(layer)load(layer.loading.signal).then(blob=>{
+      if(bed!==layer)return;
+      layer.url=URL.createObjectURL(blob);layer.audio=new Audio(layer.url);layer.audio.loop=true;bedVolume(layer);
+      if(!bedsPaused)layer.audio.play().catch(()=>{});
+      fadeBed(layer,1);
+    },()=>{});
+  }
+  // The bed in effect at a batch comes from the closest ambience marker before it.
+  const bedIndex=(batches,index)=>{while(index>=0 && batches[index].kind!=='ambience')index--;return index;};
+  function stopBeds(){for(const layer of [bed,...fadingBeds])if(layer)dropBed(layer);bed=null;bedsPaused=false;}
+  function pauseBeds(paused){bedsPaused=paused;for(const layer of [bed,...fadingBeds])if(layer?.audio){if(paused)layer.audio.pause();else layer.audio.play().catch(()=>{});}}
   function positionMixer(){
     const collapsed=Boolean(mixerState.collapsed);
     mixer.dataset.collapsed=String(collapsed);mixerBody.hidden=collapsed;mixerTitle.hidden=collapsed;
@@ -1189,6 +1227,7 @@ export async function setup(ctx) {
   let suppressMixerClick=false;
   collapse.onclick=event=>{if(suppressMixerClick && event.detail!==0){suppressMixerClick=false;return;}suppressMixerClick=false;mixerState.collapsed=!mixerState.collapsed;positionMixer();persistMixer();};
   master.oninput=()=>{mixerState.master=Number(master.value);showVolume(master,masterReadout,mixerState.master);applyVolume();};master.onchange=persistMixer;
+  ambienceLevel.oninput=()=>{mixerState.ambience=Number(ambienceLevel.value);showVolume(ambienceLevel,ambienceReadout,mixerState.ambience);applyVolume();};ambienceLevel.onchange=persistMixer;
   let drag;
   mixerHeader.addEventListener('pointerdown',event=>{suppressMixerClick=false;if(event.button!==0 || (!mixerState.collapsed && event.target.closest('button')))return;drag={x:event.clientX,y:event.clientY,left:mixerState.x,top:mixerState.y,moved:false};(event.target.closest('button') || mixerHeader).setPointerCapture?.(event.pointerId);});
   mixerHeader.addEventListener('pointermove',event=>{if(!drag)return;const dx=event.clientX-drag.x,dy=event.clientY-drag.y;if(!drag.moved && Math.hypot(dx,dy)<5)return;drag.moved=true;mixerState.x=drag.left+dx;mixerState.y=drag.top+dy;positionMixer();});
@@ -1205,7 +1244,7 @@ export async function setup(ctx) {
     updateNextControls();
     channelsRoot.replaceChildren();speakerLabel.replaceChildren();
     if(currentSpeaker){const prefix=doc.createElement('span');prefix.className='cm-sr-only';prefix.textContent='Speaking: ';speakerLabel.append(prefix,doc.createTextNode(currentSpeaker));}else speakerLabel.textContent='Ready to play';
-    const speakers=new Set((mixerPlaybackSegments ?? plan?.segments ?? []).flatMap(segment=>segment.turns || [segment]).filter(segment=>segment.kind!=='sfx' && segment.speaker).map(segment=>segment.speaker));channelCount.textContent=String(speakers.size);
+    const speakers=new Set((mixerPlaybackSegments ?? plan?.segments ?? []).flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind && segment.speaker).map(segment=>segment.speaker));channelCount.textContent=String(speakers.size);
     if(!speakers.size){const empty=doc.createElement('p');empty.className='cm-empty';empty.textContent='Plan the latest reply to see its voices.';channelsRoot.append(empty);}
     for(const speaker of speakers){
       const channel=Object.hasOwn(mixerState.channels,speaker)?mixerState.channels[speaker]:{volume:1,mute:false};Object.defineProperty(mixerState.channels,speaker,{value:channel,writable:true,enumerable:true,configurable:true});
@@ -1235,7 +1274,7 @@ export async function setup(ctx) {
     const latest=latestReply(),paused=!currentAudio || currentAudio.paused,label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play latest reply';
     mixerPlay.innerHTML=(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,'');mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || Boolean(controller) || !chatId || !latest;
     mixerPlanLatest.disabled=busy || Boolean(controller) || !chatId || !latest;
-    mixerStop.disabled=!controller && !currentAudio && !autoReplyQueue.size;
+    mixerStop.disabled=!controller && !currentAudio && !autoReplyQueue.size && !bed;
     $('stop').disabled=mixerStop.disabled;
     mixer.dataset.playState=currentAudio?(paused?'paused':'playing'):busy?'loading':'idle';playbackCaption.textContent=currentAudio?(paused?'Paused':'Now playing'):busy?(planningSource?'Planning speech':'Preparing audio'):'Playback';
   }
@@ -1315,7 +1354,7 @@ export async function setup(ctx) {
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
   const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
-  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','useStyle','auto','autoPlan','showAutoPlanAction','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','freesoundApiKey'];
+  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','useStyle','auto','autoPlan','showAutoPlanAction','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','enableAmbience','freesoundApiKey'];
   const defaultVoiceFields=['voice','route','gender','style','accent','excluded'];
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   const preferenceSnapshot=value=>Object.fromEntries(preferenceFields.filter(name=>value && Object.hasOwn(value,name)).map(name=>[name,structuredClone(value[name])]));
@@ -1930,7 +1969,7 @@ export async function setup(ctx) {
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,concurrency:Number($('concurrency').value),
       prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
-      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
+      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
   }
   function casting(c=config) {
     const routeActor=actor=>c.connectionMode==='one'?{...actor,route:scope(c),voice:singleVoice(actor,c)}:actor;
@@ -2052,6 +2091,7 @@ export async function setup(ctx) {
     $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;
     $('showAutoPlanAction').checked=Boolean(config.showAutoPlanAction);
     if($('enableSfx'))$('enableSfx').checked=config.enableSfx!==false;
+    $('enableAmbience').checked=config.enableAmbience!==false;
     if($('enableMixer'))$('enableMixer').checked=Boolean(config.enableMixer);
     if($('freesoundApiKey'))$('freesoundApiKey').value=config.freesoundApiKey||'';$('batchGemini').checked=config.batchGemini;$('concurrency').value=config.concurrency;$('autoDesignNPCs').checked=Boolean(config.autoDesignNPCs);
     if($('plannerMode'))$('plannerMode').value=resolvePlannerMode(config);
@@ -2069,7 +2109,7 @@ export async function setup(ctx) {
     busy=value;
     if(!value)scheduleAutoReplies();
     for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','connectionMode','apply','auto'])if($(name))$(name).disabled=value;
-    for (const name of ['model','planner','plannerMode','decisionConnection','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','enableSfx','freesoundApiKey','testTts','importCast'])if($(name))$(name).disabled=value;
+    for (const name of ['model','planner','plannerMode','decisionConnection','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','enableSfx','enableAmbience','freesoundApiKey','testTts','importCast'])if($(name))$(name).disabled=value;
     updateTransport();
     if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
@@ -2077,13 +2117,14 @@ export async function setup(ctx) {
     refreshDefaultControls();
   }
   function clearPlan() {plan=null;planSource=null;planAttribution=null;mixerPlaybackSegments=null;$('preview').replaceChildren();$('planJson').value='';$('planSummary').textContent='Speech plan';$('latestNotice').hidden=true;renderMixer();refreshSectionControls();}
-  function stop(show=true) {
+  // Cue keeps the current ambience bed running into its next paragraph.
+  function stop(show=true,keepBed=false) {
     if(show)cancelAutoReplies();
     if(activePlayback && currentAudio)savePosition(currentAudio.currentTime || 0);
     revision++;controller?.abort();controller=null;planningSource=null;advancePlayback=null;skipAudio=null;generationPolicyChanged=null;activePlayback=null;currentSpeaker='';mixerPlaybackSegments=null;
     currentAudio?.pause();finishAudio?.();currentAudio=null;finishAudio=null;
     if(objectUrl){URL.revokeObjectURL(objectUrl);objectUrl=null;}
-    audioReady=false;
+    audioReady=false;if(keepBed)pauseBeds(false);else stopBeds();
     setBusy(false);renderMixer();if(show)status('Stopped.');
   }
   async function save() {
@@ -2290,7 +2331,7 @@ export async function setup(ctx) {
     const record=await recordingStore('get',recordingKey(source.chatId,source.messageId)).catch(()=>null);
     if(source!==planSource)return;
     for(const [index,segment] of segments.entries()){
-      const batches=playbackBatches([segment],snapshot);
+      const batches=playbackBatches([segment],snapshot).filter(batch=>!batch.ambience?.stop);
       const count=batches.filter(batch=>record?.passages?.[cacheKey(batch,snapshot)]).length;
       const node=$('preview').querySelector(`[data-cache-index="${index}"]`);
       if(node)node.textContent=speakerExcluded(segment.speaker)?'No voice · text retained':count===batches.length?'Cached':`${count}/${batches.length} cached · requires generation`;
@@ -2600,13 +2641,13 @@ export async function setup(ctx) {
     return {segment:{...segment,route,style:route==='gemini'?instructions:detectProvider(route)==='fish_audio' && snapshot.useStyle?segment.style:''},connection,parameters};
   }
   function cacheKey(segment,snapshot){
-    if(segment.kind==='sfx')return `sfx:${foleyKey(segment.sfx)}`;
+    if(segment.kind)return `${segment.kind}:${foleyKey(segment[segment.kind])}`;
     const request=synthesisSettings(segment,snapshot);
     return passageKey(request.segment,{...snapshot,defaultRoute:scope(snapshot)},request.connection,request.parameters);
   }
   function ttsBatches(segments,snapshot,batchGemini=false){
     return speechBatches(segments,snapshot.chunk,scope(snapshot),batchGemini,(segment,route)=>{
-      if(segment.kind==='sfx')return {maxChars:MAX_SPEECH_CHARS};
+      if(segment.kind)return {maxChars:MAX_SPEECH_CHARS};
       const connection=nativeConnections.find(item=>`native:${item.id}`===route);
       const limits=speechRequestLimits(route==='gemini'?'gemini':connection?.provider,connection?.model || snapshot.model);
       if(limits.maxBytes){
@@ -2620,16 +2661,20 @@ export async function setup(ctx) {
     });
   }
   function playbackBatches(segments,snapshot,{filterMuted=true,batchGemini=false}={}){
+    const sound=(kind,speaker,text,cue)=>({kind,speaker,voice:'',text,route:kind,[kind]:cue});
     const expanded=segments.flatMap(segment=>{
-      const {sfx,...speech}=segment;
-      if(snapshot.enableSfx===false || !sfx?.length)return [speech];
-      // Each effect plays right before the words it was anchored to.
-      const points=sfx.map(cue=>({cue,at:Math.max(0,cueOffset(speech.text,cue.trigger))})).sort((a,b)=>a.at-b.at);
+      const {sfx,ambience,...speech}=segment;
+      const points=[
+        ...(snapshot.enableAmbience===false?[]:ambience || []).map(entry=>sound('ambience','Ambience',entry.stop?'[Ambience stop]':`[Ambience: ${entry.query}]`,entry.stop?entry:{...entry,filter:AMBIENCE_FILTER})),
+        ...(snapshot.enableSfx===false?[]:sfx || []).map(cue=>sound('sfx','SFX',`[SFX: ${cue.query}]`,cue))
+      ];
+      if(!points.length)return [speech];
+      // Beds switch and effects play right before the words they were anchored to.
       const parts=[];let start=0;
-      for(const {cue,at} of points){
+      for(const {part,at} of points.map(part=>({part,at:Math.max(0,cueOffset(speech.text,part[part.kind].trigger))})).sort((a,b)=>a.at-b.at)){
         const head=speech.text.slice(start,Math.max(start,at)).trim();
         if(head)parts.push({...speech,text:head});
-        parts.push({kind:'sfx',speaker:'SFX',voice:'',text:`[SFX: ${cue.query}]`,route:'sfx',sfx:cue});
+        parts.push(part);
         start=Math.max(start,at);
       }
       const tail=speech.text.slice(start).trim();
@@ -2639,13 +2684,14 @@ export async function setup(ctx) {
   }
   const foleyKey=sfx=>JSON.stringify([sfx?.query || 'thump',sfx?.filter || 'duration:[0.2 TO 4]']);
   const freesoundKey=snapshot=>(snapshot.freesoundApiKey || $('freesoundApiKey')?.value || '').trim();
-  const soundCuesWanted=snapshot=>snapshot.enableSfx!==false && Boolean(freesoundKey(snapshot));
-  const missingFoleyKey=snapshot=>snapshot.enableSfx!==false && !freesoundKey(snapshot)?'Sound effects need a Freesound API key in Advanced settings. Speech continues.':'';
+  const soundsEnabled=snapshot=>snapshot.enableSfx!==false || snapshot.enableAmbience!==false;
+  const soundCuesWanted=snapshot=>soundsEnabled(snapshot) && Boolean(freesoundKey(snapshot));
+  const missingFoleyKey=snapshot=>soundsEnabled(snapshot) && !freesoundKey(snapshot)?'Sound effects and ambience need a Freesound API key in Advanced settings. Speech continues.':'';
   async function chooseSoundCues(segments,signal,onStage=status){
     onStage('Choosing sound effects…');
     const result=await rpc('sfx',{segments:segments.map(({speaker,text})=>({speaker,text})),connectionId:config.planner},signal,60000,
       progress=>onStage(`Choosing sound effects: ${progress.stage}${progress.model?` · ${progress.model}`:''}`));
-    return Array.isArray(result?.cues)?result.cues:[];
+    return result;
   }
   // Sound effects are optional: a failed choice never blocks speech.
   async function cuePlannedSegments(segments,ctrl,token){
@@ -2694,6 +2740,16 @@ export async function setup(ctx) {
       saveQueue=saveQueue.then(()=>recordingStore('put',recordingKey(source.chatId,source.messageId),value)).catch(error=>{saveError=error.message;});
       return saveQueue;
     };
+    // Beds load beside the speech queue, so a slow download never delays the words.
+    const bedLoads=new Map();
+    const loadBed=index=>{
+      if(!bedLoads.has(index))bedLoads.set(index,(async()=>{
+        const seg=segments[index],key=cacheKey(seg,snapshot);
+        blobs[index]=passages[key] ||= await fetchFoleyAudio(seg.ambience,snapshot,ctrl.signal);
+        await persist();return blobs[index];
+      })().catch(error=>{if(!ctrl.signal.aborted && token===revision)warnFoley(error);throw error;}));
+      return bedLoads.get(index);
+    };
 
     ctrl.signal.addEventListener('abort',()=>{wakePlayback?.();wakePolicy?.({policy:true});},{once:true});
 
@@ -2711,6 +2767,7 @@ export async function setup(ctx) {
       while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=playIdx+Number(snapshot.prefetch ?? 1)) {
         const idx=nextToSynthesize++;
         if(playbackExcluded(segments[idx]))continue;
+        if(segments[idx].kind==='ambience'){if(segments[idx].ambience.query)loadBed(idx).catch(()=>{});continue;}
         if(scheduled.has(idx))continue;scheduled.add(idx);
         ensureSlot(idx);
         activeWorkers++;
@@ -2790,7 +2847,7 @@ export async function setup(ctx) {
           wakePlayback=null;
           continue;
         }
-        if(playbackExcluded(segments[playIdx])){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
+        if(playbackExcluded(segments[playIdx]) || segments[playIdx].kind==='ambience'){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
         ensureSlot(playIdx);pump();
         const outcome=await Promise.race([ready.get(playIdx),new Promise(resolve=>{wakePolicy=resolve;})]);wakePolicy=null;
         if(outcome.policy)continue;
@@ -2803,6 +2860,7 @@ export async function setup(ctx) {
         activePlayback={chatId:source.chatId,messageId:source.messageId,content:source.content,passage:seg.passageIndex ?? playIdx,chunk:seg.chunkIndex ?? 0};
         const offset=resumePending && source.resume.passage===activePlayback.passage && source.resume.chunk===activePlayback.chunk?source.resume.seconds:0;resumePending=false;
         const paused=pauseNext;pauseNext=false;
+        const marker=bedIndex(segments,playIdx);followBed(segments[marker]?.ambience,()=>loadBed(marker));
         try{await playBlob(blob,ctrl.signal,seg.speaker,offset,snapshot.normalizeLoudness,paused);}
         catch(error){
           if(seg.kind!=='sfx' || ctrl.signal.aborted || token!==revision)throw error;
@@ -2815,7 +2873,7 @@ export async function setup(ctx) {
       await saveQueue;
       if(saveError)status(`Audio could not be saved: ${saveError}`,true);
       return {blobs,segments,warnings:[...warnings]};
-    })();
+    })().finally(()=>{if(token===revision)followBed();});
 
     // Observe failures immediately while the next planning section is pending.
     playbackPromise.catch(()=>{failed=true;});
@@ -2904,18 +2962,19 @@ export async function setup(ctx) {
       generationPolicyChanged=()=>{if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=Boolean(currentAudio?.paused);skipAudio?.();}};
       for(let index=0;index<recording.blobs.length;) {
         const blob=recording.blobs[index];
-        if(!blob || speakerExcluded(recording.segments[index].speaker) || recording.segments[index].kind==='sfx' && config.enableSfx===false){index++;continue;}
+        if(!blob || speakerExcluded(recording.segments[index].speaker) || recording.segments[index].kind==='sfx' && config.enableSfx===false || recording.segments[index].kind==='ambience'){index++;continue;}
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
         const segment=recording.segments[index];
         let nextIndex=index+1;
         advancePlayback=(direction=1)=>{if(!skipAudio || ctrl.signal.aborted || token!==revision)return;const passage=segment.passageIndex ?? index;if(direction<0){let start=index;while(start>0 && (recording.segments[start-1].passageIndex ?? start-1)===passage)start--;nextIndex=Math.max(0,start-1);const previous=recording.segments[nextIndex].passageIndex ?? nextIndex;while(nextIndex>0 && (recording.segments[nextIndex-1].passageIndex ?? nextIndex-1)===previous)nextIndex--;}else while(nextIndex<recording.segments.length && (recording.segments[nextIndex].passageIndex ?? nextIndex)===passage)nextIndex++;pauseNext=Boolean(currentAudio?.paused);skipAudio();};
         activePlayback={chatId:targetChat,messageId,content:recording.content,passage:segment.passageIndex ?? index,chunk:segment.chunkIndex ?? 0};
+        const marker=bedIndex(recording.segments,index),bedBlob=config.enableAmbience!==false && recording.blobs[marker];followBed(bedBlob && recording.segments[marker].ambience,async()=>bedBlob);
         const paused=pauseNext;pauseNext=false;await playBlob(blob,ctrl.signal,recording.segments[index].speaker,0,config.normalizeLoudness,paused);
         index=nextIndex;const next=recording.segments[index];activePlayback={...activePlayback,passage:next?.passageIndex ?? (activePlayback.passage+1),chunk:next?.chunkIndex ?? 0,complete:index===recording.blobs.length};savePosition(0);activePlayback=null;
       }
       if(token===revision)status('Replay finished.');
-    } finally {if(token===revision){activePlayback=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();controller=null;setBusy(false);}}
+    } finally {if(token===revision){followBed();activePlayback=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();controller=null;setBusy(false);}}
   }
   async function playMessage(messageId) {
     if(controller && messagePlaybackId===messageId){stop();return;}
@@ -2937,7 +2996,7 @@ export async function setup(ctx) {
       if(recording?.content===content && await recordingMatchesTranscript(recording,content) && !(resolvePlannerMode(config)==='llm' && needsVoiceSelection({segments:(recording.segments || []).flatMap(segment=>segment.turns || [segment])},casting(config)))){
         if(!valid())return;
         const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
-        const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).filter(segment=>segment.kind!=='sfx').map(segment=>segment.text).join(' ');
+        const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind).map(segment=>segment.text).join(' ');
         if(canonical(recordedText)===canonical(recording.transcript || transcriptFromMessage(content)) && Array.from(recording.blobs || []).every(Boolean) && recording.blobs?.length===recording.segments?.length){await replayRecording(messageId);return;}
       }
       if(valid())await prepare(messageId,true);
@@ -3351,6 +3410,7 @@ export async function setup(ctx) {
   unsubs.push(()=>action.destroy());
 
   $('enableSfx').addEventListener('change',syncSfxPlayback);
+  $('enableAmbience').addEventListener('change',()=>showFoleyStatus());
   $('freesoundApiKey').addEventListener('input',()=>showFoleyStatus());
 
   const foleyCache = new Map();
@@ -3362,9 +3422,13 @@ export async function setup(ctx) {
     if(foleyCache.has(key))return foleyCache.get(key);
     const apiKey = snapshot.freesoundApiKey || $('freesoundApiKey')?.value?.trim() || '';
     if(!apiKey)throw new Error('Configure a Freesound API key in Advanced Settings');
-    const result=await rpc('freesound',{query,filter,apiKey},signal,10000);
-    signal.throwIfAborted();
-    const previewUrl=result?.results?.find(sound=>sound.previewUrl)?.previewUrl;
+    let previewUrl;
+    // Freesound requires every search word to match, so drop trailing words until one matches.
+    for(let words=query.split(' ');!previewUrl && words.length;words=words.slice(0,-1)){
+      const result=await rpc('freesound',{query:words.join(' '),filter,apiKey},signal,10000);
+      signal.throwIfAborted();
+      previewUrl=result?.results?.find(sound=>sound.previewUrl)?.previewUrl;
+    }
     if(!previewUrl)throw new Error(`No Freesound result for "${query}"`);
     const audioResp=await fetch(previewUrl,{signal});
     if(!audioResp.ok)throw new Error(`Freesound preview HTTP ${audioResp.status}`);
@@ -3379,7 +3443,7 @@ export async function setup(ctx) {
   }
 
   async function synthesizeSegment(seg,snapshot,apiKey,signal) {
-    if(seg.kind==='sfx')return fetchFoleyAudio(seg.sfx,snapshot,signal);
+    if(seg.kind)return fetchFoleyAudio(seg[seg.kind],snapshot,signal);
     if((seg.route || scope(snapshot))==='gemini') {
       if(!apiKey)throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');
       const result=await rpc('gemini',{segment:seg,model:snapshot.model,apiKey},signal);
@@ -3413,7 +3477,7 @@ export async function setup(ctx) {
 
 const paragraphAudioCache = new Map();
   function segmentCacheKey(seg, snap) {
-    if(seg.kind==='sfx')return `sfx:${foleyKey(seg.sfx)}`;
+    if(seg.kind)return `${seg.kind}:${foleyKey(seg[seg.kind])}`;
     return `tts:${seg.route || scope(snap)}:${seg.voice || ''}:${seg.speaker || ''}:${seg.style || ''}:${seg.text}`;
   }
   function getCachedOrSynthesize(seg, snap, apiKey, sig) {
@@ -3479,7 +3543,7 @@ const paragraphAudioCache = new Map();
       segments = planResult?.segments || [];
     }
 
-    return {segments: applySoundCues(segments, paragraphCues.get(cleanPara) || []), cleanPara, fromPlan: false};
+    return {segments: applySoundCues(segments, paragraphCues.get(cleanPara)), cleanPara, fromPlan: false};
   }
 
   function planAndBatchParagraph(rawText, snap, filterMuted = false, preferredSpeaker = '') {
@@ -3490,8 +3554,7 @@ const paragraphAudioCache = new Map();
   async function loadParagraphCues(rawText, snap, preferredSpeaker, signal) {
     const {segments, cleanPara, fromPlan} = paragraphSegments(rawText, snap, preferredSpeaker);
     if (fromPlan || !segments.length || paragraphCues.has(cleanPara) || !soundCuesWanted(snap)) return;
-    const cues = await chooseSoundCues(segments, signal, () => {});
-    paragraphCues.set(cleanPara, cues);
+    paragraphCues.set(cleanPara, await chooseSoundCues(segments, signal, () => {}));
     if (paragraphCues.size > 80) paragraphCues.delete(paragraphCues.keys().next().value);
   }
 
@@ -3521,14 +3584,14 @@ const paragraphAudioCache = new Map();
     playParagraph: async ({ text, speaker, nextText, chatId: targetChat, messageId, paragraphIndex, signal, onStatus } = {}) => {
       if (disposed) return { played: 0 };
       if(signal?.aborted)throw abortError();
-      stop(false);
+      stop(false,true);const token=revision;
       const cap = capture();
       const castInfo = casting(cap);
       const snapshot = { ...structuredClone(cap), fixed: castInfo.fixed, voices: castInfo.voices, npcs: castInfo.npcs, defaultRoute: castInfo.defaultRoute };
 
       let cueWarning='';
       try{await loadParagraphCues(text,snapshot,speaker,signal);}
-      catch(error){if(signal?.aborted)throw error;cueWarning=error.message;}
+      catch(error){if(signal?.aborted){if(token===revision)stopBeds();throw error;}cueWarning=error.message;}
       if(disposed)return { played: 0 };
       mixerPlaybackSegments=planAndBatchParagraph(text,snapshot,false,speaker);renderMixer();
       const batches = planAndBatchParagraph(text,snapshot,true,speaker).filter(batch=>!playbackExcluded(batch));
@@ -3544,13 +3607,14 @@ const paragraphAudioCache = new Map();
       signal?.addEventListener('abort', onAbort, { once: true });
       const apiKey = $('key')?.value?.trim() || '';
       let played=0;const warnings=new Set(cueWarning?[cueWarning]:[]);showFoleyStatus(cueWarning?`SFX skipped: ${cueWarning}. Speech continues.`:missingFoleyKey(snapshot),Boolean(cueWarning));
+      const warnFoley=error=>{warnings.add(error.message);showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
 
       // Prefetch upcoming paragraph in background for 0ms transition latency
       if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
         void loadParagraphCues(nextText, snapshot, '', ctrl.signal).catch(() => {}).then(() => {
-          const nextBatches = planAndBatchParagraph(nextText, snapshot, true);
-          if (!ctrl.signal.aborted && nextBatches[0] && !playbackExcluded(nextBatches[0])) {
-            getCachedOrSynthesize(nextBatches[0], snapshot, apiKey, ctrl.signal).catch(() => {});
+          const first = planAndBatchParagraph(nextText, snapshot, true).find(batch => batch.kind !== 'ambience');
+          if (!ctrl.signal.aborted && first && !playbackExcluded(first)) {
+            getCachedOrSynthesize(first, snapshot, apiKey, ctrl.signal).catch(() => {});
           }
         }).catch(() => {});
       }
@@ -3560,9 +3624,11 @@ const paragraphAudioCache = new Map();
           if (ctrl.signal.aborted || signal?.aborted) throw abortError();
           const batch = batches[i];
           if(playbackExcluded(batch))continue;
+          // The bed keeps running after this paragraph until another bed, a stop entry, stop() or cancellation.
+          if(batch.kind==='ambience'){followBed(batch.ambience,bedSignal=>getCachedOrSynthesize(batch,snapshot,apiKey,bedSignal).catch(error=>{if(!bedSignal.aborted)warnFoley(error);throw error;}));continue;}
 
           // Pipeline next batch synthesis concurrently with current batch playback
-          if (snapshot.prefetch>0 && i + 1 < batches.length && !playbackExcluded(batches[i+1])) {
+          if (snapshot.prefetch>0 && i + 1 < batches.length && !playbackExcluded(batches[i+1]) && batches[i+1].kind!=='ambience') {
             getCachedOrSynthesize(batches[i + 1], snapshot, apiKey, ctrl.signal).catch(() => {});
           }
 
@@ -3576,8 +3642,7 @@ const paragraphAudioCache = new Map();
             played++;
           }catch(error){
             if(batch.kind!=='sfx' || ctrl.signal.aborted || signal?.aborted)throw error;
-            paragraphAudioCache.delete(segmentCacheKey(batch,snapshot));foleyCache.delete(foleyKey(batch.sfx));
-            warnings.add(error.message);showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);
+            paragraphAudioCache.delete(segmentCacheKey(batch,snapshot));foleyCache.delete(foleyKey(batch.sfx));warnFoley(error);
           }
           if (i < batches.length - 1 && !ctrl.signal.aborted && !signal?.aborted) {
             await new Promise(r => setTimeout(r, 60));
@@ -3585,6 +3650,9 @@ const paragraphAudioCache = new Map();
         }
         onStatus?.({ kind: 'idle', ...(warnings.size?{message:foleyWarning([...warnings]).trim()}: {}) });
         return { played, ...(warnings.size?{warnings:[...warnings]}: {}) };
+      } catch(error) {
+        if(token===revision)stopBeds();
+        throw error;
       } finally {
         signal?.removeEventListener('abort', onAbort);
         if (controller === ctrl) controller = null;
