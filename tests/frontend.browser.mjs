@@ -1399,8 +1399,8 @@ test('Settings changes (checkboxes and dropdowns) auto-persist globally and acro
     // User toggles checkboxes without clicking "Save settings" button
     $('muteNarrator').checked = true;
     $('muteNarrator').dispatchEvent(new dom.window.Event('change'));
-    $('useFastClassifier').checked = true;
-    $('useFastClassifier').dispatchEvent(new dom.window.Event('change'));
+    $('plannerMode').value = 'heuristic';
+    $('plannerMode').dispatchEvent(new dom.window.Event('change'));
     await tick();
 
     await until(() => $('saveState').textContent === 'Saved automatically');
@@ -1409,6 +1409,7 @@ test('Settings changes (checkboxes and dropdowns) auto-persist globally and acro
     assert.ok(globalSaved, 'Global settings should be saved');
     assert.equal(globalSaved.muteNarrator, true);
     assert.equal(globalSaved.useFastClassifier, true);
+    assert.equal(globalSaved.plannerMode, 'heuristic');
 
     // Switch to a brand new chat that never had settings saved
     currentChat = { chatId: 'chat-brand-new', characterId: 'char-2' };
@@ -1433,6 +1434,7 @@ test('Settings changes (checkboxes and dropdowns) auto-persist globally and acro
     // User's choices must be preserved!
     assert.equal($2('muteNarrator').checked, true, 'muteNarrator should be preserved in new chat / reload');
     assert.equal($2('useFastClassifier').checked, true, 'useFastClassifier should be preserved in new chat / reload');
+    assert.equal($2('plannerMode').value, 'heuristic');
 
     cleanup2?.();
   } finally {

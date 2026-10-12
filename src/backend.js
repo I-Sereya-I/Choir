@@ -1,4 +1,4 @@
-import { validateCastConfig, validatePlan, parsePlanJson, resolvePlanReferences, plannerPrompt, geminiRequest, extractGeminiAudio, speechSourceUnits, normalizeName } from './core.js';
+import { validateCastConfig, validatePlan, parsePlanJson, resolvePlanReferences, plannerPrompt, geminiRequest, extractGeminiAudio, speechSourceUnits, normalizeName, fastClassifyPlan, resolvePlannerMode } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -318,7 +318,13 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       send({result:{version:'1.1.0',ready:true}});return;
     }
     if(message.action==='testPlanner') {
-      if (input.plannerMode === 'jev' || input.useJev) {
+      const mode=resolvePlannerMode(input);
+      if(mode==='heuristic'){
+        const config=input.config || {fixed:[{speaker:'Narrator',voice:'local',style:''}],npcs:[],voices:[{id:'local'}],useStyle:false};
+        if(!fastClassifyPlan('The room fell quiet.',config))throw new Error('Assign a narrator voice to test the local heuristic. No LLM request was made.');
+        send({result:{provider:'Local',model:'Heuristic',response:'READY · No LLM request was made.'}});return;
+      }
+      if (mode === 'jev') {
         progress({stage:'Testing Decision model classification'});
         if (typeof spindle !== 'undefined' && typeof spindle?.decisions?.evaluate === 'function') {
           const start = Date.now();
@@ -398,7 +404,13 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     if (message.action === 'plan') {
       if (typeof input.transcript !== 'string' || !input.transcript.trim()) throw new Error('Choose a message with text to plan.');
       validateCastConfig(input.config);
-      if (input.config?.useJev || input.config?.plannerMode === 'jev') {
+      const mode=resolvePlannerMode(input.config);
+      if(mode==='heuristic'){
+        const plan=fastClassifyPlan(input.transcript,input.config);
+        if(!plan)throw new Error('Heuristic could not safely attribute this dialogue or choose an unassigned voice. Choose Jev or LLM. No LLM request was made.');
+        send({result:plan});return;
+      }
+      if (mode === 'jev') {
         try {
           progress({stage:'Classifying with Jev System 1'});
           const plan = await planWithJev({

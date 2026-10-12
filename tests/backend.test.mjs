@@ -41,6 +41,27 @@ test('Jev errors stop by default and never bill the LLM',async()=>{
   assert.match((await missing.result()).message.error,/Jev API key/);assert.equal(calls,0);
 });
 
+test('heuristic planning and testing never call the LLM, even with stale Jev flags',async()=>{
+  let calls=0;const h=await harness(async()=>{calls++;throw Error('Unexpected LLM');});
+  h.send('plan',{transcript:'The room fell quiet.',config:{...config,plannerMode:'heuristic',useJev:true}});
+  assert.equal((await h.result()).message.result.segments[0].speaker,'Narrator');
+  const probe=await harness(async()=>{calls++;throw Error('Unexpected LLM');});
+  probe.send('testPlanner',{plannerMode:'heuristic',useJev:true});
+  assert.equal((await probe.result()).message.result.model,'Heuristic');assert.equal(calls,0);
+});
+
+test('ambiguous heuristic planning stops without falling back to a paid connection',async()=>{
+  let calls=0;const h=await harness(async()=>{calls++;throw Error('Unexpected LLM');});
+  h.send('plan',{transcript:'"Hello."',config:{...config,plannerMode:'heuristic',allowLlmFallback:true}});
+  assert.match((await h.result()).message.error,/No LLM request was made/);assert.equal(calls,0);
+});
+
+test('explicit LLM mode ignores stale Jev and heuristic flags',async()=>{
+  let calls=0;const h=await harness(async()=>{calls++;return {content:'{"segments":[{"speaker":"Narrator","unit_ids":[0]}]}'};});
+  h.send('plan',{transcript:'The room fell quiet.',config:{...config,plannerMode:'llm',useJev:true,useFastClassifier:true}});
+  assert.ok((await h.result()).message.result);assert.equal(calls,1);
+});
+
 test('an opted-in failed LLM fallback retains both provider errors',async()=>{
   const h=await harness(async()=>{throw Error('LLM quota exceeded');},async()=>({status:429,body:'Jev quota exhausted'}));
   h.send('plan',{transcript:'"Hello."',config:{...config,useJev:true,jevApiKey:'secret',allowLlmFallback:true}});

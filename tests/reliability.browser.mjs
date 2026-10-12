@@ -39,6 +39,7 @@ async function harness(mixerPreferences){
     let value;
     if(url.includes('/providers'))value={providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}},{id:'accent_tts',capabilities:{parameters:{instructions:{type:'string'},accent:{enum:['Irish','French']}}}}]};
     else if(url.endsWith('/voices')){if(state.failCatalogue)throw Error('Voice catalogue unavailable');value={voices:['n','y','m','g','new'].map(id=>({id,name:id}))};}
+    else if(url.includes('/decision-connections?'))value={data:[{id:'decision-a',name:'Decision A',provider:'typesafe',model:'jev'},{id:'decision-b',name:'Decision B',provider:'typesafe',model:'jev'}]};
     else if(url.includes('/connections?'))value={data:[{id:'planner',name:'Planner',model:'text-model'}]};
     else value={data:connections};
     return Response.json(value);
@@ -54,12 +55,12 @@ async function harness(mixerPreferences){
       requests.push(request);if(request.action==='cancel')return;
       setTimeout(()=>{
         if(!backend)return;
-        if(request.action==='plan' && state.held){heldPlans.push(request);return;}
+        if(request.action==='plan' && state.held || request.action==='designVoice' && state.holdDesignVoice){heldPlans.push(request);return;}
         if(request.action==='plan' && state.failPlanAt===requests.filter(r=>r.action==='plan').length){backend({namespace:'choir',id:request.id,error:'Planner quota exhausted'});return;}
         let result;
         if(request.action==='ping')result={ready:true};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
-        else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,error:'Jev classification failed: The object cannot be cloned'});return;}
+        else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
         else if(request.action==='plan')result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({
           text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Wait')?'Guard':'Mira',voice:unit.kind==='narration'?'n':unit.text.includes('Wait')?'g':'m',style:unit.kind==='dialogue'?'Warm':''
         }))},request.input.transcript,request.input.config);
@@ -76,6 +77,100 @@ async function harness(mixerPreferences){
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
     async close(){cleanup();await tick();Object.assign(globalThis,original);dom.window.close();}};
 }
+
+test('heuristic planning and its test stay local without any backend request',async()=>{
+  const h=await harness();try{
+    h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+    h.message.content='The room fell quiet.';await h.plan();
+    assert.equal(h.requests.length,0);assert.match(h.$('preview').textContent,/Narrator/);
+    await h.click('testPlanner',text=>text.startsWith('Heuristic test passed'));
+    assert.equal(h.requests.length,0);assert.equal(h.synthesis.length,0);assert.equal(h.$('stop').disabled,true);
+  }finally{await h.close();}
+});
+
+test('ambiguous heuristic dialogue stops without an LLM fallback or audio synthesis',async()=>{
+  const h=await harness();try{
+    h.$('allowLlmFallback').checked=true;h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+    await h.click('latest',text=>text.includes('No LLM request was made'));
+    assert.equal(h.requests.length,0);assert.equal(h.synthesis.length,0);assert.equal(h.$('preview').children.length,0);
+    assert.equal(h.$('llmPlannerBox').hidden,true);assert.equal(h.$('stop').disabled,true);
+  }finally{await h.close();}
+});
+
+test('switching from heuristic to LLM clears legacy flags and preserves the selected engine on reload',async()=>{
+  const h=await harness();try{
+    h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+    h.$('plannerMode').value='llm';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+    assert.equal(h.$('useFastClassifier').checked,false);assert.equal(h.$('llmPlannerBox').hidden,false);
+    await until(()=>h.$('saveState').textContent==='Saved automatically');
+    assert.equal(h.store.get('chat:chat-a').useFastClassifier,false);await h.reload();assert.equal(h.$('plannerMode').value,'llm');
+    h.message.content='The room fell quiet.';await h.plan();assert.equal(h.requests.filter(r=>r.action==='plan').length,1);
+  }finally{await h.close();}
+});
+
+test('explicit planner selections survive stale flags and legacy Jev settings restore correctly',async()=>{
+  const h=await harness();try{
+    const saved=h.store.get('chat:chat-a');saved.plannerMode='jev';saved.useFastClassifier=true;h.store.set('chat:chat-a',saved);
+    await h.reload();assert.equal(h.$('plannerMode').value,'jev');assert.equal(h.$('useFastClassifier').checked,false);
+    await h.click('latest',text=>text.includes('The object cannot be cloned'));
+    assert.equal(h.requests.filter(r=>r.action==='planJev').length,1);assert.equal(h.requests.filter(r=>r.action==='plan').length,0);
+    delete saved.plannerMode;saved.useFastClassifier=false;saved.useJev=true;await h.reload();assert.equal(h.$('plannerMode').value,'jev');
+  }finally{await h.close();}
+});
+
+test('Decision connection autosaves, survives reload and is inherited by a new chat',async()=>{
+  const h=await harness();try{
+    h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+    h.$('decisionConnection').value='decision-b';h.$('decisionConnection').dispatchEvent(new h.dom.window.Event('change'));
+    await until(()=>h.$('saveState').textContent==='Saved automatically');
+    assert.equal(h.store.get('chat:chat-a').decisionConnection,'decision-b');assert.equal(h.store.get('settings:global').decisionConnection,'decision-b');
+    await h.reload();assert.equal(h.$('decisionConnection').value,'decision-b');
+    await h.click('testPlanner',text=>text.includes('Planner test passed'));
+    assert.equal(h.requests.findLast(r=>r.action==='testPlanner').input.decisionConnection,'decision-b');
+    h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Connection preferences restored');
+    assert.equal(h.$('decisionConnection').value,'decision-b');assert.equal(h.$('plannerMode').value,'jev');
+  }finally{await h.close();}
+});
+
+test('an incomplete Jev response never enables an unapproved LLM fallback',async()=>{
+  const h=await harness();try{
+    h.state.jevInvalid=true;h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+    await h.click('latest',text=>text.includes('Jev returned no valid speech plan'));
+    assert.equal(h.requests.filter(r=>r.action==='plan').length,0);assert.equal(h.synthesis.length,0);
+  }finally{await h.close();}
+});
+
+test('drawer Stop cancels pending planning and discards a late result with the mixer hidden',async()=>{
+  const h=await harness();try{
+    const stop=h.root.querySelector('[data-et="stop"]');assert.ok(stop);assert.equal(stop.disabled,true);
+    h.state.held=true;h.$('latest').click();await until(()=>h.requests.some(r=>r.action==='plan'));await tick();
+    assert.equal(stop.disabled,false);assert.equal(h.$('decisionConnection').disabled,true);
+    stop.click();await tick();assert.equal(h.$('status').textContent,'Stopped.');assert.equal(stop.disabled,true);assert.equal(h.$('decisionConnection').disabled,false);
+    assert.ok(h.requests.some(r=>r.action==='cancel'));h.releaseHeld();await tick();
+    assert.equal(h.$('status').textContent,'Stopped.');assert.equal(h.$('preview').children.length,0);assert.equal(h.audios.length,0);
+  }finally{await h.close();}
+});
+
+test('drawer Stop cancels in-flight speech and paused audio without opening the mixer',async()=>{
+  const h=await harness();try{
+    await h.plan();h.state.delay=200;h.$('play').click();await until(()=>h.synthesis.length>0);
+    h.root.querySelector('[data-et="stop"]').click();await tick();assert.equal(h.state.aborted,1);assert.equal(h.audios.length,0);
+    h.state.delay=0;h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.at(-1)?.paused===false);
+    h.$('pause').click();assert.equal(h.root.querySelector('[data-et="stop"]').disabled,false);
+    h.root.querySelector('[data-et="stop"]').click();await tick();assert.ok(h.audios.every(audio=>audio.paused));assert.equal(h.$('status').textContent,'Stopped.');
+  }finally{await h.close();}
+});
+
+test('drawer Stop during automatic NPC voice design preserves Stopped status and rejects late results',async()=>{
+  const h=await harness();try{
+    const saved=h.store.get('chat:chat-a');h.store.set('chat:chat-a',{...saved,mode:'gemini',autoDesignNPCs:true,extraVoices:'n | Narrator\ny | Persona\ng | Guard',casts:{gemini:[]}});
+    await h.reload();h.$('key').value='test-session-key';h.state.holdDesignVoice=true;
+    h.$('latest').click();await until(()=>h.requests.some(r=>r.action==='designVoice'));await tick();
+    h.root.querySelector('[data-et="stop"]').click();await tick();h.releaseHeld();await tick();
+    assert.equal(h.$('status').textContent,'Stopped.');assert.equal(h.$('stop').disabled,true);assert.equal(h.synthesis.length,0);
+    assert.ok(h.requests.some(r=>r.action==='cancel'));assert.equal(h.store.has('activeplan:chat-a'),false);
+  }finally{await h.close();}
+});
 
 test('reload and chat navigation restore plans; recasting and edited text regenerate only affected passages',async()=>{
   const h=await harness();try{
@@ -348,10 +443,11 @@ test('previous remains available before a saved resume point and does not reappl
 });
 
 
-test('drawer and messages expose one mixer transport; legacy solo and passage selections do not hide audio',async()=>{
+test('drawer Stop shares the mixer transport; legacy solo and passage selections do not hide audio',async()=>{
   const h=await harness({master:1,channels:{Mira:{volume:1,solo:true},Narrator:{volume:1,mute:false}}});try{
     await h.plan();for(const [key,value] of h.store)if(key.startsWith('plan:'))h.store.set(key,{...value,excluded:[0]});await h.reload();
-    for(const name of ['play','pause','next','previous','stop','playSelected','resumePosition','seekHost'])assert.equal(h.root.querySelector('[data-et="'+name+'"]'),null);
+    for(const name of ['play','pause','next','previous','playSelected','resumePosition','seekHost'])assert.equal(h.root.querySelector('[data-et="'+name+'"]'),null);
+    assert.equal(h.root.querySelector('[data-et="stop"]').disabled,true);
     assert.equal(h.root.querySelector('[aria-label^="Select passage"]'),null);assert.equal(h.root.querySelector('[aria-label^="Exclude passage"]'),null);
     assert.equal(h.root.querySelector('[data-et="planDetails"]').open,false);assert.equal(h.footer.querySelector('[aria-label="Next spoken block"]'),null);assert.equal(h.footer.querySelector('input[type="range"]'),null);
     assert.equal(document.querySelectorAll('[aria-label="Next spoken block"]').length,1);assert.equal(document.querySelector('[aria-label="Mira solo"]'),null);

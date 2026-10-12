@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode} from '../src/core.js';
 
 test('Gemini batches preserve turn metadata and split on third speaker or provider change',()=>{
   const turns=['Narrator','Alice','Narrator','Bob','Alice'].map((speaker,i)=>({speaker,voice:speaker==='Narrator'?'Charon':speaker==='Alice'?'Kore':'Puck',text:'Turn '+i,style:'Soft',route:'gemini'}));
@@ -326,6 +326,47 @@ test('fastClassifyPlan returns null on ambiguous multi-character dialogue withou
   const text = '"Who is there?" + "\n" + "I am not sure."';
   const plan = fastClassifyPlan(text, c);
   assert.equal(plan, null); // Falls back to LLM/Jev
+});
+
+test('explicit planner selection wins over stale flags and legacy selections migrate',()=>{
+  assert.equal(resolvePlannerMode({plannerMode:'llm',useFastClassifier:true,useJev:true}),'llm');
+  assert.equal(resolvePlannerMode({plannerMode:'jev',useFastClassifier:true}),'jev');
+  assert.equal(resolvePlannerMode({useJev:true,useFastClassifier:true}),'jev');
+  assert.equal(resolvePlannerMode({useFastClassifier:true}),'heuristic');
+  assert.equal(resolvePlannerMode({}),'llm');
+});
+
+test('local attribution refuses an untagged turn after a tagged multi-character turn',()=>{
+  const c=config();c.fixed.push({speaker:'Bob',voice:'Puck',style:''});
+  assert.equal(fastClassifyPlan('"Hello," Alice said. The door opened. "Who is there?"',c),null);
+});
+
+test('local attribution refuses tags mentioning multiple candidate speakers',()=>{
+  const c=config();c.fixed.push({speaker:'Bob',voice:'Puck',style:''});
+  assert.equal(fastClassifyPlan('Alice and Bob stood together. "Hello."',c),null);
+});
+
+test('local attribution refuses conflicting speaker tags around the same quote',()=>{
+  const c=config();c.fixed.push({speaker:'Bob',voice:'Puck',style:''});
+  assert.equal(fastClassifyPlan('Alice said, "Hello," Bob replied.',c),null);
+});
+
+test('local attribution recognizes Unicode speaker names with curly quotes',()=>{
+  const c=config();c.fixed[1].speaker='Élodie';c.fixed.push({speaker:'Bob',voice:'Puck',style:''});
+  const plan=fastClassifyPlan('“Hello,” Élodie whispered. Bob said, “Welcome.”',c);
+  assert.ok(plan);assert.deepEqual(plan.segments.filter(s=>s.text.startsWith('“')).map(s=>s.speaker),['Élodie','Bob']);
+});
+
+test('a tag introducing the next quote never changes the previous quote speaker',()=>{
+  const c=config();c.fixed.push({speaker:'Bob',voice:'Puck',style:''});
+  const plan=fastClassifyPlan('Alice said, "Hello." Bob said, "Welcome."',c);
+  assert.ok(plan);assert.deepEqual(plan.segments.filter(s=>s.text.startsWith('"')).map(s=>s.speaker),['Alice','Bob']);
+});
+
+test('local narration and dialogue apply the cast delivery style exactly once',()=>{
+  const c=config();c.fixed[0].style='Measured';c.fixed[1].style='Warm';
+  const plan=fastClassifyPlan('The room fell quiet. Alice said, "Hello."',c);
+  assert.ok(plan);assert.equal(plan.segments[0].style,'Measured');assert.equal(plan.segments.at(-1).style,'Warm');
 });
 
 test('transcriptFromMessage strips markdown headers like # Approved, ## Response, and ### Chapter headers', () => {

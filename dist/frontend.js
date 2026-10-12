@@ -464,6 +464,12 @@ For automatic voice selection, honor each cast entry gender preference: female m
 }
 
 
+function resolvePlannerMode(config = {}) {
+  if (['llm', 'jev', 'heuristic'].includes(config.plannerMode)) return config.plannerMode;
+  if (config.useJev) return 'jev';
+  return config.useFastClassifier ? 'heuristic' : 'llm';
+}
+
 function fastClassifyPlan(transcript, config) {
   if (!transcript || typeof transcript !== 'string') return null;
   const units = speechSourceUnits(transcript);
@@ -488,7 +494,7 @@ function fastClassifyPlan(transcript, config) {
           speaker: narrator.speaker || 'Narrator',
           voice: narrator.voice,
           route: narrator.route || config.defaultRoute || '',
-          style: narrator.style || '',
+          style: '',
           gender: narrator.gender || 'auto',
           unit_ids: units.map(u => u.id)
         }
@@ -521,24 +527,24 @@ function fastClassifyPlan(transcript, config) {
 
   const getImmediateTag = (u) => {
     const afterRaw = transcript.slice(u.end);
-    const afterBoundary = afterRaw.search(/[.!?\n"]|$/);
-    const afterTag = afterRaw.slice(0, Math.min(afterBoundary + 1, 50));
+    const afterBoundary = afterRaw.search(/[.!?\n"“”]|$/);
+    // A clause leading into the next quote belongs to that next turn.
+    const afterTag = /["“]/.test(afterRaw[afterBoundary] || '') ? '' : afterRaw.slice(0, Math.min(afterBoundary + 1, 50));
 
     const beforeRaw = transcript.slice(0, u.start);
-    const prevPunc = Math.max(beforeRaw.lastIndexOf('.'), beforeRaw.lastIndexOf('!'), beforeRaw.lastIndexOf('?'), beforeRaw.lastIndexOf('"'), beforeRaw.lastIndexOf('\n'));
+    const prevPunc = Math.max(...['.', '!', '?', '"', '“', '”', '\n'].map(mark=>beforeRaw.lastIndexOf(mark)));
     const beforeTag = beforeRaw.slice(prevPunc === -1 ? 0 : prevPunc + 1);
 
     return { beforeTag, afterTag };
   };
 
   const findSpeakerInTag = (tagText) => {
-    for (const cand of candidates) {
-      for(const name of [cand.speaker,...(cand.aliases || [])]){
+    const matches=candidates.filter(cand=>[cand.speaker,...(cand.aliases || [])].some(name=>{
+        if(!name.trim())return false;
         const esc = name.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-        if (new RegExp('\\b' + esc + '\\b', 'i').test(tagText)) return cand;
-      }
-    }
-    return null;
+        return new RegExp('(?<![\\p{L}\\p{N}_])' + esc + '(?![\\p{L}\\p{N}_])', 'iu').test(tagText);
+    }));
+    return {actor:matches.length===1?matches[0]:null,ambiguous:matches.length>1};
   };
 
   const preferredActor = config.speaker ? (
@@ -548,13 +554,10 @@ function fastClassifyPlan(transcript, config) {
 
   // Case 2: 1-on-1 character dialogue
   const isOneOnOne = candidates.length === 1 && candidates[0].voice;
-  const singleCharacter = isOneOnOne ? candidates[0] : (
-    candidates.length === 2 &&
-    (normalizeName(candidates[0].speaker) === 'user' || normalizeName(candidates[0].speaker) === 'persona') &&
-    candidates[1].voice
-  ) ? candidates[1] : null;
+  const persona=candidates.find(actor=>['user','persona','you'].includes(normalizeName(actor.speaker)));
+  const singleCharacter = isOneOnOne ? candidates[0] : candidates.length===2 && persona
+    ? candidates.find(actor=>actor!==persona && actor.voice) : null;
 
-  let lastAssigned = null;
   const unitAssignments = [];
 
   for (const u of units) {
@@ -563,7 +566,7 @@ function fastClassifyPlan(transcript, config) {
         speaker: narrator.speaker || 'Narrator',
         voice: narrator.voice,
         route: narrator.route || config.defaultRoute || '',
-        style: narrator.style || '',
+        style: '',
         gender: narrator.gender || 'auto',
         unit_ids: [u.id]
       });
@@ -571,10 +574,9 @@ function fastClassifyPlan(transcript, config) {
     }
 
     const { beforeTag, afterTag } = getImmediateTag(u);
-    let assigned = findSpeakerInTag(afterTag) || findSpeakerInTag(beforeTag);
-    if (!assigned && lastAssigned) {
-      assigned = lastAssigned;
-    }
+    const after=findSpeakerInTag(afterTag),before=findSpeakerInTag(beforeTag);
+    if(after.ambiguous || before.ambiguous || after.actor && before.actor && after.actor!==before.actor)return null;
+    let assigned = after.actor || before.actor;
     if (!assigned && preferredActor && preferredActor.voice) {
       assigned = preferredActor;
     }
@@ -585,15 +587,13 @@ function fastClassifyPlan(transcript, config) {
     if (!assigned || !assigned.voice) {
       return null;
     }
-    lastAssigned = assigned;
-
     const style = detectStyle(afterTag) || detectStyle(beforeTag);
 
     unitAssignments.push({
       speaker: assigned.speaker,
       voice: assigned.voice,
       route: assigned.route || config.defaultRoute || '',
-      style: style || assigned.style || '',
+      style,
       gender: assigned.gender || 'auto',
       unit_ids: [u.id]
     });
@@ -749,6 +749,9 @@ export async function setup(ctx) {
     .ensemble-tts h2{font-size:1.25em;font-weight:600;margin:0;letter-spacing:-0.01em}
     .ensemble-tts .et-badge{font-size:0.75em;opacity:0.7;text-transform:uppercase;letter-spacing:0.05em;border:1px solid rgba(128,128,128,0.3);padding:2px 6px;border-radius:4px}
     .ensemble-tts .et-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+    .ensemble-tts .et-header-actions{display:grid;gap:6px;min-width:0;max-width:100%}
+    .ensemble-tts .et-save-state{font-size:11px;opacity:.75;text-align:right;overflow-wrap:anywhere}
+    .ensemble-tts .et-toolbar button{white-space:nowrap}
     .ensemble-tts h3{font-size:0.95em;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;opacity:0.85;margin:20px 0 8px}
     .ensemble-tts .et-section-header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:20px 0 8px}
     .ensemble-tts .et-section-header h3{margin:0}
@@ -861,11 +864,14 @@ export async function setup(ctx) {
         <h2>Choir</h2>
         <span class="et-badge">Voices</span>
       </div>
-      <div class="et-toolbar">
-        <span data-et="saveState" role="status" aria-live="polite" style="font-size:11px;opacity:.75">Settings saved per chat</span>
-        <button data-et="latest">Plan latest</button>
-        <button data-et="save" class="et-btn-primary">Save settings</button>
-        <button data-et="showMixer">Open mixer</button>
+      <div class="et-header-actions">
+        <span class="et-save-state" data-et="saveState" role="status" aria-live="polite">Settings saved per chat</span>
+        <div class="et-toolbar">
+          <button data-et="latest">Plan latest</button>
+          <button data-et="stop" disabled title="Stop planning, speech generation, and playback">${ICON_STOP} Stop</button>
+          <button data-et="save" class="et-btn-primary">Save settings</button>
+          <button data-et="showMixer">Open mixer</button>
+        </div>
       </div>
     </div>
     <p data-et="latestNotice" role="status" hidden>latest already planned, click on plan latest to redo it</p>
@@ -894,8 +900,9 @@ export async function setup(ctx) {
     <div class="et-grid">
       <label hidden>Voice connections<select data-et="connectionMode"><option value="several">Several TTS · per character</option><option value="one">One TTS · whole cast</option></select></label>
       <label hidden>Default TTS connection<select data-et="mode"><option value="native">Lumiverse TTS</option><option value="gemini">Gemini 3.8 (style metadata)</option></select></label>
-      <label>Planner engine<select data-et="plannerMode"><option value="llm">Standard LLM Connection</option><option value="jev">Jev System 1 (TypeSafe AI)</option><option value="heuristic">Heuristic (0ms fast path)</option></select></label>
+      <label>Planner engine<select data-et="plannerMode"><option value="llm">Standard LLM Connection</option><option value="jev">Jev System 1 (TypeSafe AI)</option><option value="heuristic">Heuristic (local only)</option></select></label>
     </div>
+    <p data-et="plannerHint" role="note" style="font-size:.85em;opacity:.75;margin:8px 0"></p>
     <div data-et="gemini" hidden class="et-grid" style="margin-top:10px">
       <label>Gemini model<select data-et="model"><option>gemini-3.8-flash-tts</option><option>gemini-3.8-flash-lite-tts</option></select></label>
       <label>Gemini API key<input data-et="key" type="password" autocomplete="off" placeholder="Session key (never saved)"></label>
@@ -1162,6 +1169,7 @@ export async function setup(ctx) {
     const paused=!currentAudio || currentAudio.paused,label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play Choir audio';
     mixerPlay.innerHTML=(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,'');mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || !plan;
     mixerStop.disabled=!controller && !currentAudio;
+    $('stop').disabled=mixerStop.disabled;
     mixer.dataset.playState=currentAudio?(paused?'paused':'playing'):busy?'loading':'idle';playbackCaption.textContent=currentAudio?(paused?'Paused':'Now playing'):busy?'Preparing audio':'Playback';
   }
   function speakerExcluded(speaker){return [...(config?.fixed || []),...Object.values(config?.casts || {}).flat()].some(actor=>normalizeName(actor.speaker)===normalizeName(speaker) && actor.excluded);}
@@ -1235,7 +1243,7 @@ export async function setup(ctx) {
   }
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
-  const preferenceFields=['mode','model','planner','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','useStyle','auto','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','freesoundApiKey'];
+  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','useStyle','auto','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','freesoundApiKey'];
   let settingsWriteQueue=null,pendingSettings=null,autosaveTimer=null,settingsEdit=0;const retentionPolicies=new Map();
   function saveState(text,error=false){if(disposed)return;$('saveState').textContent=text;$('saveState').classList.toggle('et-error',error);}
   async function persistConfig(targetChat=chatId,value=config,inherit=false){
@@ -1783,7 +1791,7 @@ export async function setup(ctx) {
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,concurrency:Number($('concurrency').value),
       prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
-      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean($('muteNarrator')?.checked),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,plannerMode:$('plannerMode')?$('plannerMode').value:(config.plannerMode||'llm'),useFastClassifier:$('plannerMode')?($('plannerMode').value==='heuristic'||Boolean($('useFastClassifier')?.checked)):Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
+      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean($('muteNarrator')?.checked),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
   }
   function casting(c=config) {
     const routeActor=actor=>c.connectionMode==='one'?{...actor,route:scope(c),voice:singleVoice(actor,c)}:actor;
@@ -1826,7 +1834,12 @@ export async function setup(ctx) {
     const isHeuristic=mode==='heuristic';
     if($('llmPlannerBox'))$('llmPlannerBox').hidden=isHeuristic || (isJev && !$('allowLlmFallback')?.checked);
     if($('jevPlannerBox'))$('jevPlannerBox').hidden=!isJev;
-    if(isHeuristic && $('useFastClassifier'))$('useFastClassifier').checked=true;
+    if($('useFastClassifier'))$('useFastClassifier').checked=isHeuristic;
+    $('plannerHint').textContent=isHeuristic
+      ? 'Attribution stays on this device. Ambiguous dialogue stops planning; choose Jev or LLM to resolve it. Speech synthesis still uses your TTS provider.'
+      : isJev
+        ? `Jev classifies speakers.${$('allowLlmFallback')?.checked ? ' If Jev fails, the enabled LLM fallback can incur extra cost.' : ' LLM fallback is disabled.'}`
+        : 'Your selected LLM connection plans speakers and voices. Planning and Test planner make LLM requests.';
   }
   function updateProviderVisibility() {
     const activeProvider=detectProvider(config);
@@ -1879,7 +1892,7 @@ export async function setup(ctx) {
     if($('enableSfx'))$('enableSfx').checked=config.enableSfx!==false;
     if($('enableMixer'))$('enableMixer').checked=Boolean(config.enableMixer);
     if($('freesoundApiKey'))$('freesoundApiKey').value=config.freesoundApiKey||'';$('batchGemini').checked=config.batchGemini;$('concurrency').value=config.concurrency;$('autoDesignNPCs').checked=Boolean(config.autoDesignNPCs);
-    if($('plannerMode'))$('plannerMode').value=(config.plannerMode==='heuristic'||config.useFastClassifier)?'heuristic':(config.plannerMode || (config.useJev ? 'jev' : 'llm'));
+    if($('plannerMode'))$('plannerMode').value=resolvePlannerMode(config);
     if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);
     if($('jevKey'))$('jevKey').value=config.jevApiKey||'';
     if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';
@@ -1893,7 +1906,7 @@ export async function setup(ctx) {
   function setBusy(value) {
     busy=value;
     for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','connectionMode','apply','auto'])if($(name))$(name).disabled=value;
-    for (const name of ['model','planner','plannerMode','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','testTts','importCast'])if($(name))$(name).disabled=value;
+    for (const name of ['model','planner','plannerMode','decisionConnection','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','testTts','importCast'])if($(name))$(name).disabled=value;
     updateTransport();
     if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
@@ -2003,6 +2016,9 @@ export async function setup(ctx) {
     if(disposed || version!==loadVersion)return;
     const legacyCast=!saved && Array.isArray(globalSaved?.fixed)?globalSaved:null;
     config={...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(legacyCast || {}),...(saved || {})};
+    const chatSettings=saved || legacyCast;
+    config.plannerMode=resolvePlannerMode(chatSettings && ['plannerMode','useJev','useFastClassifier'].some(name=>Object.hasOwn(chatSettings,name)) ? chatSettings : preferences || {});
+    config.useFastClassifier=config.plannerMode==='heuristic';config.useJev=config.plannerMode==='jev';
     if(!saved && !legacyCast && config.mode==='native')config.fixed[0].voice='';
     retentionPolicies.set(id,config.retention);
     if(saved && !saved.connectionMode)config.connectionMode='several';
@@ -2147,26 +2163,26 @@ export async function setup(ctx) {
         if(autoPlay){controller=null;setBusy(false);await play();}
         return;
       }
-      await rpc('ping',{},ctrl.signal,8000);
-      if(token!==revision || ctrl.signal.aborted)return;
       const stripBase=segments=>segments.map(s=>{
         const actor=[...snapshot.fixed,...snapshot.npcs].find(v=>normalizeName(v.speaker)===normalizeName(s.speaker));
         const prefix=actor?.style?`${actor.style}. `:'';
         const style=s.style || ''; return {...s,style:prefix && style.startsWith(prefix)?style.slice(prefix.length):style===actor?.style?'':style};
       });
-            // 1. Instant local fast-path (0ms)
+      const plannerMode=resolvePlannerMode(config);
       let fastPlan = null;
-      if (config.useFastClassifier !== false) {
+      if (plannerMode==='heuristic') {
         try {
           fastPlan = fastClassifyPlan(transcript, snapshot);
           if (fastPlan) status('Speech plan ready (instant local classifier, 0ms).');
         } catch {
           fastPlan = null;
         }
+        if(!fastPlan)throw new Error('Heuristic could not safely attribute this dialogue or choose an unassigned voice. Choose Jev or LLM, or assign voices and add clear speaker tags. No LLM request was made.');
       }
+      if(!fastPlan){await rpc('ping',{},ctrl.signal,8000);if(token!==revision || ctrl.signal.aborted)return;}
       // 2. Jev System 1 classifier (~20ms)
       let jevFailure='';
-      if (!fastPlan && config.useJev) {
+      if (!fastPlan && plannerMode==='jev') {
         try {
           status('Classifying dialogue with Jev System 1 model…');
           const jevKey = (config.jevApiKey || $('jevKey')?.value || '').trim();
@@ -2178,10 +2194,9 @@ export async function setup(ctx) {
             apiKey: jevKey,
             endpoint: jevEndpoint
           }, ctrl.signal, 15000);
-          if (result && Array.isArray(result.segments)) {
-            fastPlan = validatePlan({ segments: stripBase(result.segments) }, transcript, snapshot);
-            status('Speech plan ready (Jev System 1 classifier).');
-          }
+          if (!result || !Array.isArray(result.segments))throw new Error('Jev returned no valid speech plan.');
+          fastPlan = validatePlan({ segments: stripBase(result.segments) }, transcript, snapshot);
+          status('Speech plan ready (Jev System 1 classifier).');
         } catch (err) {
           if(ctrl.signal.aborted || token!==revision)throw err;
           if(!config.allowLlmFallback)throw err;
@@ -2297,6 +2312,7 @@ export async function setup(ctx) {
               await loadVoices();
               status(`Auto-designed voice for ${npc.speaker}: ${bespokeId}`);
             } catch(error) {
+              if(ctrl.signal.aborted || token!==revision)throw error;
               status(`Could not auto-design voice for ${npc.speaker}: ${error.message}. Keeping prebuilt voice.`);
             }
           }
@@ -2306,7 +2322,7 @@ export async function setup(ctx) {
       if(token!==revision || disposed)return;
       renderCast();renderPreview();
       await persistPlan();
-      if(!streaming)status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.map(s=>s.speaker)).size} speakers.${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''}`);
+      if(!streaming)status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.map(s=>s.speaker)).size} speakers.${plannerMode==='heuristic'?' Local heuristic attribution; no LLM request.':plannerMode==='jev' && !jevFailure?' Jev attribution; no LLM request.':''}${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''}`);
       if(streaming) {
         const {blobs,segments:playedBatches}=await player.playbackPromise;
         const key=recordingKey(targetChat,messageId);
@@ -2725,9 +2741,20 @@ export async function setup(ctx) {
     try{await action();}catch(error){if(error.name!=='AbortError')status(error.message,true);}finally{updateTransport();}
   }
   $('save').onclick=()=>run(save);
+  $('stop').onclick=()=>stop();
   $('testPlanner').onclick=()=>run(async()=>{
     stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);
-    const isJev=$('plannerMode')?.value==='jev';
+    const mode=$('plannerMode').value;
+    if(mode==='heuristic'){
+      try{
+        const snapshot=casting(capture());validateCastConfig(snapshot);
+        const result=fastClassifyPlan('The room fell quiet.',snapshot);
+        if(!result)throw new Error('Assign a narrator voice to test the local heuristic. No LLM request was made.');
+        status('Heuristic test passed: local narration attribution. No LLM request was made.');
+      }finally{ctrl.abort();if(token===revision){controller=null;setBusy(false);}}
+      return;
+    }
+    const isJev=mode==='jev';
     status(isJev ? 'Testing Jev classifier…' : 'Testing planner…');
     try {
       await rpc('ping',{},ctrl.signal,8000);

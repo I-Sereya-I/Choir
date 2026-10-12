@@ -11,7 +11,7 @@ const html=`<!doctype html><html><head><meta charset="utf-8"><title>Choir integr
 import {setup} from '/dist/frontend.js';import {validatePlan,speechSourceUnits} from '/src/core.js';
 const store=new Map(),root=document.querySelector('main'),footer=document.querySelector('footer');let backend;window.calls=[];window.gains=[];window.audios=[];const RealAudio=window.Audio;window.Audio=function(url){const audio=new RealAudio(url);window.audios.push(audio);return audio;};
 const createGain=AudioContext.prototype.createGain;AudioContext.prototype.createGain=function(){const gain=createGain.call(this);window.gains.push(gain);return gain;};
-store.set('chat:fixture',{mode:'native',connection:'a',styleParam:'instructions',prefetch:1,concurrency:1,chunk:500,normalizeLoudness:true,fixed:[{speaker:'Narrator',voice:'n',style:'Measured narration'},{speaker:'You',voice:'y',style:''},{speaker:'Mira',voice:'m',style:'Warm',route:'native:b'}],casts:{'native:a':[]}});
+store.set('chat:fixture',{mode:'native',connection:'a',enableMixer:true,styleParam:'instructions',prefetch:1,concurrency:1,chunk:500,normalizeLoudness:true,fixed:[{speaker:'Narrator',voice:'n',style:'Measured narration'},{speaker:'You',voice:'y',style:''},{speaker:'Mira',voice:'m',style:'Warm',route:'native:b'}],casts:{'native:a':[]}});
 const message={id:'reply',name:'Mira',content:'The hall fell silent. "Welcome." A new story begins.'};
 function wav(amplitude){const count=24000,buffer=new ArrayBuffer(44+count*2),view=new DataView(buffer);function text(offset,value){for(let i=0;i<value.length;i++)view.setUint8(offset+i,value.charCodeAt(i));}text(0,'RIFF');view.setUint32(4,36+count*2,true);text(8,'WAVE');text(12,'fmt ');view.setUint32(16,16,true);view.setUint16(20,1,true);view.setUint16(22,1,true);view.setUint32(24,24000,true);view.setUint32(28,48000,true);view.setUint16(32,2,true);view.setUint16(34,16,true);text(36,'data');view.setUint32(40,count*2,true);for(let i=0;i<count;i++)view.setInt16(44+i*2,Math.sin(i*2*Math.PI*220/24000)*32767*amplitude,true);return buffer;}
 const realFetch=window.fetch;window.fetch=async(url,options={})=>{
@@ -36,6 +36,18 @@ try{
   browser=await chromium.launch({headless:true,channel:process.env.CHOIR_BROWSER_CHANNEL || 'chrome',args:['--disable-crash-reporter']});
   const page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',error=>errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.ready);
+  const saveStatus=await page.locator('[data-et="saveState"]').boundingBox();
+  const toolbarButtons=await page.locator('.et-toolbar button').all();
+  const toolbarBounds=await Promise.all(toolbarButtons.map(button=>button.boundingBox()));
+  assert.ok(toolbarBounds.every(bounds=>bounds.y>=saveStatus.y+saveStatus.height));
+  assert.ok(toolbarBounds.every(bounds=>Math.abs(bounds.y-toolbarBounds[0].y)<1));
+  const drawerStop=page.locator('[data-et="stop"]');assert.equal(await drawerStop.isDisabled(),true);
+  await page.locator('[data-et="plannerMode"]').selectOption('heuristic');
+  await page.locator('[data-et="testPlanner"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Heuristic test passed'));
+  assert.equal(await page.locator('[data-et="llmPlannerBox"]').isVisible(),false);
+  await page.locator('[data-et="plannerMode"]').selectOption('llm');
+  assert.equal(await page.locator('[data-et="llmPlannerBox"]').isVisible(),true);
+  if(process.env.CHOIR_DRAWER_SCREENSHOT)await page.locator('main').screenshot({path:process.env.CHOIR_DRAWER_SCREENSHOT});
   assert.equal(await page.getByText('Guided setup',{exact:true}).count(),0);
   const cast=page.locator('[data-et="fixed"]');assert.equal(await cast.locator('[data-choir-cast-editor]').first().isVisible(),false);
   const narratorBounds=await cast.locator('.et-card').first().boundingBox();assert.ok(narratorBounds.height<55);
@@ -88,7 +100,7 @@ try{
   await mixer.locator('.cm-header').click({position:{x:150,y:12}});
   if(process.env.CHOIR_SCREENSHOT)await page.screenshot({path:process.env.CHOIR_SCREENSHOT,fullPage:true});
   if(process.env.CHOIR_MIXER_SCREENSHOT)await mixer.screenshot({path:process.env.CHOIR_MIXER_SCREENSHOT});
-  await mixer.getByRole('button',{name:'Stop',exact:true}).click();
+  assert.equal(await drawerStop.isEnabled(),true);await drawerStop.click();assert.equal(await drawerStop.isDisabled(),true);
   await page.locator('[data-et="connectionMode"]').selectOption('one');await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('One TTS now'));
   assert.equal(await cast.locator('[data-choir-route]').evaluateAll(nodes=>nodes.every(node=>node.parentElement.hidden)),true);
   await page.locator('[data-et="connectionMode"]').selectOption('several');await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Several TTS restored'));

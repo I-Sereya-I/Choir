@@ -6,7 +6,7 @@
 
 [![Version](https://img.shields.io/badge/version-1.1.4-blue.svg)](https://github.com/patatasbravasch-arch/Choir)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-127%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-146%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, and sound effects.
@@ -22,7 +22,7 @@ Choir separates narration and character dialogue from chat messages, assigns dis
 
 - **Multi-voice casting.** Cast distinct voices for the Narrator, player persona, and any number of characters or NPCs. Choose voices manually or let the planner cast them automatically.
 - **Dual connection modes.** Use one TTS connection across the whole cast, or assign different providers to individual characters.
-- **Fast dialogue attribution.** Instant 0ms local classification handles narration and one-on-one dialogue without network overhead. Complex multi-character scenes fall through to TypeSafe AI's Jev model or your default LLM planner.
+- **Choice of attribution engine.** Heuristic mode classifies narration and clear dialogue locally, without LLM requests. Ambiguous dialogue stops with guidance to choose Jev or LLM. Jev uses your Decision connection; LLM fallback requires the explicit opt-in. Standard LLM mode uses your selected planner connection.
 - **Foley sound effects.** Automatic text scanning detects physical actions such as footsteps, opening doors, knocks, page turns, and impacts, pulling matching audio clips from Freesound with automatic pre-fetching and volume balancing.
 - **Narrator muting.** Toggle narrator speech off to hear dialogue only, or leave it on for a full audiobook experience.
 - **Companion extension bridge.** Exposes `window.__CHOIR_API__` so reading interfaces like Cue Living Novel can request speech turn planning and seamless paragraph playback.
@@ -34,6 +34,8 @@ Choir separates narration and character dialogue from chat messages, assigns dis
 Click the small draggable speaker icon to open the compact player. Previous and Next move between spoken blocks; the playback bar seeks within the current audio part. **Silent** mutes playback. **No voice** skips that character's playback and new synthesis while retaining text and cached audio.
 
 Cast and connection changes save automatically with Saving / Saved / Save failed feedback. **Save settings** also saves immediately. Each chat retains its cast; new chats inherit connection, planner and playback preferences. Gemini and Jev API keys remain session-only. Saved plans and completed audio survive navigation and provider failures.
+
+The drawer's **Stop** button cancels planning, speech generation, and playback, including paused audio, while keeping completed cached passages. Saved-settings feedback sits above the aligned action buttons. **Test planner** follows the selected engine: heuristic tests run locally; Jev and LLM tests use their selected connections. Heuristic mode still uses your TTS provider when you play speech.
 
 Advanced **Max characters per request** controls the TTS chunk size: a whole number from **80 to 2000**, default **1800**. Invalid numeric edits are shown and are not saved.
 
@@ -118,5 +120,7 @@ npm ci
 npm test
 npm run test:ui
 ```
+
+If the environment prevents spawning test workers, use `node --test --test-isolation=none --test-concurrency=1 tests/*.test.mjs tests/*.browser.mjs` after building.
 
 `npm test` validates core parsing, Jev integration, Foley cue detection, and cast validation. `npm run test:ui` executes browser-environment DOM, mixer, and companion bridge integration tests.

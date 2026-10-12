@@ -463,6 +463,12 @@ For automatic voice selection, honor each cast entry gender preference: female m
 }
 
 
+export function resolvePlannerMode(config = {}) {
+  if (['llm', 'jev', 'heuristic'].includes(config.plannerMode)) return config.plannerMode;
+  if (config.useJev) return 'jev';
+  return config.useFastClassifier ? 'heuristic' : 'llm';
+}
+
 export function fastClassifyPlan(transcript, config) {
   if (!transcript || typeof transcript !== 'string') return null;
   const units = speechSourceUnits(transcript);
@@ -487,7 +493,7 @@ export function fastClassifyPlan(transcript, config) {
           speaker: narrator.speaker || 'Narrator',
           voice: narrator.voice,
           route: narrator.route || config.defaultRoute || '',
-          style: narrator.style || '',
+          style: '',
           gender: narrator.gender || 'auto',
           unit_ids: units.map(u => u.id)
         }
@@ -520,24 +526,24 @@ export function fastClassifyPlan(transcript, config) {
 
   const getImmediateTag = (u) => {
     const afterRaw = transcript.slice(u.end);
-    const afterBoundary = afterRaw.search(/[.!?\n"]|$/);
-    const afterTag = afterRaw.slice(0, Math.min(afterBoundary + 1, 50));
+    const afterBoundary = afterRaw.search(/[.!?\n"“”]|$/);
+    // A clause leading into the next quote belongs to that next turn.
+    const afterTag = /["“]/.test(afterRaw[afterBoundary] || '') ? '' : afterRaw.slice(0, Math.min(afterBoundary + 1, 50));
 
     const beforeRaw = transcript.slice(0, u.start);
-    const prevPunc = Math.max(beforeRaw.lastIndexOf('.'), beforeRaw.lastIndexOf('!'), beforeRaw.lastIndexOf('?'), beforeRaw.lastIndexOf('"'), beforeRaw.lastIndexOf('\n'));
+    const prevPunc = Math.max(...['.', '!', '?', '"', '“', '”', '\n'].map(mark=>beforeRaw.lastIndexOf(mark)));
     const beforeTag = beforeRaw.slice(prevPunc === -1 ? 0 : prevPunc + 1);
 
     return { beforeTag, afterTag };
   };
 
   const findSpeakerInTag = (tagText) => {
-    for (const cand of candidates) {
-      for(const name of [cand.speaker,...(cand.aliases || [])]){
+    const matches=candidates.filter(cand=>[cand.speaker,...(cand.aliases || [])].some(name=>{
+        if(!name.trim())return false;
         const esc = name.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-        if (new RegExp('\\b' + esc + '\\b', 'i').test(tagText)) return cand;
-      }
-    }
-    return null;
+        return new RegExp('(?<![\\p{L}\\p{N}_])' + esc + '(?![\\p{L}\\p{N}_])', 'iu').test(tagText);
+    }));
+    return {actor:matches.length===1?matches[0]:null,ambiguous:matches.length>1};
   };
 
   const preferredActor = config.speaker ? (
@@ -547,13 +553,10 @@ export function fastClassifyPlan(transcript, config) {
 
   // Case 2: 1-on-1 character dialogue
   const isOneOnOne = candidates.length === 1 && candidates[0].voice;
-  const singleCharacter = isOneOnOne ? candidates[0] : (
-    candidates.length === 2 &&
-    (normalizeName(candidates[0].speaker) === 'user' || normalizeName(candidates[0].speaker) === 'persona') &&
-    candidates[1].voice
-  ) ? candidates[1] : null;
+  const persona=candidates.find(actor=>['user','persona','you'].includes(normalizeName(actor.speaker)));
+  const singleCharacter = isOneOnOne ? candidates[0] : candidates.length===2 && persona
+    ? candidates.find(actor=>actor!==persona && actor.voice) : null;
 
-  let lastAssigned = null;
   const unitAssignments = [];
 
   for (const u of units) {
@@ -562,7 +565,7 @@ export function fastClassifyPlan(transcript, config) {
         speaker: narrator.speaker || 'Narrator',
         voice: narrator.voice,
         route: narrator.route || config.defaultRoute || '',
-        style: narrator.style || '',
+        style: '',
         gender: narrator.gender || 'auto',
         unit_ids: [u.id]
       });
@@ -570,10 +573,9 @@ export function fastClassifyPlan(transcript, config) {
     }
 
     const { beforeTag, afterTag } = getImmediateTag(u);
-    let assigned = findSpeakerInTag(afterTag) || findSpeakerInTag(beforeTag);
-    if (!assigned && lastAssigned) {
-      assigned = lastAssigned;
-    }
+    const after=findSpeakerInTag(afterTag),before=findSpeakerInTag(beforeTag);
+    if(after.ambiguous || before.ambiguous || after.actor && before.actor && after.actor!==before.actor)return null;
+    let assigned = after.actor || before.actor;
     if (!assigned && preferredActor && preferredActor.voice) {
       assigned = preferredActor;
     }
@@ -584,15 +586,13 @@ export function fastClassifyPlan(transcript, config) {
     if (!assigned || !assigned.voice) {
       return null;
     }
-    lastAssigned = assigned;
-
     const style = detectStyle(afterTag) || detectStyle(beforeTag);
 
     unitAssignments.push({
       speaker: assigned.speaker,
       voice: assigned.voice,
       route: assigned.route || config.defaultRoute || '',
-      style: style || assigned.style || '',
+      style,
       gender: assigned.gender || 'auto',
       unit_ids: [u.id]
     });
