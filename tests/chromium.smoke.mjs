@@ -20,6 +20,7 @@ const realFetch=window.fetch;window.fetch=async(url,options={})=>{
  if(url==='/fixture-ambience.wav'){window.bedDownloads=(window.bedDownloads||0)+1;return new Response(wav(0.06),{headers:{'Content-Type':'audio/wav'}});}
  if(url==='/fixture-sfx.wav'){window.foleyDownloads++;return new Response(wav(0.06),{headers:{'Content-Type':'audio/wav'}});}
  if(!String(url).startsWith('/api/v1'))return realFetch(url,options);
+ if(url.endsWith('/spindle')){window.branchRequest=window.fixtureBranch || 'staging';return Response.json({extensions:[{identifier:'choir',metadata:{branch:window.branchRequest}}]});}
  if(url.endsWith('/tts/synthesize')){const input=JSON.parse(options.body);window.calls.push(input);if(window.ttsError)return Response.json({error:window.ttsError},{status:502});if(window.holdSpeechText && input.text.includes(window.holdSpeechText))await new Promise((resolve,reject)=>{const cancel=()=>reject(new DOMException('Stopped','AbortError'));options.signal.addEventListener('abort',cancel,{once:true});window.releaseSpeech=()=>{options.signal.removeEventListener('abort',cancel);resolve();};});return new Response(wav(input.voice==='m'?0.4:0.06),{headers:{'Content-Type':'audio/wav'}});}
  if(url.includes('/providers'))return Response.json({providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}}]});
  if(url.endsWith('/voices'))return Response.json({voices:['n','y','m'].map(id=>({id,name:id}))});
@@ -54,6 +55,11 @@ try{
   await httpPage.locator('[data-choir-action="playback"]').click();await httpPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
   assert.deepEqual(await httpPage.evaluate(()=>({namespace:window.fixtureStore.get('audio:namespace'),plans:window.plans,speech:window.calls.length})),{namespace:httpSaved.namespace,plans:httpSaved.plans,speech:httpSaved.speech});
   assert.equal(await httpPage.getByRole('heading',{name:'Choir',exact:true}).isVisible(),true);assert.equal(await httpPage.locator('[data-choir-mixer]').count(),1);
+  await httpPage.waitForFunction(()=>!document.querySelector('[data-et="branchBadge"]').hidden);
+  await httpPage.evaluate(async()=>{window.fixtureBranch='main';window.cleanup();window.cleanup=await window.mountChoir();});
+  await httpPage.waitForFunction(()=>window.branchRequest==='main');assert.equal(await httpPage.locator('[data-et="branchBadge"]').isVisible(),false);
+  await httpPage.evaluate(async()=>{window.fixtureBranch='staging';window.cleanup();window.cleanup=await window.mountChoir();});
+  await httpPage.waitForFunction(()=>!document.querySelector('[data-et="branchBadge"]').hidden);
   await httpPage.evaluate(()=>window.cleanup());await httpPage.close();
   console.log('PASS: Chrome on an insecure HTTP hostname without randomUUID or SubtleCrypto loads the drawer and mixer, plans, plays, and remounts with saved plans and cached audio.');
   const page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',error=>errors.push(error.message));
@@ -244,6 +250,12 @@ try{
   await page.locator('[data-choir-action="playback"]').click();
   await page.waitForFunction(()=>window.audios.some(audio=>audio.loop && !audio.paused && audio.currentTime>0 && audio.volume>0));
   assert.equal(await page.evaluate(()=>window.bedDownloads),1);
+  await page.locator('[data-choir-action="playback"]').click();
+  const ambienceVolume=page.getByRole('slider',{name:'Ambience volume',exact:true});assert.equal(await ambienceVolume.getAttribute('max'),'3');
+  await ambienceVolume.focus();await ambienceVolume.press('End');assert.equal(await ambienceVolume.getAttribute('aria-valuetext'),'300 percent');
+  await page.waitForFunction(()=>window.audios.filter(audio=>audio.loop).at(-1).volume===0.75 && window.fixtureStore.get('ui:mixer').ambience===3);
+  assert.equal(await ambienceVolume.evaluate(node=>node.style.getPropertyValue('--choir-level')),'100%');
+  await page.locator('[data-choir-action="playback"]').click();
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
   await page.waitForFunction(()=>window.audios.filter(audio=>audio.loop).every(audio=>audio.paused));
   await page.evaluate(()=>window.rejectAmbience=true);await page.locator('[data-choir-action="playback"]').click();
@@ -324,6 +336,11 @@ try{
   await touch.getByRole('button',{name:'Mira no voice',exact:true}).tap();assert.equal(await touch.getByRole('button',{name:'Mira no voice',exact:true}).getAttribute('aria-pressed'),'true');
   await touch.getByRole('tab',{name:'SFX',exact:true}).tap();await touch.getByRole('spinbutton',{name:'SFX volume percent',exact:true}).fill('43');await touch.getByRole('tab',{name:'Ambience',exact:true}).tap();await touch.getByRole('spinbutton',{name:'Ambience volume percent',exact:true}).fill('32');
   await touch.waitForFunction(()=>window.fixtureStore.get('ui:mixer').sfx===0.43 && window.fixtureStore.get('ui:mixer').ambience===0.32);
+  const touchAmbience=touch.getByRole('spinbutton',{name:'Ambience volume percent',exact:true});
+  await touchAmbience.fill('300');assert.equal(await touchAmbience.getAttribute('max'),'300');
+  await touch.waitForFunction(()=>window.fixtureStore.get('ui:mixer').ambience===3);
+  assert.equal(await touch.getByRole('button',{name:'Increase Ambience volume',exact:true}).isDisabled(),true);
+  await touch.getByRole('button',{name:'Decrease Ambience volume',exact:true}).tap();assert.equal(await touchAmbience.inputValue(),'295');
   const volumeTargets=await touchMixer.locator('.cm-volume-steps button:visible,.cm-toggle:visible,.cm-channel-tab').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {width:rect.width,height:rect.height};}));assert.ok(volumeTargets.every(rect=>rect.width>=44 && rect.height>=44));
   assert.equal(await touchMixer.locator('.cm-channel-controls:visible').evaluateAll(nodes=>nodes.every(node=>node.scrollWidth<=node.clientWidth+1)),true);
   await touch.getByRole('button',{name:'Ambient sound',exact:true}).tap();assert.equal(await touch.getByRole('tab',{name:'Ambience',exact:true}).count(),0);assert.equal(await touchMixer.locator('.cm-channel:visible').count(),1);await touch.getByRole('button',{name:'Ambient sound',exact:true}).tap();

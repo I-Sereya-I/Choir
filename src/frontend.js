@@ -199,7 +199,7 @@ export async function setup(ctx) {
     <div class="et-header">
       <div class="et-title-group">
         <h2>Choir</h2>
-        <span class="et-badge">Staging</span>
+        <span class="et-badge" data-et="branchBadge" hidden>Staging</span>
       </div>
       <span class="et-save-state" data-et="saveState" role="status" aria-live="polite">Settings saved per chat</span>
       <div class="et-toolbar">
@@ -438,17 +438,19 @@ export async function setup(ctx) {
   const nowPlaying=document.createElement('div');nowPlaying.className='cm-now';
   const nowText=document.createElement('div'),playbackCaption=document.createElement('span');playbackCaption.className='cm-caption';nowText.append(playbackCaption,speakerLabel);
   const activity=document.createElement('span');activity.className='cm-activity';activity.setAttribute('aria-hidden','true');activity.innerHTML='<i></i><i></i><i></i><i></i>';nowPlaying.append(nowText,activity);
-  function showVolume(input,readout,value){const percent=Math.round(Number(value)*100);readout.textContent=`${percent}%`;input.style.setProperty('--choir-level',`${percent}%`);input.setAttribute('aria-valuetext',`${percent} percent`);}
-  function makeMixerVolume(name,value,readout,onValue){
+  function showVolume(input,readout,value){const percent=Math.round(Number(value)*100);readout.textContent=`${percent}%`;input.style.setProperty('--choir-level',`${percent/Number(input.max)}%`);input.setAttribute('aria-valuetext',`${percent} percent`);}
+  function makeMixerVolume(name,value,readout,onValue,maxVolume=1){
     const root=document.createElement('div');root.className='cm-volume';
-    const range=document.createElement('input');range.type='range';range.min='0';range.max='1';range.step='0.01';range.setAttribute('aria-label',`${name} volume`);
+    const maxPercent=maxVolume*100;
+    if(maxVolume>1)root.title=`Increase above 100% if the background is too quiet (up to ${maxPercent}%).`;
+    const range=document.createElement('input');range.type='range';range.min='0';range.max=String(maxVolume);range.step='0.01';range.setAttribute('aria-label',`${name} volume`);
     const steps=document.createElement('div');steps.className='cm-volume-steps';
     const minus=document.createElement('button'),plus=document.createElement('button');minus.type=plus.type='button';minus.textContent='−';plus.textContent='+';minus.setAttribute('aria-label',`Decrease ${name} volume`);plus.setAttribute('aria-label',`Increase ${name} volume`);
-    const entry=document.createElement('div');entry.className='cm-volume-entry';const number=document.createElement('input');number.type='number';number.min='0';number.max='100';number.step='1';number.inputMode='numeric';number.setAttribute('aria-label',`${name} volume percent`);
+    const entry=document.createElement('div');entry.className='cm-volume-entry';const number=document.createElement('input');number.type='number';number.min='0';number.max=String(maxPercent);number.step='1';number.inputMode='numeric';number.setAttribute('aria-label',`${name} volume percent`);
     const unit=document.createElement('span');unit.textContent='%';unit.setAttribute('aria-hidden','true');entry.append(number,unit);steps.append(minus,entry,plus);root.append(range,steps);
-    let percent=Math.max(0,Math.min(100,Math.round(Number(value)*100)));
-    const sync=()=>{range.value=percent/100;number.value=String(percent);showVolume(range,readout,percent/100);minus.disabled=percent===0;plus.disabled=percent===100;};
-    const change=(next,save)=>{percent=Math.max(0,Math.min(100,Math.round(next)));sync();onValue(percent/100);if(save)void persistMixer();};
+    let percent=Math.max(0,Math.min(maxPercent,Math.round(Number(value)*100)));
+    const sync=()=>{range.value=percent/100;number.value=String(percent);showVolume(range,readout,percent/100);minus.disabled=percent===0;plus.disabled=percent===maxPercent;};
+    const change=(next,save)=>{percent=Math.max(0,Math.min(maxPercent,Math.round(next)));sync();onValue(percent/100);if(save)void persistMixer();};
     range.oninput=()=>change(Number(range.value)*100,false);range.onchange=()=>persistMixer();
     number.oninput=()=>{if(number.value.trim() && Number.isFinite(Number(number.value)))change(Number(number.value),true);};
     number.onblur=sync;number.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();number.blur();}};
@@ -520,8 +522,8 @@ export async function setup(ctx) {
     for(const layer of [bed,...fadingBeds])if(layer)bedVolume(layer);
   }
   // One looping ambience bed plays under speech; a replaced bed fades out while the next fades in.
-  const AMBIENCE_LEVEL=0.25,AMBIENCE_FADE_MS=1500,AMBIENCE_FILTER='duration:[10 TO 120]',fadingBeds=new Set();
-  const bedVolume=layer=>{if(layer.audio)layer.audio.volume=mixerVolume(mixerState.master*mixerState.ambience,'',{})*AMBIENCE_LEVEL*layer.level;};
+  const AMBIENCE_LEVEL=0.25,AMBIENCE_MAX_VOLUME=3,AMBIENCE_FADE_MS=1500,AMBIENCE_FILTER='duration:[10 TO 120]',fadingBeds=new Set();
+  const bedVolume=layer=>{if(layer.audio)layer.audio.volume=mixerVolume(mixerState.master*mixerState.ambience*AMBIENCE_LEVEL*layer.level,'',{});};
   function fadeBed(layer,to,done){
     clearInterval(layer.timer);const from=layer.level,start=Date.now();
     layer.timer=setInterval(()=>{const progress=Math.min(1,(Date.now()-start)/AMBIENCE_FADE_MS);layer.level=progress<1?from+(to-from)*progress:to;bedVolume(layer);if(progress===1){clearInterval(layer.timer);done?.();}},50);
@@ -618,7 +620,7 @@ export async function setup(ctx) {
       const head=doc.createElement('div');head.className='cm-channel-head';const dot=doc.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
       const label=doc.createElement('span');label.className='cm-channel-name';label.textContent=name;
       const readout=doc.createElement('span');readout.className='cm-percent';readout.setAttribute('aria-hidden','true');head.append(dot,label,readout);
-      const controls=doc.createElement('div');controls.className='cm-channel-controls';const volume=makeMixerVolume(name,mixerState[kind],readout,value=>{mixerState[kind]=value;applyVolume();});
+      const controls=doc.createElement('div');controls.className='cm-channel-controls';const volume=makeMixerVolume(name,mixerState[kind],readout,value=>{mixerState[kind]=value;applyVolume();},kind==='ambience'?AMBIENCE_MAX_VOLUME:1);
       controls.append(volume);row.append(head,controls);channelsRoot.append(row);
     }
     const rows=[...channelsRoot.querySelectorAll('.cm-channel')],keys=rows.map(row=>`${row.dataset.kind}:${row.dataset.speaker}`);
@@ -3095,5 +3097,17 @@ const paragraphAudioCache = new Map();
   };
   mixer.addEventListener('choir:replace',cleanup,{once:true});unsubs.push(()=>mixer.removeEventListener('choir:replace',cleanup));
   await run(switchChat);
+  if(disposed)return cleanup;
+  // Branch metadata is optional UI information; it must not delay startup.
+  const branchLookup=new AbortController();unsubs.push(()=>branchLookup.abort());
+  void (async()=>{
+    const timeout=setTimeout(()=>branchLookup.abort(),5000),badge=$('branchBadge');
+    try{
+      const result=await (await api('/spindle',{signal:branchLookup.signal})).json();
+      const extension=result.extensions?.find(item=>item.identifier==='choir');
+      if(!disposed)badge.hidden=extension?.metadata?.branch!=='staging';
+    }catch{/* Keep an unknown branch unlabelled without interrupting playback. */}
+    finally{clearTimeout(timeout);}
+  })();
   return cleanup;
 }

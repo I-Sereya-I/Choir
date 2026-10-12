@@ -35,6 +35,10 @@ async function harness(mixerPreferences,mobile=false){
   globalThis.Audio=FakeAudio;
   const connections=[{id:'a',name:'Narration provider',provider:'openai_tts',model:'model-a'},{id:'b',name:'Character provider',provider:'accent_tts',model:'model-b'}];
   globalThis.fetch=async(url,options={})=>{
+    if(url.endsWith('/spindle')){
+      state.branchLookups=(state.branchLookups || 0)+1;if(state.branchLookupFails)throw Error('Branch information unavailable');
+      return Response.json({extensions:[{identifier:'other-extension',metadata:{branch:'staging'}},{identifier:'choir',metadata:{branch:state.extensionBranch===undefined?'staging':state.extensionBranch}}]});
+    }
     if(url.startsWith('https://freesound.test/ambience.mp3?')){state.bedFetches.push(url);if(state.holdBeds)await new Promise(resolve=>state.releaseBed=resolve);return new Response(`AMBIENCE:${new URL(url).searchParams.get('q')}`,{headers:{'Content-Type':'audio/mpeg'}});}
     if(url==='https://freesound.test/preview.mp3'){
       state.previewFetches.push(url);
@@ -148,6 +152,19 @@ test('HTTP hosts without secure crypto APIs keep the drawer, mixer, RPC, saved p
     const ids=h.requests.filter(request=>request.action!=='cancel').map(request=>request.id);
     assert.ok(ids.length>1);assert.equal(new Set(ids).size,ids.length);for(const id of ids)assert.match(id,uuid);
   }finally{if(h)await h.close();Object.defineProperty(globalThis,'crypto',descriptor);}
+});
+
+test('the staging badge follows the installed Choir branch and unavailable branch information never breaks the drawer',async()=>{
+ const h=await harness();try{
+  await until(()=>!h.$('branchBadge').hidden);assert.equal(h.$('branchBadge').textContent,'Staging');
+  for(const branch of ['main',null,'feature-test']){
+   h.state.extensionBranch=branch;const lookups=h.state.branchLookups;await h.reload();await until(()=>h.state.branchLookups>lookups);await tick();
+   assert.equal(h.$('branchBadge').hidden,true);assert.ok(h.root.querySelector('.ensemble-tts'));
+  }
+  h.state.extensionBranch='staging';await h.reload();await until(()=>!h.$('branchBadge').hidden);
+  h.state.branchLookupFails=true;await h.reload();await tick();assert.equal(h.$('branchBadge').hidden,true);assert.ok(h.root.querySelector('.ensemble-tts'));await h.plan();
+  assert.equal(h.synthesis.length,0);
+ }finally{await h.close();}
 });
 
 test('autosave hides the manual save button and exposes a working retry only after storage failure',async()=>{
@@ -570,6 +587,29 @@ test('saved beds survive reload, replay from the recording, follow Next, Previou
   h.state.blockAudio=false;await toggle(h,'enableAmbience',false);const silent=beds(h).length;await h.play();await replay();assert.equal(beds(h).length,silent);
   await h.reload();assert.equal(h.$('enableAmbience').checked,false);assert.equal(h.store.get('chat:chat-a').enableAmbience,false);
  }finally{await h.close();}
+});
+
+test('Ambience can boost above the old volume cap on desktop and mobile, follows Master and survives cached replay',async()=>{
+ for(const mobile of [false,true]){
+  const h=await harness(undefined,mobile);try{
+   h.$('showMixer').click();
+   const find=label=>document.querySelector(`[aria-label="${label}"]`),range=()=>find('Ambience volume'),number=()=>find('Ambience volume percent');
+   const type=(label,value)=>{const input=find(label);input.value=value;input.dispatchEvent(new h.dom.window.Event('input'));};
+   assert.equal(range().max,'3');assert.equal(number().max,'300');assert.equal(number().value,'100');assert.equal(find('Master volume').max,'1');assert.equal(find('SFX volume').max,'1');
+   await configureFoley(h);h.message.content='Rain drummed on the roof. "Hello."';await h.plan();h.state.blockAudio=true;h.$('play').click();
+   await until(()=>beds(h).length===1 && beds(h)[0].volume===0.25);const rain=beds(h)[0],speech=voices(h)[0];
+   type('Ambience volume','2');assert.equal(rain.volume,0.5);assert.equal(number().value,'200');assert.equal(speech.volume,1);
+   type('Ambience volume percent','300');assert.equal(rain.volume,0.75);assert.equal(range().value,'3');assert.equal(speech.volume,1);
+   assert.equal(range().style.getPropertyValue('--choir-level'),'100%');assert.equal(range().getAttribute('aria-valuetext'),'300 percent');
+   type('Master volume percent','50');assert.equal(rain.volume,0.375);assert.equal(speech.volume,0.5);
+   type('Ambience volume percent','999');assert.equal(number().value,'300');assert.equal(rain.volume,0.375);assert.equal(find('Increase Ambience volume').disabled,true);
+   type('Ambience volume percent','295');find('Increase Ambience volume').click();assert.equal(number().value,'300');assert.equal(rain.volume,0.375);
+   await until(()=>h.store.get('ui:mixer')?.ambience===3);const generated=h.synthesis.length,searches=h.requests.filter(request=>request.action==='freesound').length;
+   h.$('stop').click();await h.reload();assert.equal(number().value,'300');assert.equal(range().value,'3');
+   h.$('play').click();await until(()=>beds(h).length===2 && beds(h)[1].volume===0.375);
+   assert.equal(voices(h).at(-1).volume,0.5);assert.equal(h.synthesis.length,generated);assert.equal(h.requests.filter(request=>request.action==='freesound').length,searches);
+  }finally{await h.close();}
+ }
 });
 
 test('Ambience slider sets bed level live without touching speech and persists after reload',async()=>{
