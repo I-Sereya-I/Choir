@@ -4,16 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.5--staging.11-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.5--staging.13-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-205%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-210%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects and ambience.
 
 </div>
 
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.12** lets the planner LLM choose sound effects and looping ambience beds in any story language, with an **Ambience** level in the mixer; lets the Decision model pick the best-matching Freesound clip; gives Jev each line in its passage; moves direct Jev keys to `/v1/systemone`; and keeps plans and audio when an edit leaves the spoken text unchanged. It retains the captured **Default setup**, **Paste voice ID** for Fish Audio, Auto-plan completion recovery, the compact **Plan latest** control beside Previous, latest-reply playback, **SFX On / Off** beside the automation toggles, and mixer channels for voices in the current plan or playback. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
+This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.13** adds **Ambience On / Off** beside SFX and the automation controls, plus a collapsible **Channel levels** menu for current voices and enabled SFX/ambience. Master stays visible, effect levels and menu state are remembered, and Ambience Off stops active or loading background beds without interrupting speech. It retains the staging.12 features: it lets the planner LLM choose sound effects and looping ambience beds in any story language, with independent **SFX** and **Ambience** levels in the mixer; lets the Decision model pick the best-matching Freesound clip; gives Jev each line in its passage; moves direct Jev keys to `/v1/systemone`; and keeps plans and audio when an edit leaves the spoken text unchanged. It retains the captured **Default setup**, **Paste voice ID** for Fish Audio, Auto-plan completion recovery, the compact **Plan latest** control beside Previous, latest-reply playback, **SFX On / Off** beside the automation toggles, and mixer channels for voices in the current plan or playback. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
 
 
 ## Overview
@@ -33,11 +33,11 @@ Choir separates narration and character dialogue from chat messages, assigns dis
 
 ### Mixer and saved settings
 
-Click the small draggable speaker icon to open the compact player. The small **Plan latest** icon beside Previous plans the latest assistant reply without starting audio. The central **Play** button plays the latest reply, planning it first when needed, and pauses or resumes active playback. Previous and Next move between spoken blocks; the playback bar seeks within the current audio part. **Voices in this reply** shows only speakers used in the current plan, saved recording, or Cue paragraph. Hidden speakers retain their saved levels, and speakers with **No voice** remain listed so you can turn them back on. **Silent** mutes playback. **No voice** skips that character's playback and new synthesis while retaining text and cached audio.
+Click the small draggable speaker icon to open the compact player. The small **Plan latest** icon beside Previous plans the latest assistant reply without starting audio. The central **Play** button plays the latest reply, planning it first when needed, and pauses or resumes active playback. Previous and Next move between spoken blocks; the playback bar seeks within the current audio part. Master stays visible above the automation and sound toggles. Expand **Channel levels** for speakers used in the current plan, saved recording, or Cue paragraph, plus SFX and Ambience when enabled. The menu starts collapsed and remembers whether you leave it open. Hidden speakers retain their saved levels, and speakers with **No voice** remain listed so you can turn them back on. **Silent** mutes playback. **No voice** skips that character's playback and new synthesis while retaining text and cached audio.
 
-The **SFX On / Off** button beside Auto-plan and Auto-play stays synchronized with **Sound effects (Foley cues)** in the drawer and saves automatically. Turning it off skips effects in Choir and Cue, including cached playback, while speech continues. SFX has no channel row; effects follow the master level at 45% of speech volume. Old SFX channel volume and mute preferences no longer override the switch.
+The **SFX On / Off** button below Auto-plan stays synchronized with **Sound effects (Foley cues)** in the drawer and saves automatically. Turning it off skips effects in Choir and Cue, including cached playback, while speech continues, and hides the SFX level. When enabled, the SFX slider in **Channel levels** adjusts effects live at up to 45% of speech volume and saves with the mixer. Old SFX voice-channel volume and mute preferences no longer override the switch.
 
-The **Ambience** slider below Master sets the level of background beds, which play at 25% of speech volume at full slider. It applies immediately in Choir and Cue, including cached playback, and saves with the mixer. To stop fetching and playing beds entirely, turn off **Ambient sound** in the drawer.
+The **Ambience On / Off** button beside SFX stays synchronized with **Ambient sound** in the drawer and saves automatically. On keeps background beds looping across Cue paragraphs until a replacement, a stop cue or Stop. Off stops active and loading beds without interrupting speech, prevents later beds from starting, and hides the Ambience level. The **Ambience** slider in **Channel levels** sets background beds at up to 25% of speech volume, applies immediately in Choir and Cue, including cached playback, and saves with the mixer.
 
 Cast and connection changes save automatically with Saving / Saved / Save failed feedback. A **Retry save** button appears only after saving fails; normal edits need no Save button. Each chat retains its cast and settings. Gemini and Jev API keys remain session-only. Saved plans and completed audio survive navigation and provider failures.
 
