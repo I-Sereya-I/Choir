@@ -1102,7 +1102,7 @@ export async function setup(ctx) {
   const messageStatuses=new Map(),messageSections=new Set(),seekControls=new Set();let messagePlaybackId=null,messageOperation=null;
   let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, planAttribution=null, planningSource=null, busy=false;
   const autoReplyQueue=new Map(),seenAutoGenerations=new Set();let autoReplyTimer=null,autoReplyActive=null;
-  let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
+  let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[], voiceIdEditorCount=0;
   const voiceCatalogues=new Map();
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
   const defaults = () => ({mode:'native',model:'gemini-3.8-flash-tts',planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:false,concurrency:1,plannerTokens:8192,
@@ -1354,16 +1354,17 @@ export async function setup(ctx) {
     try{await operation;if(inherit && chatId===targetChat && edit===settingsEdit && !pendingSettings)saveState('Saved automatically');}catch(error){if(chatId===targetChat && edit===settingsEdit)saveState('Save failed · Retry save',true);throw error;}finally{if(settingsWriteQueue===operation)settingsWriteQueue=null;}
   }
   function scheduleSettingsSave(){
-    if(disposed || !chatId || !config)return;
+    if(disposed || !chatId || !config)return false;
     const candidate=capture();
     try{
       validateNumericSettings(candidate);
       for(const name of ['chunk','plannerTokens','prefetch'])if(!$(name).value.trim())throw new Error('Enter a value for '+$(name).parentElement.firstChild.textContent.trim()+'.');
-    }catch(error){++settingsEdit;pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;saveState('Not saved · check Advanced Settings',true);status(error.message,true);return;}
+    }catch(error){++settingsEdit;pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;saveState('Not saved · check Advanced Settings',true);status(error.message,true);return false;}
     config=candidate;pendingSettings={chatId,value:structuredClone(config),edit:++settingsEdit};
     if(!config.autoPlan && !config.auto)cancelAutoReplies();
     renderMixer();
     saveState('Saving…');clearTimeout(autosaveTimer);autosaveTimer=setTimeout(()=>void flushSettings().catch(()=>{}),250);
+    return true;
   }
   async function flushSettings(){
     clearTimeout(autosaveTimer);autosaveTimer=null;
@@ -1707,11 +1708,11 @@ export async function setup(ctx) {
 
     const voiceWrap=document.createElement('div');
     const voiceSearchRow=document.createElement('div');
-    voiceSearchRow.style.cssText='display:flex;gap:4px;margin-bottom:4px';
+    voiceSearchRow.style.cssText='display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px';
     const voiceSearchInput=document.createElement('input');
     voiceSearchInput.type='text';
     voiceSearchInput.placeholder='Filter voices…';
-    voiceSearchInput.style.cssText='font-size:0.85em;padding:4px 6px;flex:1';
+    voiceSearchInput.style.cssText='font-size:0.85em;padding:4px 6px;flex:1 1 140px;min-width:0';
     voiceSearchInput.oninput=()=>{searchFilter=voiceSearchInput.value;filterVoices();};
 
     const searchCommBtn=document.createElement('button');
@@ -1741,6 +1742,51 @@ export async function setup(ctx) {
     };
     searchCommBtn.onclick=doRowSearch;
     voiceSearchInput.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();if(!searchCommBtn.hidden)doRowSearch();}};
+
+    const voiceIdBtn=document.createElement('button');
+    voiceIdBtn.type='button';voiceIdBtn.className='et-btn-subtle';voiceIdBtn.textContent='Paste voice ID';voiceIdBtn.dataset.choirVoiceId='';
+    voiceIdBtn.setAttribute('aria-expanded','false');
+    const voiceIdEditor=document.createElement('div');voiceIdEditor.hidden=true;voiceIdEditor.dataset.choirVoiceIdEditor='';
+    voiceIdEditor.id=`choir-voice-id-${++voiceIdEditorCount}`;voiceIdBtn.setAttribute('aria-controls',voiceIdEditor.id);
+    voiceIdEditor.style.cssText='margin-top:8px;display:grid;gap:6px';
+    const voiceIdInput=document.createElement('input');voiceIdInput.type='text';voiceIdInput.maxLength=200;voiceIdInput.placeholder='Fish Audio voice ID';voiceIdInput.dataset.choirVoiceIdInput='';
+    const voiceDescription=document.createElement('input');voiceDescription.type='text';voiceDescription.maxLength=600;voiceDescription.placeholder='Optional description for LLM casting';voiceDescription.dataset.choirVoiceDescription='';
+    const voiceIdHint=document.createElement('small');voiceIdHint.textContent='Paste the voice ID from Fish Audio. A description helps the LLM choose it.';
+    const voiceIdActions=document.createElement('div');voiceIdActions.style.cssText='display:flex;flex-wrap:wrap;gap:6px';
+    const applyVoiceId=document.createElement('button');applyVoiceId.type='button';applyVoiceId.className='et-btn-subtle';applyVoiceId.textContent='Use this voice';applyVoiceId.dataset.choirApplyVoiceId='';
+    const cancelVoiceId=document.createElement('button');cancelVoiceId.type='button';cancelVoiceId.className='et-btn-subtle';cancelVoiceId.textContent='Cancel';
+    const closeVoiceIdEditor=()=>{voiceIdEditor.hidden=true;voiceIdBtn.setAttribute('aria-expanded','false');};
+    voiceIdBtn.onclick=()=>{
+      if(!voiceIdEditor.hidden){closeVoiceIdEditor();return;}
+      voiceIdInput.value=voice.value;
+      voiceDescription.value=rowVoices.find(item=>item.id===voice.value)?.description || '';
+      voiceIdEditor.hidden=false;voiceIdBtn.setAttribute('aria-expanded','true');voiceIdInput.focus();voiceIdInput.select();
+    };
+    cancelVoiceId.onclick=()=>{closeVoiceIdEditor();voiceIdBtn.focus();};
+    applyVoiceId.onclick=()=>run(async()=>{
+      const id=voiceIdInput.value.trim();
+      if(!/^[A-Za-z0-9_-]{1,200}$/.test(id))throw new Error('Enter a Fish Audio voice ID using letters, numbers, hyphens or underscores.');
+      const selectedRoute=route.value || scope(config),targetChat=chatId,version=loadVersion;
+      if(detectProvider(selectedRoute)!=='fish_audio')throw new Error('Select a Fish Audio connection for this voice.');
+      const existingVoice=rowVoices.find(item=>item.id===id);
+      const description=voiceDescription.value.trim().replace(/[|\r\n]+/g,' ') || existingVoice?.description || '';
+      const lines=$('extraVoices').value.split('\n').filter(line=>line.trim() && line.split('|')[0].trim()!==id);
+      lines.push(description?`${id} | ${description}`:id);$('extraVoices').value=lines.join('\n');
+      const entry={...existingVoice,id,name:existingVoice?.name || id,description};
+      rowVoices=[...rowVoices.filter(item=>item.id!==id),entry];voiceCatalogues.set(selectedRoute,rowVoices);
+      if(selectedRoute===scope(config))voices=rowVoices;
+      if(![...voice.options].some(item=>item.value===id))option(voice,id,id);
+      voice.value=id;searchFilter='';voiceSearchInput.value='';filterVoices();
+      if(!scheduleSettingsSave())throw new Error('Voice ID could not be saved. Check Advanced Settings first.');
+      await flushSettings();
+      if(disposed || chatId!==targetChat || version!==loadVersion || !root.contains(row))return;
+      closeVoiceIdEditor();renderCast();status(`Voice ID saved for ${name.value || 'character'}. Use the preview button to test it.`);
+    });
+    voiceIdEditor.onkeydown=e=>{
+      if(e.key==='Escape'){e.preventDefault();e.stopPropagation();cancelVoiceId.click();}
+      else if(e.key==='Enter'){e.preventDefault();applyVoiceId.click();}
+    };
+    voiceIdActions.append(applyVoiceId,cancelVoiceId);voiceIdEditor.append(voiceIdInput,voiceDescription,voiceIdHint,voiceIdActions);
 
     const designRowBtn=document.createElement('button');
     designRowBtn.type='button';designRowBtn.className='et-btn-subtle';
@@ -1824,6 +1870,10 @@ export async function setup(ctx) {
     const updateCardProviderControls=()=>{
       const cardRoute=route.value || scope(config);
       const cardProvider=detectProvider(cardRoute);
+      const speaker=name.value || 'Character';
+      voiceIdBtn.hidden=cardProvider!=='fish_audio';voiceIdBtn.setAttribute('aria-label',`Paste Fish Audio voice ID for ${speaker}`);
+      voiceIdInput.setAttribute('aria-label',`Fish Audio voice ID for ${speaker}`);voiceDescription.setAttribute('aria-label',`Voice description for ${speaker}`);
+      if(voiceIdBtn.hidden)closeVoiceIdEditor();
       if(cardProvider==='fish_audio') {
         voiceSearchInput.placeholder='Filter / search Fish library…';
         searchCommBtn.hidden=false;
@@ -1854,8 +1904,8 @@ export async function setup(ctx) {
       } finally {if(!disposed && route.value===selected)voice.disabled=busy;}
     });
 
-    voiceSearchRow.append(voiceSearchInput,searchCommBtn,designRowBtn,auditionRowBtn);
-    voiceWrap.append(voiceSearchRow,voice);
+    voiceSearchRow.append(voiceSearchInput,searchCommBtn,voiceIdBtn,designRowBtn,auditionRowBtn);
+    voiceWrap.append(voiceSearchRow,voice,voiceIdEditor);
 
     for (const [label,node] of [['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Pronunciation instruction',pronunciation],['Accent preference',accent]]) {
       if(node!==route)(node===voiceWrap?voice:node).dataset.choirPersist='';
@@ -3143,9 +3193,27 @@ export async function setup(ctx) {
     if(reply.chatId!==chatId){autoReplyQueue.delete(reply.messageId);scheduleAutoReplies();return;}
     const message=ctx.messages.getRecent(200).find(item=>item.id===reply.messageId),content=ctx.messages.getContent(reply.messageId);
     if(message?.is_user || message?.extra?.is_system){autoReplyQueue.delete(reply.messageId);scheduleAutoReplies();return;}
-    // The host reconciles the message store asynchronously after GENERATION_ENDED.
-    // Same-ID regenerations must wait for the completed swipe, not use old text.
-    if(!message || typeof content!=='string' || !content.trim() || (typeof reply.content==='string' && content!==reply.content)){
+    // Completion metadata can arrive before the host reconciles its message store.
+    // Read the saved reply when the event carries only a continuation, or its text
+    // differs from the host's final message projection. Never plan a stale swipe.
+    const needsCanonical=reply.needsCanonical || message && typeof content==='string' && typeof reply.content==='string' && content!==reply.content;
+    if(needsCanonical && !reply.canonicalChecked && (!reply.canonicalAttemptAt || Date.now()-reply.canonicalAttemptAt>=1000)){
+      reply.canonicalAttemptAt=Date.now();
+      try{
+        const saved=await api(`/chats/${encodeURIComponent(reply.chatId)}/messages?limit=200&tail=true`).then(response=>response.json());
+        if(disposed || reply.chatId!==chatId || autoReplyQueue.get(reply.messageId)!==reply || (!config.autoPlan && !config.auto))return;
+        const completed=saved.data?.find(item=>item.id===reply.messageId);
+        const raw=completed?.swipes?.[completed.swipe_id] ?? completed?.content;
+        const eventMatches=typeof reply.content!=='string' || raw===reply.content ||
+          reply.generationType==='continue' && typeof raw==='string' && raw.endsWith(reply.content) ||
+          typeof raw==='string' && transcriptFromMessage(raw)===transcriptFromMessage(reply.content);
+        const swipeMatches=reply.swipeId==null || completed?.swipe_id===reply.swipeId;
+        if(completed && !completed.is_user && !completed.extra?.is_system && typeof completed.content==='string' && completed.content.trim() && eventMatches && swipeMatches){
+          reply.content=completed.content;reply.needsCanonical=false;reply.canonicalChecked=true;
+        }
+      }catch{} // The normal event/store path still works if this endpoint is unavailable.
+    }
+    if(!message || typeof content!=='string' || !content.trim() || reply.needsCanonical || (typeof reply.content==='string' && content!==reply.content)){
       if(Date.now()-reply.queuedAt>15000){autoReplyQueue.delete(reply.messageId);status('Choir could not find the completed reply in chat. Use Plan latest to retry.',true);}
       else status('Waiting for the completed reply to appear in chat…');
       scheduleAutoReplies();updateTransport();return;
@@ -3154,22 +3222,27 @@ export async function setup(ctx) {
     try{await prepare(reply.messageId,Boolean(config.auto));}
     finally{autoReplyActive=null;scheduleAutoReplies();}
   }
-  function queueAutoReply(payload){
+  function queueAutoReply(payload,needsCanonical=false){
     renderMessages();
-    if(payload?.chatId!==chatId || payload.error || !payload.messageId || !config || (!config.autoPlan && !config.auto) || disposed)return;
-    if(payload.generationType==='impersonate' || payload.impersonateDraft)return;
-    const message=ctx.messages.getRecent(200).find(item=>item.id===payload.messageId);
-    if(message?.is_user || message?.extra?.is_system)return;
+    if(payload?.chatId!==chatId || !config || disposed)return;
     const generation=payload.generationId?JSON.stringify([payload.chatId,payload.generationId]):null;
     if(generation && seenAutoGenerations.has(generation))return;
+    const remember=()=>{if(generation){seenAutoGenerations.add(generation);if(seenAutoGenerations.size>100)seenAutoGenerations.delete(seenAutoGenerations.values().next().value);}};
+    if(payload.error || !payload.messageId || (!config.autoPlan && !config.auto)){remember();return;}
+    if(payload.generationType==='impersonate' || payload.impersonateDraft){remember();return;}
+    const message=ctx.messages.getRecent(200).find(item=>item.id===payload.messageId);
+    if(message?.is_user || message?.extra?.is_system){remember();return;}
     if(autoReplyActive?.messageId===payload.messageId && autoReplyActive.content===payload.content)return;
-    if(generation){seenAutoGenerations.add(generation);if(seenAutoGenerations.size>100)seenAutoGenerations.delete(seenAutoGenerations.values().next().value);}
+    remember();
     const existing=autoReplyQueue.get(payload.messageId);
-    autoReplyQueue.set(payload.messageId,{chatId:payload.chatId,messageId:payload.messageId,content:payload.content,queuedAt:existing?.queuedAt ?? Date.now()});
+    autoReplyQueue.set(payload.messageId,{chatId:payload.chatId,messageId:payload.messageId,content:payload.content,generationType:payload.generationType,swipeId:payload.swipeId,needsCanonical:needsCanonical || payload.generationType==='continue',queuedAt:existing?.queuedAt ?? Date.now()});
     scheduleAutoReplies();updateTransport();
   }
   unsubs.push(ctx.state.subscribe('chat.messageCount',()=>{renderMessages();scheduleAutoReplies();updateTransport();}));
   unsubs.push(ctx.events.on('GENERATION_ENDED',queueAutoReply));
+  // Lumiverse sends this after successful persistence. Recover a missed terminal
+  // event, and deduplicate it with GENERATION_ENDED using the same generation ID.
+  unsubs.push(ctx.events.on('GENERATION_METRICS_READY',payload=>queueAutoReply(payload,true)));
   for(const event of ['MESSAGE_EDITED','MESSAGE_SWIPED','SWIPE_EDITED','MESSAGE_DELETED']) {
     unsubs.push(ctx.events.on(event,payload=>{
       const id=payload?.messageId || payload?.message?.id || payload?.id;
