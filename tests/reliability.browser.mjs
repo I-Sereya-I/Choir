@@ -42,6 +42,14 @@ async function harness(mixerPreferences,mobile=false){
     }
     if(url.endsWith('/tts/synthesize')){
       const input=JSON.parse(options.body);synthesis.push(input);const requestNumber=synthesis.length;
+      if(requestNumber===state.holdSynthesisAt){
+        const stopped=()=>new DOMException('Stopped','AbortError');
+        if(state.holdSynthesisBody)return new Response(new ReadableStream({start(stream){options.signal.addEventListener('abort',()=>{state.aborted++;stream.error(stopped());},{once:true});}}),{headers:{'Content-Type':'audio/mpeg'}});
+        await new Promise((resolve,reject)=>{
+          const cancel=()=>{state.aborted++;reject(stopped());};options.signal.addEventListener('abort',cancel,{once:true});
+          state.releaseSynthesis=()=>{options.signal.removeEventListener('abort',cancel);resolve();};
+        });
+      }
       if(state.synthesisError && (!state.failSynthesisAt || requestNumber===state.failSynthesisAt))return new Response(state.synthesisError.body,{status:state.synthesisError.status,headers:{'Content-Type':state.synthesisError.type || 'text/plain'}});
       if(state.allowedVoices && !state.allowedVoices[input.connectionId]?.includes(input.voice))return Response.json({error:'Invalid provider voice ID'},{status:400});
       if(state.delay)await new Promise((resolve,reject)=>{
@@ -1563,6 +1571,43 @@ test('several LLM sound effects in one passage play in story order before their 
   assert.deepEqual(order,['speech','sfx','speech','sfx','speech']);
   assert.deepEqual(h.synthesis.map(request=>request.text),['The','page snapped as the','glass shattered on the floor.']);
  }finally{await h.close();}
+});
+
+test('a cached or fresh SFX cannot hide the speech request waiting after it under parallel prefetch',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);h.message.content='The page snapped under her thumb. "Hello." The light faded.';
+  h.$('concurrency').value='3';h.$('prefetch').value='3';h.$('chunk').value='6000';await h.plan();
+  for(const cached of [false,true]){
+   if(cached){h.connections[0].default_parameters={speed:1.2};await h.reload();}
+   const start=h.audios.length;h.state.holdSynthesisAt=h.synthesis.length+2;h.$('play').click();
+   await until(()=>h.audios.length===start+2 && h.audios.at(-1).paused && h.state.releaseSynthesis);
+   assert.match(h.$('status').textContent,/Synthesizing 3\/5: Narrator/);
+   assert.doesNotMatch(h.$('status').textContent,/SFX/);
+   h.state.releaseSynthesis();h.state.releaseSynthesis=null;h.state.holdSynthesisAt=null;
+   await until(()=>h.$('status').textContent.includes('Playback finished'));
+   assert.equal(h.audios.length,start+5);assert.equal(h.state.previewFetches.length,1);
+  }
+ }finally{await h.close();}
+});
+
+test('native speech times out during headers or audio download, reports the speaker, and retry retains completed audio',async()=>{
+ const actualSetTimeout=globalThis.setTimeout;
+ for(const body of [false,true]){
+  const h=await harness();try{
+   await configureFoley(h);h.message.content='The page snapped under her thumb. "Hello." The light faded.';
+   h.$('concurrency').value='3';h.$('prefetch').value='3';await h.plan();
+   h.state.holdSynthesisAt=2;h.state.holdSynthesisBody=body;
+   globalThis.setTimeout=(fn,delay,...args)=>actualSetTimeout(fn,delay===185000?80:delay,...args);
+   h.$('play').click();await until(()=>h.$('status').textContent.includes('timed out'));
+   globalThis.setTimeout=actualSetTimeout;
+   assert.match(h.$('status').textContent,/GPT TTS speech failed for Narrator/);
+   assert.match(h.$('status').textContent,/model model-a; voice n/);
+   assert.match(h.$('status').textContent,/Completed passages were retained/);assert.equal(h.state.aborted,1);
+   assert.equal(h.$('play').disabled,false);assert.ok(h.audios.every(audio=>audio.paused));
+   const requests=h.synthesis.length;h.state.holdSynthesisAt=null;await h.play();
+   assert.equal(h.synthesis.length,requests+1);assert.equal(h.state.previewFetches.length,1);
+  }finally{globalThis.setTimeout=actualSetTimeout;await h.close();}
+ }
 });
 
 test('edits that only add images or trackers keep the plan, playback and saved audio; spoken edits still replan',async()=>{
