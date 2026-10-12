@@ -637,14 +637,14 @@ test('detects Fish Audio vs Gemini/Vertex provider and dynamically adapts UI con
   $('mode').dispatchEvent(new dom.window.Event('change'));
   $('connection').value = 'conn-fish';
   $('connection').dispatchEvent(new dom.window.Event('change'));
-  await until(() => $('batchGeminiWrap').hidden && $('fixed')?.querySelector('input[placeholder*="Fish"]'));
+  await until(() => $('batchGeminiWrap').hidden && $('fixed')?.querySelector('input[placeholder="Filter / search Fish library…"]'));
   
   assert.equal($('batchGeminiWrap').hidden, true, 'Batch Gemini turns should be hidden when Fish Audio connection is selected');
   assert.equal($('voiceDesignBox').hidden, true, 'Gemini voice design should be hidden when Fish Audio connection is selected');
   
   // Verify character card controls adapted to Fish Audio
   const firstCard = $('fixed').querySelector('.et-card');
-  const searchInput = firstCard.querySelector('input[placeholder*="Fish"]');
+  const searchInput = firstCard.querySelector('input[placeholder="Filter / search Fish library…"]');
   assert.ok(searchInput, 'Character card input placeholder should mention Fish library');
   const searchBtn = firstCard.querySelector('button[title*="Fish"]');
   assert.ok(searchBtn && !searchBtn.hidden, 'Search button should be visible for Fish Audio');

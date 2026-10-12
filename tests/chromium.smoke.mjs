@@ -21,7 +21,7 @@ const realFetch=window.fetch;window.fetch=async(url,options={})=>{
  if(url.includes('/providers'))return Response.json({providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}}]});
  if(url.endsWith('/voices'))return Response.json({voices:['n','y','m'].map(id=>({id,name:id}))});
  if(url.includes('/connections?'))return Response.json({data:[{id:'planner',name:'Planner',provider:'test',model:'text-model'}]});
- return Response.json({data:[{id:'a',name:'Narration',provider:'openai_tts',model:'model-a'},{id:'b',name:'Characters',provider:'openai_tts',model:'model-b'}]});
+ return Response.json({data:[{id:'a',name:'Narration',provider:'openai_tts',model:'model-a'},{id:'b',name:'Characters',provider:'openai_tts',model:'model-b'},{id:'c',name:'Fish Audio',provider:'fish_audio',model:'s2.1-pro'}]});
 };
 const ctx={settings:{get:async key=>structuredClone(store.get(key)??null),set:async(key,value)=>store.set(key,structuredClone(value))},messages:{getRecent:()=>[message],getContent:()=>message.content},state:{subscribe:()=>()=>{}},events:{on:(event,handler)=>{events.set(event,handler);return()=>events.delete(event);}},getActiveChat:()=>({chatId:'fixture'}),characters:{get:async()=>({name:'Mira'})},dom:{addStyle:css=>{const style=document.createElement('style');style.textContent=css;document.head.append(style);return()=>style.remove();}},ui:{mount:point=>point==='chat_actions'?document.getElementById('chat-actions'):undefined,registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:()=>({onClick(){},destroy(){}}),registerDomDecorator:options=>options.render(footer,{messageId:'reply'})},onBackendMessage:fn=>{backend=fn;return()=>backend=null;},sendToBackend:request=>{if(request.action==='cancel')return;if(request.action==='plan')window.plans++;setTimeout(()=>{let result;if(request.action==='ping')result={ready:true};else if(request.action==='freesound'){window.foleySearches++;result={results:[{id:123,previewUrl:'/fixture-sfx.wav'}]};}else if(request.action==='plan')result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>{const actor=unit.kind==='dialogue'?(store.get('chat:fixture').fixed.find(actor=>unit.text.includes(actor.speaker+' speaks.')) || {speaker:'Mira',voice:'m'}):{speaker:'Narrator',voice:'n'};return {speaker:actor.speaker,text:unit.text,voice:actor.voice,style:''};})},request.input.transcript,request.input.config);backend({namespace:'choir',id:request.id,result});},10);}};
 window.fixtureMessage=message;window.fixtureStore=store;window.fixtureEvents=events;window.mountChoir=()=>setup(ctx);window.cleanup=await window.mountChoir();window.ready=true;
@@ -203,6 +203,23 @@ try{
     await page.evaluate(payload=>window.fixtureEvents.get('GENERATION_ENDED')(payload),event);await page.waitForTimeout(150);assert.equal(await page.evaluate(()=>window.plans),start.plans+1);assert.equal(await page.evaluate(()=>window.audios.length),start.audios+(mode==='auto-play'?1:0));
     await (mode==='auto-plan'?autoPlanSwitch:autoPlaySwitch).click();
   }
+  await cast.getByRole('button',{name:'Edit Mira',exact:true}).click();
+  const fishCard=cast.locator('.et-card').nth(2);await fishCard.locator('[data-choir-route]').selectOption('native:c');
+  await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Speaker TTS connection selected'));
+  await fishCard.getByRole('button',{name:'Paste Fish Audio voice ID for Mira',exact:true}).click();
+  const voiceId='0123456789abcdef0123456789abcdef';await fishCard.getByRole('textbox',{name:'Fish Audio voice ID for Mira',exact:true}).fill(voiceId);
+  await fishCard.getByRole('textbox',{name:'Voice description for Mira',exact:true}).fill('A warm Irish storyteller.');
+  const synthesisBeforeId=await page.evaluate(()=>window.calls.length);await fishCard.getByRole('button',{name:'Use this voice',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Voice ID saved'));
+  assert.equal(await page.evaluate(()=>window.calls.length),synthesisBeforeId);assert.equal(await fishCard.locator('[data-choir-voice]').inputValue(),voiceId);
+  await cast.getByRole('button',{name:'Edit Mira',exact:true}).click();await fishCard.locator('[data-choir-preview]').click();
+  await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent==='Audition finished.');
+  assert.deepEqual(await page.evaluate(()=>({voice:window.calls.at(-1).voice,connection:window.calls.at(-1).connectionId})),{voice:voiceId,connection:'c'});
+  await fishCard.getByRole('button',{name:'Paste Fish Audio voice ID for Mira',exact:true}).click();
+  await page.locator('main').evaluate(node=>node.style.width='280px');
+  assert.equal(await fishCard.locator('[data-choir-voice-id-editor]').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
+  const fieldBounds=await fishCard.locator('[data-choir-voice-id-input]').boundingBox();const fishBounds=await fishCard.boundingBox();assert.ok(fieldBounds.x+fieldBounds.width<=fishBounds.x+fishBounds.width+1);
+  if(process.env.CHOIR_VOICE_ID_SCREENSHOT)await fishCard.screenshot({path:process.env.CHOIR_VOICE_ID_SCREENSHOT});
   await page.evaluate(()=>window.cleanup());assert.equal(await page.locator('[data-choir-mixer]').count(),0);
   const touch=await browser.newPage({viewport:{width:320,height:640},isMobile:true,hasTouch:true});touch.on('pageerror',error=>errors.push(error.message));await touch.goto(`http://127.0.0.1:${server.address().port}`);await touch.waitForFunction(()=>window.ready);await touch.getByRole('button',{name:'Open Choir voice mixer',exact:true}).tap();
   const targets=await touch.locator('.cm-transport button').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {x:rect.x,width:rect.width,height:rect.height};}));assert.equal(targets.length,5);assert.ok(targets.every((rect,index)=>rect.width>=44 && rect.height>=44 && (!index || rect.x>=targets[index-1].x+targets[index-1].width)));

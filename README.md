@@ -4,16 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/main)
+[![Version](https://img.shields.io/badge/version-1.1.5--staging.10-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-181%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-185%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, and sound effects.
 
 </div>
 
-Version **1.1.6** shows the **STAGING** badge only when Choir is installed from the **staging** branch. It hides the badge on **main** and checks branch information without delaying startup or playback. This release uses the original `choir` identifier and existing settings. Use **main** for the stable version and **staging** to test new features before release.
+This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.10** adds **Paste voice ID** beside each Fish Audio voice selector, with an optional description for LLM casting and a saved selection that can be previewed or reused after reload. Auto-plan and Auto-play recover missed completion events through Lumiverse's completion metadata and verify the saved reply before planning continuations or normalized messages. It retains the compact **Plan latest** control beside Previous, latest-reply playback, **SFX On / Off** beside the automation toggles, and mixer channels for voices in the current plan or playback. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
 
 
 ## Overview
@@ -56,7 +56,7 @@ Choir also applies limits per voice route: Fish Audio uses up to the 10,000-char
 ### From GitHub
 
 1. In Lumiverse, open **Extensions -> Add -> Install from source**.
-2. Enter `https://github.com/patatasbravasch-arch/Choir` and select the `main` branch.
+2. Enter `https://github.com/patatasbravasch-arch/Choir` and select the `staging` branch.
 3. Enable **Choir** in your extension list.
 
 ### Local copy
@@ -96,6 +96,8 @@ Open **Choir** from the drawer or its input-bar action.
 1. Select **Lumiverse TTS** under default TTS connection.
 2. Choose any saved connection on your host, including OpenAI, Fish Audio, ElevenLabs, or local servers.
 3. Set the style handling parameter supported by your model, such as `instructions`, `instruct`, or `prompt`.
+
+For a Fish Audio speaker, open its cast editor and click **Paste voice ID** beside the voice selector. Paste the ID, optionally describe its timbre, age, accent or delivery, then click **Use this voice**. Choir saves and selects it without generating speech. Use the small preview button to audition it through that speaker's Fish connection. Opening the ID editor also shows the currently selected ID. The Advanced Settings catalogue remains available for bulk entries in `ID | description` format. A valid ID does not resolve provider or gateway failures by itself.
 
 ### Foley sound effects
 

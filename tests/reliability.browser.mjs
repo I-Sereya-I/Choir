@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
 import {IDBFactory} from 'fake-indexeddb';
 import {setup} from '../dist/frontend.js';
-import {validatePlan,speechSourceUnits,planningSections} from '../src/core.js';
+import {validatePlan,speechSourceUnits,planningSections,transcriptFromMessage} from '../src/core.js';
 
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 const until=async(predicate)=>{for(let i=0;i<250;i++){if(predicate())return;await tick();}throw Error('Timed out waiting for regression state');};
@@ -49,6 +49,7 @@ async function harness(mixerPreferences){
     let value;
     if(url.includes('/providers'))value={providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}},{id:'accent_tts',capabilities:{parameters:{instructions:{type:'string'},accent:{enum:['Irish','French']}}}}]};
     else if(url.endsWith('/voices')){if(state.failCatalogue)throw Error('Voice catalogue unavailable');value={voices:['n','y','m','g','new'].map(id=>({id,name:id,description:id==='m'?'A mature, husky Irish voice.':'A light, youthful voice.'}))};}
+    else if(url.includes('/chats/') && url.includes('/messages?'))value={data:state.savedMessages || []};
     else if(url.includes('/personas/'))value=state.persona;
     else if(url.includes('/decision-connections?'))value={data:[{id:'decision-a',name:'Decision A',provider:'typesafe',model:'jev'},{id:'decision-b',name:'Decision B',provider:'typesafe',model:'jev'}]};
     else if(url.includes('/connections?'))value={data:[{id:'planner',name:'Planner',model:'text-model'}]};
@@ -121,6 +122,44 @@ test('autosave hides the manual save button and exposes a working retry only aft
 
 const configureFoley=async(h,key='test-freesound-key')=>{h.$('freesoundApiKey').value=key;h.$('freesoundApiKey').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');};
 const playedFoley=async h=>(await Promise.all(h.audioBlobs.map(blob=>blob.text()))).filter(text=>text==='FREESOUND_PREVIEW').length;
+
+test('Fish voice IDs can be assigned, described, auditioned and restored in both connection modes',async()=>{
+ for(const mode of ['one','several']){
+  const h=await harness();try{
+   const connection=mode==='one'?h.connections[0]:h.connections[1];connection.provider='fish_audio';await h.reload();
+   h.$('connectionMode').value=mode;h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));
+   await until(()=>h.$('saveState').textContent==='Settings saved');
+   let card=()=>h.$('fixed').children[2];
+   if(mode==='several'){
+    const route=card().querySelector('[data-choir-route]');route.value='native:b';route.dispatchEvent(new h.dom.window.Event('change'));
+    await until(()=>h.$('status').textContent.includes('Speaker TTS connection selected'));
+   }
+   const voice=card().querySelector('[data-choir-voice]');voice.value='m';voice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+   await until(()=>h.$('saveState').textContent==='Saved automatically');
+   const before=h.store.get('chat:chat-a');card().querySelector('[data-choir-voice-id]').click();
+   assert.equal(card().querySelector('[data-choir-voice-id-input]').value,'m');
+   card().querySelector('[data-choir-voice-id-input]').value='not | a voice ID';card().querySelector('[data-choir-apply-voice-id]').click();
+   await until(()=>h.$('status').textContent.includes('Enter a Fish Audio voice ID'));assert.deepEqual(h.store.get('chat:chat-a'),before);
+   const id='0123456789abcdef0123456789abcdef',description='A warm, deep Irish male voice.';
+   card().querySelector('[data-choir-voice-id-input]').value=` ${id} `;card().querySelector('[data-choir-voice-description]').value=description;
+   card().querySelector('[data-choir-apply-voice-id]').click();await until(()=>h.$('status').textContent.startsWith('Voice ID saved'));
+   assert.equal(card().querySelector('[data-choir-voice]').value,id);assert.equal(h.synthesis.length,0);
+   const saved=h.store.get('chat:chat-a');assert.equal(mode==='one'?saved.singleVoices['native:a'].Mira:saved.fixed[2].voice,id);
+   assert.equal(saved.extraVoices,`${id} | ${description}`);
+   card().querySelector('[data-choir-preview]').click();await until(()=>h.$('status').textContent==='Audition finished.');
+   assert.equal(h.synthesis[0].voice,id);assert.equal(h.synthesis[0].connectionId,connection.id);
+   card().querySelector('[data-choir-voice-id]').click();assert.equal(card().querySelector('[data-choir-voice-id-input]').value,id);
+   card().querySelector('[data-choir-voice-description]').value='A calm Irish storyteller.';card().querySelector('[data-choir-apply-voice-id]').click();
+   await until(()=>h.$('status').textContent.startsWith('Voice ID saved'));
+   assert.equal(h.store.get('chat:chat-a').extraVoices,`${id} | A calm Irish storyteller.`);
+   await h.reload();assert.equal(card().querySelector('[data-choir-voice]').value,id);
+   await h.plan();const casting=h.requests.filter(request=>request.action==='plan').at(-1).input.config;
+   assert.equal(casting.fixed.find(actor=>actor.speaker==='Mira').voice,id);
+   assert.equal(casting.voices.find(item=>item.id===id && item.route===`native:${connection.id}`).description,'A calm Irish storyteller.');
+   if(mode==='several')assert.equal(h.$('fixed').children[0].querySelector('[data-choir-voice-id]').hidden,true);
+  }finally{await h.close();}
+ }
+});
 
 test('Choir chat plays Freesound preview audio at the cue, preserves speech, caches it across reload and honors the SFX toggle',async()=>{
  const h=await harness();try{
@@ -286,6 +325,63 @@ test('Auto-plan toolbar visibility and mixer state stay synchronized through rel
     await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(h.toolbarActions.has('choir_auto_plan'),false);
     assert.equal(h.toolbar.childElementCount,0);h.$('showAutoPlanAction').checked=true;h.$('showAutoPlanAction').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.toolbar.childElementCount,1);
   }finally{await h.close();assert.equal(h.toolbarActions.size,0);assert.equal(h.toolbar.childElementCount,0);}
+});
+
+test('automatic planning recovers missed completion events and waits for the saved swipe before planning',async()=>{
+ for(const playing of [false,true]){
+  const h=await harness();try{
+   h.$(playing?'auto-play':'auto-plan').click();
+   const original=h.message.content,completed='The saved reply arrived. "Hello."';
+   h.state.savedMessages=[{...h.message,content:completed,swipes:[original,completed],swipe_id:1}];
+   const event={generationId:'metrics-fallback',chatId:'chat-a',messageId:h.message.id,swipeId:1};
+   h.events.get('GENERATION_METRICS_READY')(event);await until(()=>h.$('status').textContent.includes('Waiting for the completed reply'));
+   assert.equal(h.requests.filter(request=>request.action==='plan').length,0);assert.equal(h.synthesis.length,0);
+   h.message.content=completed;h.message.swipe_id=1;
+   await until(()=>h.$('status').textContent.includes(playing?'Playback finished':'Ready:') && !h.$('latest').disabled);
+   assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+   h.events.get('GENERATION_METRICS_READY')(event);h.events.get('GENERATION_ENDED')({...event,content:completed});await tick();
+   assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+   assert.equal(h.synthesis.length,playing?2:0);
+  }finally{await h.close();}
+ }
+});
+
+test('automatic planning uses the full saved continuation and preserves final message normalization',async()=>{
+ for(const generationType of ['continue','normal']){
+  const h=await harness();try{
+   h.$('auto-plan').click();const appended=' Then she smiled.',raw=generationType==='continue'?h.message.content+appended:'A saved reply. "Hello."';
+   const completed=`${raw}\n`;
+   h.state.savedMessages=[{...h.message,content:completed,swipes:[raw],swipe_id:0}];
+   h.events.get('GENERATION_ENDED')({generationId:`canonical-${generationType}`,chatId:'chat-a',messageId:h.message.id,content:generationType==='continue'?appended:raw,generationType});
+   if(generationType==='continue')h.message.content=appended; // A transient store projection must not plan just the suffix.
+   await until(()=>h.$('status').textContent.includes('Waiting for the completed reply'));assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+   h.message.content=completed;await until(()=>h.$('status').textContent.startsWith('Ready:') && !h.$('latest').disabled);
+   assert.equal(h.requests.filter(request=>request.action==='plan').at(-1).input.transcript,transcriptFromMessage(completed));assert.equal(h.synthesis.length,0);
+  }finally{await h.close();}
+ }
+});
+
+test('completion recovery respects swipe selection, disabling automation and navigation',async()=>{
+ for(const cancel of ['swipe','off','chat']){
+  const h=await harness();try{
+   h.$('auto-plan').click();const completed='A different saved reply.';
+   h.state.savedMessages=[{...h.message,content:completed,swipes:[h.message.content,completed],swipe_id:cancel==='swipe'?0:1}];
+   const event={generationId:`cancel-${cancel}`,chatId:'chat-a',messageId:h.message.id,swipeId:1};
+   h.events.get('GENERATION_METRICS_READY')(event);await until(()=>h.$('status').textContent.includes('Waiting for the completed reply'));
+   if(cancel==='off')h.$('auto-plan').click();
+   if(cancel==='chat'){h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Connection preferences restored');}
+   h.message.content=completed;await new Promise(resolve=>setTimeout(resolve,250));assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+  }finally{await h.close();}
+ }
+});
+
+test('late completion metadata cannot automate a generation that finished with automation off',async()=>{
+ const h=await harness();try{
+  const event={generationId:'finished-while-off',chatId:'chat-a',messageId:h.message.id};
+  h.events.get('GENERATION_ENDED')({...event,content:h.message.content});h.$('auto-plan').click();
+  h.state.savedMessages=[{...h.message,swipes:[h.message.content],swipe_id:0}];h.events.get('GENERATION_METRICS_READY')({...event,swipeId:0});
+  await new Promise(resolve=>setTimeout(resolve,200));assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+ }finally{await h.close();}
 });
 
 test('automatic planning ignores unsuitable events and duplicate events during a pending plan',async()=>{
