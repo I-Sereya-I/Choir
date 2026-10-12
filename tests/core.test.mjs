@@ -1,6 +1,26 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {randomUuid,sha256Hex} from '../src/core.js';
 import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
+
+test('HTTP UUID fallback uses secure random bytes, preserves v4 bits and generates distinct IDs',()=>{
+  const httpCrypto={getRandomValues:globalThis.crypto.getRandomValues.bind(globalThis.crypto)};
+  const ids=Array.from({length:1000},()=>randomUuid(httpCrypto));assert.equal(new Set(ids).size,1000);
+  for(const id of ids)assert.match(id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(randomUuid({getRandomValues:bytes=>bytes.fill(255)}),'ffffffff-ffff-4fff-bfff-ffffffffffff');
+  const secureCrypto={randomUUID(){assert.equal(this,secureCrypto);return 'native-id';}};
+  assert.equal(randomUuid(secureCrypto),'native-id');
+});
+
+test('HTTP SHA-256 fallback preserves native saved-plan keys for UTF-8 and block boundaries',async()=>{
+  const values=['','abc',JSON.stringify(['chat-a','message-a']),JSON.stringify(['チャット🙂','réponse/雨']), '\ud800'];
+  for(const length of [55,56,63,64,65,119,120,127,128,129,10000])values.push('a'.repeat(length));
+  for(const value of values){
+    const expected=createHash('sha256').update(value).digest('hex');
+    assert.equal(await sha256Hex(value,{}),expected);assert.equal(await sha256Hex(value),expected);
+  }
+});
 
 test('API errors preserve provider details across Lumiverse and gateway response formats',()=>{
   for(const body of [{error:'Fish quota exhausted'},{error:{message:'Fish quota exhausted'}},{detail:'Fish quota exhausted'},{message:'Fish quota exhausted'},'Fish quota exhausted']){

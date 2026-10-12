@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {JSDOM} from 'jsdom';
 import {IDBFactory} from 'fake-indexeddb';
 import {setup} from '../dist/frontend.js';
@@ -139,6 +140,31 @@ test('the staging badge follows the installed Choir branch and unavailable branc
   h.state.branchLookupFails=true;await h.reload();await tick();assert.equal(h.$('branchBadge').hidden,true);assert.ok(h.root.querySelector('.ensemble-tts'));await h.plan();
   assert.equal(h.synthesis.length,0);
  }finally{await h.close();}
+});
+
+test('HTTP hosts without secure crypto APIs keep the drawer, mixer, RPC, saved plans and cached replay working',async()=>{
+  const descriptor=Object.getOwnPropertyDescriptor(globalThis,'crypto'),nativeCrypto=globalThis.crypto;
+  Object.defineProperty(globalThis,'crypto',{configurable:true,value:{getRandomValues:nativeCrypto.getRandomValues.bind(nativeCrypto)}});
+  let h;
+  try{
+    h=await harness({enabled:true});
+    const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    const namespace=h.store.get('audio:namespace');assert.match(namespace,uuid);
+    assert.ok(h.root.querySelector('.ensemble-tts'));assert.equal(h.dom.window.document.querySelectorAll('[data-choir-mixer]').length,1);
+    await h.plan();await h.play();
+    const expectedKey='plan:'+createHash('sha256').update(JSON.stringify(['chat-a',h.message.id])).digest('hex');
+    assert.ok(h.store.has(expectedKey));assert.ok(h.synthesis.length>0);
+    const plans=h.requests.filter(request=>request.action==='plan').length,synthesis=h.synthesis.length;
+    for(const cryptoApi of [nativeCrypto,{getRandomValues:nativeCrypto.getRandomValues.bind(nativeCrypto)}]){
+      Object.defineProperty(globalThis,'crypto',{configurable:true,value:cryptoApi});
+      await h.reload();await h.play();
+      assert.equal(h.requests.filter(request=>request.action==='plan').length,plans);
+      assert.equal(h.synthesis.length,synthesis);assert.equal(h.store.get('audio:namespace'),namespace);
+    }
+    assert.ok(h.root.querySelector('.ensemble-tts'));assert.equal(h.dom.window.document.querySelectorAll('[data-choir-mixer]').length,1);
+    const ids=h.requests.filter(request=>request.action!=='cancel').map(request=>request.id);
+    assert.ok(ids.length>1);assert.equal(new Set(ids).size,ids.length);for(const id of ids)assert.match(id,uuid);
+  }finally{if(h)await h.close();Object.defineProperty(globalThis,'crypto',descriptor);}
 });
 
 test('autosave hides the manual save button and exposes a working retry only after storage failure',async()=>{
