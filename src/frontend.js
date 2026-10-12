@@ -879,16 +879,22 @@ export async function setup(ctx) {
     return response;
   }
   async function nativeSpeech(connection,{voice,text,parameters},signal,speaker='Voice'){
+    if(signal?.aborted)throw abortError();
+    const request=new AbortController();let timedOut=false;
+    const cancel=()=>request.abort();signal?.addEventListener('abort',cancel,{once:true});
+    // Bound both the relay response and its audio download; do not retry paid requests automatically.
+    const timeout=setTimeout(()=>{timedOut=true;request.abort();},185000);
     try{
       const response=await api('/tts/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({connectionId:connection.id,model:connection.model,voice,text,parameters}),signal});
+        body:JSON.stringify({connectionId:connection.id,model:connection.model,voice,text,parameters}),signal:request.signal});
       return await response.blob();
     }catch(error){
-      if(error.name==='AbortError' || signal?.aborted)throw error;
+      if(signal?.aborted || error.name==='AbortError' && !timedOut)throw error;
+      if(timedOut)error=new Error('TTS request timed out after 185 seconds. Try a smaller Max characters per request or check the Lumiverse relay.');
       const provider=nativeProviders.find(item=>item.id===connection.provider);
       const label=provider?.displayName || (connection.provider==='fish_audio'?'Fish Audio':connection.provider==='openai_tts'?'GPT TTS':connection.provider || 'TTS');
       throw new Error(`${label} speech failed for ${speaker} (${connection.name || connection.id}; model ${connection.model || 'default'}; voice ${voice || 'default'}): ${error.message}`);
-    }
+    }finally{clearTimeout(timeout);signal?.removeEventListener('abort',cancel);}
   }
   function option(select,value,label) {const node=document.createElement('option');node.value=value;node.textContent=label;select.append(node);}
   let previewAudio = null;
@@ -2139,6 +2145,8 @@ export async function setup(ctx) {
     const warnFoley=error=>{warnings.add(error.message);if(token===revision)showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
     const ready=new Map();
     const resolvers=new Map();
+    const synthesisStages=new Map();
+    const synthesisStatus=(index,message)=>{synthesisStages.set(index,message);if(token===revision && index===playIdx && !currentAudio)status(message);};
     let nextToSynthesize=0;
     let activeWorkers=0;
     let isDoneAdding=false;
@@ -2202,13 +2210,13 @@ export async function setup(ctx) {
           try {
             const seg=segments[idx];
             if(ctrl.signal.aborted)throw abortError();
-            status(`Synthesizing ${idx+1}/${totalExpected || segments.length}: ${seg.speaker} · ${seg.voice}`);
+            synthesisStatus(idx,`Synthesizing ${idx+1}/${totalExpected || segments.length}: ${seg.speaker} · ${seg.voice}`);
             const request=synthesisSettings(seg,snapshot),key=cacheKey(seg,snapshot);
             let blob=passages[key];
             if(!blob && inflight.has(key))blob=await inflight.get(key);
             if(!blob){flightKey=key;const promise=new Promise((resolve,reject)=>{resolveFlight=resolve;rejectFlight=reject;});promise.catch(()=>{});inflight.set(key,promise);}
             if(blob) {
-              status(`Replaying ${idx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
+              synthesisStatus(idx,`Loading cached audio ${idx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
             } else if(seg.kind==='sfx') {
               blob=await fetchFoleyAudio(seg,snapshot,ctrl.signal);
             } else if((seg.route || scope(snapshot))==='gemini') {
@@ -2269,6 +2277,7 @@ export async function setup(ctx) {
         }
         if(playbackExcluded(segments[playIdx]) || segments[playIdx].kind==='ambience'){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
         ensureSlot(playIdx);pump();
+        status(synthesisStages.get(playIdx) || `Waiting for audio ${playIdx+1}/${totalExpected || segments.length}: ${segments[playIdx].speaker}`);updateTransport();
         const outcome=await Promise.race([ready.get(playIdx),new Promise(resolve=>{wakePolicy=resolve;})]);wakePolicy=null;
         if(outcome.policy)continue;
         if(token!==revision || ctrl.signal.aborted)throw abortError();

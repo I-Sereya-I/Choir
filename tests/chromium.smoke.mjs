@@ -19,7 +19,7 @@ const realFetch=window.fetch;window.fetch=async(url,options={})=>{
  if(url==='/fixture-ambience.wav'){window.bedDownloads=(window.bedDownloads||0)+1;return new Response(wav(0.06),{headers:{'Content-Type':'audio/wav'}});}
  if(url==='/fixture-sfx.wav'){window.foleyDownloads++;return new Response(wav(0.06),{headers:{'Content-Type':'audio/wav'}});}
  if(!String(url).startsWith('/api/v1'))return realFetch(url,options);
- if(url.endsWith('/tts/synthesize')){const input=JSON.parse(options.body);window.calls.push(input);if(window.ttsError)return Response.json({error:window.ttsError},{status:502});return new Response(wav(input.voice==='m'?0.4:0.06),{headers:{'Content-Type':'audio/wav'}});}
+ if(url.endsWith('/tts/synthesize')){const input=JSON.parse(options.body);window.calls.push(input);if(window.ttsError)return Response.json({error:window.ttsError},{status:502});if(window.holdSpeechText && input.text.includes(window.holdSpeechText))await new Promise((resolve,reject)=>{const cancel=()=>reject(new DOMException('Stopped','AbortError'));options.signal.addEventListener('abort',cancel,{once:true});window.releaseSpeech=()=>{options.signal.removeEventListener('abort',cancel);resolve();};});return new Response(wav(input.voice==='m'?0.4:0.06),{headers:{'Content-Type':'audio/wav'}});}
  if(url.includes('/providers'))return Response.json({providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}}]});
  if(url.endsWith('/voices'))return Response.json({voices:['n','y','m'].map(id=>({id,name:id}))});
  if(url.includes('/connections?'))return Response.json({data:[{id:'planner',name:'Planner',provider:'test',model:'text-model'}]});
@@ -203,6 +203,20 @@ try{
   await sfxSetting.check();assert.equal(await sfxSwitch.innerText(),'SFX On');
   const companion=await page.evaluate(()=>window.__CHOIR_API__.playParagraph({text:window.fixtureMessage.content}));assert.equal(companion.played,3);
   assert.equal(await page.evaluate(()=>window.foleySearches),1);assert.equal(await page.evaluate(()=>window.foleyDownloads),1);assert.equal(await page.locator('[data-et="sfxStatus"]').isVisible(),false);
+  await page.getByText('Advanced Settings',{exact:true}).click();
+  await page.locator('[data-et="concurrency"]').selectOption('3');await page.locator('[data-et="prefetch"]').fill('3');await page.locator('[data-et="chunk"]').fill('6000');
+  await page.getByText('Advanced Settings',{exact:true}).click();
+  await page.evaluate(()=>{window.fixtureMessage.content='Night fell. Rain drummed on the roof. The page snapped beside the open window. "Welcome." The lamps dimmed.';window.holdSpeechText='page snapped beside';});
+  await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+  const sfxStart=await page.evaluate(()=>window.audios.length);await page.locator('[data-choir-action="playback"]').click();
+  await page.waitForFunction(start=>window.releaseSpeech && window.audios.slice(start).filter(audio=>!audio.loop).length>=4 && window.audios.filter(audio=>!audio.loop).at(-1).ended,sfxStart);
+  assert.match(await page.locator('[data-et="status"]').innerText(),/Synthesizing \d+\/\d+: Narrator/);
+  assert.equal(await mixer.getAttribute('data-play-state'),'loading');assert.equal(await drawerStop.isEnabled(),true);
+  await page.evaluate(()=>{window.holdSpeechText='';window.releaseSpeech();window.releaseSpeech=null;});
+  await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
+  assert.equal(await page.evaluate(()=>window.calls.at(-1).text),'The lamps dimmed.');assert.equal(await page.evaluate(()=>window.foleyDownloads),1);
+  await page.waitForFunction(()=>window.audios.filter(audio=>audio.loop).every(audio=>audio.paused));
+  await page.evaluate(()=>window.fixtureMessage.content='The page snapped under her thumb.');
   await sfxSwitch.click();assert.equal(await sfxSetting.isChecked(),false);const noEffects=await page.evaluate(()=>window.__CHOIR_API__.playParagraph({text:window.fixtureMessage.content}));assert.equal(noEffects.played,1);assert.equal(await page.evaluate(()=>window.foleyDownloads),1);
   await page.evaluate(()=>window.fixtureMessage.content='Night fell. Rain drummed on the roof. The room stayed quiet.');
   await page.locator('[data-et="enableAmbience"]').check();
@@ -216,7 +230,7 @@ try{
   await page.evaluate(()=>window.rejectAmbience=true);await page.locator('[data-choir-action="playback"]').click();
   await page.waitForFunction(()=>document.querySelector('[data-et="sfxStatus"]').textContent.includes('Ambience skipped (rain)'));
   assert.match(await page.locator('[data-et="sfxStatus"]').innerText(),/Browser blocked background audio/);
-  assert.equal(await page.evaluate(()=>window.audios.some(audio=>!audio.loop && !audio.paused)),true);
+  await page.waitForFunction(()=>window.audios.some(audio=>!audio.loop && !audio.paused && audio.currentTime>0));
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
   await page.evaluate(()=>window.rejectAmbience=false);await page.locator('[data-choir-action="playback"]').click();
   await page.waitForFunction(()=>window.audios.some(audio=>audio.loop && !audio.paused && audio.currentTime>0 && audio.volume>0));
@@ -298,5 +312,5 @@ try{
   await touch.evaluate(()=>document.activeElement.blur());await touchMixer.locator('.cm-channels').evaluate(node=>node.scrollTop=0);
   if(process.env.CHOIR_TOUCH_MIXER_SCREENSHOT)await touchMixer.screenshot({path:process.env.CHOIR_TOUCH_MIXER_SCREENSHOT});
   assert.equal(await touch.locator('[data-choir-mixer]').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);await touch.evaluate(()=>window.cleanup());await touch.close();
-  assert.deepEqual(errors,[]);console.log('PASS: Chrome real looping ambience, background playback errors and cached retry, pending companion sound-choice cancellation, shared drawer errors, captured default setup and application, Fish voice ID entry and preview, Plan latest without audio, main Play latest, current-plan voice filtering, SFX switch synced with drawer and Cue, paused SFX skipping, queued Auto-plan/Auto-play, keyboard controls, narrow and touch layouts, long voice lists, saved preferences, transport, seeking, Freesound cache, loudness, teardown.');
+  assert.deepEqual(errors,[]);console.log('PASS: Chrome speech continues after cached SFX with parallel prefetch and a delayed TTS response, real looping ambience, background playback errors and cached retry, pending companion sound-choice cancellation, shared drawer errors, captured default setup and application, Fish voice ID entry and preview, Plan latest without audio, main Play latest, current-plan voice filtering, SFX switch synced with drawer and Cue, paused SFX skipping, queued Auto-plan/Auto-play, keyboard controls, narrow and touch layouts, long voice lists, saved preferences, transport, seeking, Freesound cache, loudness, teardown.');
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}
