@@ -971,6 +971,16 @@ export async function setup(ctx) {
 
     <p data-et="sfxStatus" role="status" hidden style="font-size:.85em"></p>
 
+    <details data-et="defaultSetup">
+      <summary>Default setup</summary>
+      <p style="font-size:.85em;opacity:.8">Save connections, planner, playback settings and lead voice choices as a starting point. Each chat keeps its own character names and NPCs. Leave a lead voice on “Let LLM choose voice” to keep its selection automatic.</p>
+      <div class="et-row" style="flex-wrap:wrap">
+        <button data-et="captureDefaults" class="et-btn-subtle" disabled>Capture as default</button>
+        <button data-et="applyDefaults" class="et-btn-subtle" disabled>Apply default to this chat</button>
+      </div>
+      <p data-et="defaultStatus" role="status" aria-live="polite" style="font-size:.85em;opacity:.8">No default captured yet. New chats use your latest preferences.</p>
+    </details>
+
     <details>
       <summary>Advanced Settings</summary>
       <div class="et-grid" style="margin-top:10px">
@@ -1337,7 +1347,23 @@ export async function setup(ctx) {
   }
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
+  const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
   const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','useStyle','auto','autoPlan','showAutoPlanAction','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','freesoundApiKey'];
+  const defaultVoiceFields=['voice','route','gender','style','accent','excluded'];
+  let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
+  const preferenceSnapshot=value=>Object.fromEntries(preferenceFields.filter(name=>value && Object.hasOwn(value,name)).map(name=>[name,structuredClone(value[name])]));
+  function refreshDefaultControls(){
+    $('captureDefaults').disabled=busy || defaultOperation || !chatId || !castRows.length;
+    $('applyDefaults').disabled=busy || defaultOperation || !chatId || !castRows.length || !capturedDefaults;
+  }
+  function withDefaultSetup(value,preset){
+    const candidate={...value,...preferenceSnapshot(preset.preferences)};
+    if(Array.isArray(preset.leadVoices)){
+      candidate.fixed=value.fixed.map((actor,index)=>({...actor,...Object.fromEntries(defaultVoiceFields.filter(name=>preset.leadVoices[index] && Object.hasOwn(preset.leadVoices[index],name)).map(name=>[name,preset.leadVoices[index][name]]))}));
+      if(candidate.connectionMode==='one')candidate.singleVoices={...value.singleVoices,[scope(candidate)]:{...value.singleVoices?.[scope(candidate)],...Object.fromEntries(candidate.fixed.slice(0,3).map(actor=>[actor.speaker,actor.voice || '']))}};
+    }
+    return candidate;
+  }
   let settingsWriteQueue=null,pendingSettings=null,autosaveTimer=null,settingsEdit=0;const retentionPolicies=new Map();
   function saveState(text,error=false){if(disposed)return;$('saveState').textContent=text;$('saveState').classList.toggle('et-error',error);$('save').hidden=!error || !text.startsWith('Save failed');}
   async function persistConfig(targetChat=chatId,value=config,inherit=false){
@@ -1927,6 +1953,7 @@ export async function setup(ctx) {
     if(!npcs.length){const p=document.createElement('p');p.textContent='No NPCs cast yet.';$('npcs').append(p);}
     updateProviderVisibility();
     renderMixer();
+    refreshDefaultControls();
   }
   function capture() {
     return {...config,showAutoPlanAction:$('showAutoPlanAction').checked,fixed:castRows.filter(v=>v.row.parentElement===$('fixed')).map(v=>v.read()),
@@ -2080,6 +2107,7 @@ export async function setup(ctx) {
     if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
+    refreshDefaultControls();
   }
   function clearPlan() {plan=null;planSource=null;planAttribution=null;mixerPlaybackSegments=null;$('preview').replaceChildren();$('planJson').value='';$('planSummary').textContent='Speech plan';$('latestNotice').hidden=true;renderMixer();refreshSectionControls();}
   function stop(show=true) {
@@ -2179,12 +2207,14 @@ export async function setup(ctx) {
     chatId=id;
     pendingSettings=null;
     castRows=[];npcRows=[];$('fixed').replaceChildren();$('npcs').replaceChildren();
-    const globalSaved=await ctx.settings.get(GLOBAL_SETTINGS_KEY);
-    const saved=id?await ctx.settings.get(settingsKey(id)):null;
+    refreshDefaultControls();
+    const defaultRevision=defaultsRevision;
+    const [globalSaved,saved,preset]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),id?ctx.settings.get(settingsKey(id)):null,ctx.settings.get(CAPTURED_DEFAULTS_KEY)]);
     if(disposed || version!==loadVersion)return;
-    const preferences=globalSaved || (!saved?await ctx.settings.get('settings:defaults'):null);
+    if(defaultRevision===defaultsRevision)capturedDefaults=preset?.version===1 && preset.preferences && typeof preset.preferences==='object'?preset:null;
+    const preferences=capturedDefaults?.preferences || globalSaved || (!saved?await ctx.settings.get('settings:defaults'):null);
     if(disposed || version!==loadVersion)return;
-    const legacyCast=!saved && Array.isArray(globalSaved?.fixed)?globalSaved:null;
+    const legacyCast=!saved && !capturedDefaults && Array.isArray(globalSaved?.fixed)?globalSaved:null;
     config={...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(legacyCast || {}),...(saved || {})};
     const chatSettings=saved || legacyCast;
     config.plannerMode=resolvePlannerMode(chatSettings && ['plannerMode','useJev','useFastClassifier'].some(name=>Object.hasOwn(chatSettings,name)) ? chatSettings : preferences || {});
@@ -2208,6 +2238,7 @@ export async function setup(ctx) {
         if(disposed || version!==loadVersion)return;
         config.fixed[2].speaker=character?.name || 'Character';
       }
+      if(capturedDefaults)config=withDefaultSetup(config,capturedDefaults);
     }
     setFields();await loadProviders();
     if(version!==loadVersion || disposed)return;
@@ -2215,7 +2246,9 @@ export async function setup(ctx) {
     if(version!==loadVersion || disposed)return;
     if(previous)await restoreSavedPlan(previous);
     if(version!==loadVersion || disposed)return;
-    saveState(saved?'Saved settings restored':preferences?'Connection preferences restored':'Changes save automatically');
+    saveState(saved?'Saved settings restored':capturedDefaults?'Default setup loaded':preferences?'Connection preferences restored':'Changes save automatically');
+    $('defaultStatus').textContent=capturedDefaults?'Captured default available. New chats use this setup.':'No default captured yet. New chats use your latest preferences.';
+    refreshDefaultControls();
     positionMixer();
     renderMessages();status(plan?'Saved speech plan restored.':id?'Ready. Set your persona name and choose voices. Changes save automatically.':'Open a chat to begin.');
   }
@@ -2989,6 +3022,51 @@ export async function setup(ctx) {
     try{await action();}catch(error){if(error.name!=='AbortError')status(error.message,true);}finally{updateTransport();}
   }
   $('save').onclick=()=>run(save);
+  $('captureDefaults').onclick=()=>run(async()=>{
+    if(defaultOperation)return;
+    if(!chatId)throw new Error('Open a chat first.');
+    const current=capture();validateSettings(current);
+    const preset={version:1,preferences:preferenceSnapshot(current),leadVoices:casting(current).fixed.slice(0,3).map(actor=>Object.fromEntries(defaultVoiceFields.filter(name=>Object.hasOwn(actor,name)).map(name=>[name,structuredClone(actor[name])])))};
+    const targetChat=chatId,version=loadVersion;
+    defaultOperation=true;refreshDefaultControls();$('defaultStatus').textContent='Capturing default setup…';
+    try{
+      if(!scheduleSettingsSave())throw new Error('Check Advanced Settings before capturing a default.');
+      await flushSettings();await ctx.settings.set(CAPTURED_DEFAULTS_KEY,structuredClone(preset));
+      capturedDefaults=preset;++defaultsRevision;
+      if(disposed)return;
+      $('defaultStatus').textContent='Default captured. New chats use this setup until you capture it again.';
+      if(chatId===targetChat && loadVersion===version)status('Default setup captured. Lead voices are a starting point; each chat keeps its own character names and NPCs.');
+    }catch(error){if(!disposed)$('defaultStatus').textContent='Default capture failed. Your previous default is retained.';throw error;}
+    finally{defaultOperation=false;if(!disposed)refreshDefaultControls();}
+  });
+  $('applyDefaults').onclick=()=>run(async()=>{
+    if(defaultOperation)return;
+    if(!chatId)throw new Error('Open a chat first.');
+    if(!capturedDefaults)throw new Error('Capture a default setup first.');
+    const preset=structuredClone(capturedDefaults),targetChat=chatId;let version=loadVersion,previous,saving=false,token;
+    defaultOperation=true;refreshDefaultControls();$('defaultStatus').textContent='Applying default setup…';
+    try{
+      await flushSettings();if(disposed || targetChat!==chatId || version!==loadVersion)return;
+      previous=capture();const messageId=planSource?.messageId;
+      cancelAutoReplies();stop(false);token=revision;version=++loadVersion;setBusy(true);
+      config=withDefaultSetup(previous,preset);setFields();await loadProviders();
+      if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return;
+      setBusy(true);
+      validateSettings(config);saving=true;await persistConfig(targetChat,config,true);
+      if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return;
+      if(messageId && !await restoreSavedPlan(messageId))clearPlan();
+      if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return;
+      saveState('Saved automatically');$('defaultStatus').textContent='Default applied to this chat. New chats still use the captured setup.';
+      status('Default setup applied. You can change this chat’s voices and settings independently.');
+    }catch(error){
+      if(!disposed && targetChat===chatId && version===loadVersion){
+        if(previous && !saving){config=previous;setFields();await loadProviders().catch(()=>renderCast());}
+        if(saving)saveState('Save failed · Retry save',true);
+        $('defaultStatus').textContent='Default could not be applied. Try again.';
+      }
+      throw error;
+    }finally{defaultOperation=false;if(!disposed){if(targetChat===chatId && version===loadVersion)setBusy(false);refreshDefaultControls();}}
+  });
   $('stop').onclick=()=>stop();
   $('testPlanner').onclick=()=>run(async()=>{
     stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);

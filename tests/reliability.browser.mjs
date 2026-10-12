@@ -53,7 +53,7 @@ async function harness(mixerPreferences){
     return Response.json(value);
   };
   let backend,decorationCleanup;
-  const ctx={settings:{get:async key=>structuredClone(store.get(key) ?? null),set:async(key,value)=>{const snapshot=structuredClone(value);if(state.failPlanSave && /^(plan:|activeplan:)/.test(key) || state.failConfigSave && /^(chat:|settings:)/.test(key))throw Error('Settings storage failed');if(state.configDelay && /^(chat:|settings:)/.test(key))await new Promise(resolve=>setTimeout(resolve,state.configDelay));store.set(key,snapshot);}},
+  const ctx={settings:{get:async key=>structuredClone(store.get(key) ?? null),set:async(key,value)=>{const snapshot=structuredClone(value);if(state.failPlanSave && /^(plan:|activeplan:)/.test(key) || state.failConfigSave && /^(chat:|settings:)/.test(key) || state.failDefaultsSave && key==='settings:captured-defaults')throw Error('Settings storage failed');if(state.configDelay && /^(chat:|settings:)/.test(key))await new Promise(resolve=>setTimeout(resolve,state.configDelay));store.set(key,snapshot);}},
     messages:{getRecent:()=>state.active==='chat-a'?(state.messages || [message]):[],getContent:id=>state.active==='chat-a'?(state.messages || [message]).find(item=>item.id===id)?.content ?? null:null},
     state:{get:key=>key==='persona.activeId'?state.persona?.id:undefined,subscribe:(key,fn)=>{subscriptions.set(key,fn);return()=>subscriptions.delete(key);}},events:{on:(key,fn)=>{events.set(key,fn);return()=>events.delete(key);}},
     characters:{get:async()=>{if(state.failProfile)throw Error('Character unavailable');return state.character || {name:'Mira'};}},getActiveChat:()=>({chatId:state.active,characterId:'mira'}),dom:{addStyle:()=>()=>{}},
@@ -105,6 +105,73 @@ test('autosave hides the manual save button and exposes a working retry only aft
 
 const configureFoley=async(h,key='test-freesound-key')=>{h.$('freesoundApiKey').value=key;h.$('freesoundApiKey').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');};
 const playedFoley=async h=>(await Promise.all(h.audioBlobs.map(blob=>blob.text()))).filter(text=>text==='FREESOUND_PREVIEW').length;
+
+test('captured defaults stay stable across chats and carry lead voices by role with fresh character identities',async()=>{
+ for(const mode of ['one','several']){
+  const h=await harness();try{
+   h.$('connectionMode').value=mode;h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Settings saved');
+   h.$('planner').value='planner';h.$('chunk').value='8000';h.$('enableSfx').checked=false;h.$('normalizeLoudness').checked=false;h.$('auto-plan').click();
+   h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default captured.'));
+   const preset=structuredClone(h.store.get('settings:captured-defaults'));
+   assert.equal(preset.preferences.chunk,8000);assert.equal(preset.preferences.planner,'planner');assert.equal(preset.preferences.autoPlan,true);assert.equal(preset.preferences.enableSfx,false);
+   assert.deepEqual(preset.leadVoices.map(actor=>actor.voice),['n','y','m']);assert.ok(!JSON.stringify(preset).includes('Mira'));assert.ok(!JSON.stringify(preset).includes('Guard'));
+   const existing=structuredClone(h.store.get('chat:chat-a'));existing.chunk=9999;existing.fixed[2].speaker='Existing character';h.store.set('chat:existing',existing);
+   h.$('chunk').value='1200';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+   assert.deepEqual(h.store.get('settings:captured-defaults'),preset);
+   h.state.persona={id:'persona-new',name:'Lunch'};h.state.character={name:'Laiyah'};h.state.active='chat-new';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');
+   assert.equal(h.$('chunk').value,'8000');assert.equal(h.$('planner').value,'planner');assert.equal(h.$('enableSfx').checked,false);assert.equal(h.$('normalizeLoudness').checked,false);
+   assert.deepEqual([...h.$('fixed').children].map(row=>row.querySelector('input').value),['Narrator','Lunch','Laiyah']);
+   assert.deepEqual([...h.$('fixed').querySelectorAll('[data-choir-voice]')].map(node=>node.value),['n','y','m']);assert.equal(h.$('npcs').querySelectorAll('.et-card').length,0);
+   const characterVoice=h.$('fixed').children[2].querySelector('[data-choir-voice]');characterVoice.value='new';characterVoice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+   assert.equal(mode==='one'?h.store.get('chat:chat-new').singleVoices['native:a'].Laiyah:h.store.get('chat:chat-new').fixed[2].voice,'new');
+   await h.reload();assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'new');assert.deepEqual(h.store.get('settings:captured-defaults'),preset);
+   h.state.active='existing';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Saved settings restored' && h.$('fixed').children[2]?.querySelector('input').value==='Existing character');assert.equal(h.$('chunk').value,'9999');
+   h.state.character={name:'Jev'};h.state.active='chat-next';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');assert.equal(h.$('fixed').children[2].querySelector('input').value,'Jev');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');
+   h.$('fixed').children[2].querySelector('[data-choir-voice]').value='';h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default captured.'));assert.equal(h.store.get('settings:captured-defaults').leadVoices[2].voice,'');
+   h.state.character={name:'Sable'};h.state.active='chat-automatic';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded' && h.$('fixed').children[2]?.querySelector('input').value==='Sable');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'');
+   assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+  }finally{await h.close();}
+ }
+});
+
+test('applying a captured default restores preferences and lead voices while retaining this chat cast and independent edits',async()=>{
+ for(const mode of ['one','several']){
+  const h=await harness();try{
+   h.$('connectionMode').value=mode;h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Settings saved');
+   h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default captured.'));const preset=structuredClone(h.store.get('settings:captured-defaults'));
+   const name=h.$('fixed').children[2].querySelector('input');name.value='Captain Mira';name.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+   const voice=h.$('fixed').children[2].querySelector('[data-choir-voice]');voice.value='new';voice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+   h.$('chunk').value='10000';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+   h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));
+   assert.equal(h.$('chunk').value,'500');assert.equal(h.$('fixed').children[2].querySelector('input').value,'Captain Mira');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');
+   const saved=h.store.get('chat:chat-a');assert.equal(saved.fixed[2].pronunciation,'Mira: mee-rah');assert.deepEqual(saved.fixed[2].aliases,['Captain']);assert.equal(saved.casts['native:a'][0].speaker,'Guard');assert.equal(saved.casts['native:a'][0].voice,'g');assert.deepEqual(h.store.get('settings:captured-defaults'),preset);
+   await h.reload();assert.equal(h.$('fixed').children[2].querySelector('input').value,'Captain Mira');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');assert.equal(h.$('chunk').value,'500');assert.equal(h.synthesis.length,0);
+   assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+  }finally{await h.close();}
+ }
+});
+
+test('default capture rejects invalid settings and retains the previous snapshot when storage fails',async()=>{
+ const h=await harness();try{
+  h.$('key').value='session-gemini-secret';h.$('jevKey').value='session-jev-secret';h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default captured.'));
+  const preset=structuredClone(h.store.get('settings:captured-defaults'));assert.ok(!JSON.stringify(preset).includes('session-'));
+  h.$('chunk').value='10001';h.$('captureDefaults').click();await until(()=>h.$('status').textContent.includes('whole number from'));assert.deepEqual(h.store.get('settings:captured-defaults'),preset);
+  h.$('chunk').value='8000';h.state.failDefaultsSave=true;h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.includes('capture failed'));assert.deepEqual(h.store.get('settings:captured-defaults'),preset);assert.equal(h.$('captureDefaults').disabled,false);
+  h.state.failDefaultsSave=false;h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default captured.'));assert.equal(h.store.get('settings:captured-defaults').preferences.chunk,8000);
+ }finally{await h.close();}
+});
+
+test('applying defaults reports save failure and never changes another chat during a slow navigation',async()=>{
+ const h=await harness();try{
+  h.$('captureDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default captured.'));
+  h.$('chunk').value='8000';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  h.state.failConfigSave=true;h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.includes('could not be applied'));assert.match(h.$('saveState').textContent,/Save failed/);assert.equal(h.store.get('chat:chat-a').chunk,8000);
+  h.state.failConfigSave=false;await h.click('save',text=>text.includes('retention saved'));assert.equal(h.store.get('chat:chat-a').chunk,500);
+  h.state.configDelay=200;h.$('chunk').value='1200';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));h.$('applyDefaults').click();
+  h.state.active='chat-b';h.state.character={name:'Different character'};h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');
+  assert.equal(h.store.get('chat:chat-a').chunk,1200);assert.equal(h.store.has('chat:chat-b'),false);assert.equal(h.$('fixed').children[2].querySelector('input').value,'Different character');assert.equal(h.$('chunk').value,'500');assert.equal(h.synthesis.length,0);
+ }finally{await h.close();}
+});
 
 test('Fish voice IDs can be assigned, described, auditioned and restored in both connection modes',async()=>{
  for(const mode of ['one','several']){
