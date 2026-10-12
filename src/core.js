@@ -22,6 +22,17 @@ export function additionalVoices(value) {
   });
 }
 
+export function apiErrorMessage(raw,status) {
+  let detail='';
+  try {
+    const body=JSON.parse(raw);
+    detail=[body?.error?.message,body?.error?.detail,body?.error,body?.message,body?.detail,body?.error_description,typeof body==='string'?body:''].find(value=>typeof value==='string' && value.trim()) || '';
+  } catch {detail=String(raw || '');}
+  detail=detail.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>|<style\b[^>]*>[\s\S]*?<\/style\s*>/gi,' ')
+    .replace(/<[^>]*>/g,' ').replace(/&nbsp;|&#160;/gi,' ').replace(/&amp;/gi,'&').replace(/\s+/g,' ').trim().slice(0,500);
+  return `Lumiverse API HTTP ${status}${detail?`: ${detail}`:': The server or gateway returned no error details.'}`;
+}
+
 export function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }

@@ -37,6 +37,7 @@ async function harness(mixerPreferences,mobile=false){
     }
     if(url.endsWith('/tts/synthesize')){
       const input=JSON.parse(options.body);synthesis.push(input);const requestNumber=synthesis.length;
+      if(state.synthesisError && (!state.failSynthesisAt || requestNumber===state.failSynthesisAt))return new Response(state.synthesisError.body,{status:state.synthesisError.status,headers:{'Content-Type':state.synthesisError.type || 'text/plain'}});
       if(state.allowedVoices && !state.allowedVoices[input.connectionId]?.includes(input.voice))return Response.json({error:'Invalid provider voice ID'},{status:400});
       if(state.delay)await new Promise((resolve,reject)=>{
         const timeout=setTimeout(resolve,state.delay);
@@ -66,7 +67,7 @@ async function harness(mixerPreferences,mobile=false){
       requests.push(structuredClone(request));if(request.action==='cancel')return;
       setTimeout(()=>{
         if(!backend)return;
-        if(request.action==='plan' && state.held || request.action==='designVoice' && state.holdDesignVoice || request.action==='freesound' && state.holdFoley){heldPlans.push(request);return;}
+        if(request.action==='plan' && state.held || request.action==='designVoice' && state.holdDesignVoice || request.action==='freesound' && state.holdFoley || request.action==='sfx' && state.holdSfx){heldPlans.push(request);return;}
         if(request.action==='plan' && state.failPlanAt===requests.filter(r=>r.action==='plan').length){backend({namespace:'choir',id:request.id,error:'Planner quota exhausted'});return;}
         let result;
         if(request.action==='ping')result={ready:true};
@@ -254,12 +255,27 @@ test('Freesound failures stay visible, continue speech, and retry without regene
    await configureFoley(h,failure==='key'?'':'test-freesound-key');h.message.content='The page snapped under her thumb.';
    if(failure==='choice')h.state.sfxError='Planner quota exhausted';if(failure==='auth')h.state.foleyError='Freesound HTTP 401';if(failure==='empty')h.state.noFoleyResults=true;if(failure==='preview')h.state.previewStatus=503;if(failure==='type')h.state.previewType='text/html';
    await h.plan();await h.play();assert.equal(await playedFoley(h),0);assert.equal(h.synthesis.map(request=>request.text).join(' '),h.message.content);
-   assert.equal(h.requests.filter(request=>request.action==='sfx').length,failure==='key'?0:failure==='choice'?2:1);
+   assert.equal(h.requests.filter(request=>request.action==='sfx').length,failure==='key'?0:1);
    assert.match(['key','choice'].includes(failure)?h.$('sfxStatus').textContent:h.$('status').textContent,failure==='key'?/Freesound API key/:/SFX skipped/);assert.equal(h.$('sfxStatus').hidden,false);assert.match(h.$('sfxStatus').textContent,/Speech continues/);
    const generated=h.synthesis.length;h.state.sfxError=null;h.state.foleyError=null;h.state.noFoleyResults=false;h.state.previewStatus=200;h.state.previewType='audio/mpeg';if(failure==='key')await configureFoley(h);
+   if(['key','choice'].includes(failure))await h.plan();
    await h.play();assert.equal(await playedFoley(h),1);assert.equal(h.synthesis.length,['key','choice'].includes(failure)?generated+2:generated);assert.equal(h.$('sfxStatus').hidden,true);
   }finally{await h.close();}
  }
+});
+
+test('replaying an older speech plan never waits for a new sound-effect LLM request',async()=>{
+ const h=await harness();try{
+  await h.plan();await h.play();const generated=h.synthesis.length,planned=h.requests.filter(request=>request.action==='plan').length;
+  await configureFoley(h);h.state.holdSfx=true;await h.reload();
+  assert.equal([...h.store].find(([key])=>key.startsWith('plan:'))[1].soundCues,false);
+  await h.play();assert.equal(h.synthesis.length,generated);assert.equal(h.requests.filter(request=>request.action==='plan').length,planned);assert.equal(h.requests.filter(request=>request.action==='sfx').length,0);
+  h.state.holdSfx=false;h.state.sfxError='Sound effect LLM is unavailable';await h.plan();assert.equal(h.requests.filter(request=>request.action==='sfx').length,1);await h.play();
+  assert.equal(h.requests.filter(request=>request.action==='sfx').length,1);assert.match(h.$('sfxStatus').textContent,/Sound effect LLM is unavailable/);
+  await h.reload();await h.play();assert.equal(h.requests.filter(request=>request.action==='sfx').length,1);assert.equal(h.synthesis.length,generated);
+  h.state.sfxError=null;[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Plan').click();await until(()=>h.requests.filter(request=>request.action==='sfx').length===2 && h.$('status').textContent.startsWith('Ready:'));
+  await h.play();assert.equal(h.synthesis.length,generated);assert.equal(h.requests.filter(request=>request.action==='sfx').length,2);assert.equal(h.$('sfxStatus').hidden,true);
+ }finally{await h.close();}
 });
 
 test('SFX mixer switch hides its level when off, stops live effects, applies to Cue and persists after reload',async()=>{
@@ -930,6 +946,30 @@ test('429 retains completed audio across reload and retry bills only missing pas
     assert.equal(h.synthesis.length,5);assert.deepEqual(h.synthesis.slice(3).map(r=>r.voice),['g','n']);
     assert.equal(h.requests.filter(r=>r.action==='plan').length,1);
   }finally{await h.close();}
+});
+
+test('Fish 502 shows the selected connection, model, voice and returned error while retaining completed audio',async()=>{
+  for(const failure of [
+    {status:502,body:'Fish upstream: voice is unavailable'},
+    {status:502,body:JSON.stringify({error:{message:'Fish synthesis timed out'}}),type:'application/json'},
+    {status:502,body:'<html><head><style>hidden proxy styles</style></head><body><h1>502 Bad Gateway</h1><p>Upstream timed out</p></body></html>',type:'text/html'},
+    {status:502,body:''}
+  ]){
+    const h=await harness();try{
+      h.connections[1].provider='fish_audio';h.connections[1].model='s2.1-pro';await h.reload();await h.plan();
+      h.state.failSynthesisAt=2;h.state.synthesisError=failure;
+      await h.click('play',text=>text.includes('Completed passages were retained'));
+      const error=h.$('status').textContent;
+      assert.match(error,/Fish Audio speech failed/);assert.match(error,/Character provider/);assert.match(error,/s2\.1-pro/);assert.match(error,/voice m/);assert.match(error,/HTTP 502/);
+      if(failure.type==='application/json')assert.match(error,/Fish synthesis timed out/);
+      else if(failure.type==='text/html'){assert.match(error,/Upstream timed out/);assert.ok(!error.includes('hidden proxy styles'));assert.ok(!error.includes('<html>'));}
+      else if(failure.body)assert.match(error,/voice is unavailable/);
+      else assert.match(error,/returned no error details/);
+      assert.equal(h.synthesis.length,2);await h.reload();h.state.synthesisError=null;h.state.failSynthesisAt=null;await h.play();
+      assert.equal(h.synthesis.length,5);assert.deepEqual(h.synthesis.slice(2).map(request=>request.voice),['m','g','n']);
+      assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+    }finally{await h.close();}
+  }
 });
 
 test('mixer Silent and No voice retain text; resume, volume and position survive reload',async()=>{
