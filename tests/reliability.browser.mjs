@@ -28,7 +28,7 @@ async function harness(mixerPreferences){
   globalThis.Audio=FakeAudio;
   const connections=[{id:'a',name:'Narration provider',provider:'openai_tts',model:'model-a'},{id:'b',name:'Character provider',provider:'accent_tts',model:'model-b'}];
   globalThis.fetch=async(url,options={})=>{
-    if(url.startsWith('https://freesound.test/ambience.mp3?')){state.bedFetches.push(url);return new Response(`AMBIENCE:${new URL(url).searchParams.get('q')}`,{headers:{'Content-Type':'audio/mpeg'}});}
+    if(url.startsWith('https://freesound.test/ambience.mp3?')){state.bedFetches.push(url);if(state.holdBeds)await new Promise(resolve=>state.releaseBed=resolve);return new Response(`AMBIENCE:${new URL(url).searchParams.get('q')}`,{headers:{'Content-Type':'audio/mpeg'}});}
     if(url==='https://freesound.test/preview.mp3'){
       state.previewFetches.push(url);
       if(state.holdPreview)await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>{state.previewAborted++;reject(new DOMException('Stopped','AbortError'));},{once:true}));
@@ -248,27 +248,29 @@ test('Freesound failures stay visible, continue speech, and retry without regene
  }
 });
 
-test('SFX mixer switch replaces the legacy channel, stops live effects, applies to Cue and persists after reload',async()=>{
+test('SFX mixer switch hides its level when off, stops live effects, applies to Cue and persists after reload',async()=>{
  const h=await harness({master:0.5,channels:{SFX:{volume:0.1,mute:true}}});try{
   const level=(actual,expected)=>assert.ok(Math.abs(actual-expected)<0.000001,`Expected volume ${expected}, got ${actual}`);
   h.$('showMixer').click();const mixer=document.querySelector('[data-choir-mixer]'),sfx=()=>document.querySelector('[data-choir-mixer] [data-choir-action="sfx"]');
-  assert.equal(mixer.querySelector('[data-speaker="SFX"]'),null);assert.equal(sfx().parentElement.className,'cm-auto-plan');assert.equal(sfx().textContent,'SFX On');
+  assert.equal(mixer.querySelector('[aria-label="SFX volume"]').value,'1');assert.equal(sfx().parentElement.className,'cm-auto-plan');assert.equal(sfx().textContent,'SFX On');
   await configureFoley(h);h.message.content='The page snapped under her thumb.';await h.plan();h.state.blockAudio=true;h.$('play').click();
   await until(()=>h.audios.length===1 && !h.audios[0].paused);const narrator=h.audios[0];assert.equal(narrator.volume,0.5);narrator.onended();
   await until(()=>h.audios.length===2 && !h.audios[1].paused);const effect=h.audios[1];level(effect.volume,0.225);
-  h.state.blockAudio=false;sfx().click();assert.equal(sfx().textContent,'SFX Off');assert.equal(sfx().getAttribute('aria-pressed'),'false');assert.equal(h.$('enableSfx').checked,false);
+  const sfxVolume=mixer.querySelector('[aria-label="SFX volume"]');sfxVolume.value='0.4';sfxVolume.dispatchEvent(new h.dom.window.Event('input'));sfxVolume.dispatchEvent(new h.dom.window.Event('change'));level(effect.volume,0.09);assert.equal(narrator.volume,0.5);
+  h.state.blockAudio=false;sfx().click();assert.equal(sfx().textContent,'SFX Off');assert.equal(sfx().getAttribute('aria-pressed'),'false');assert.equal(h.$('enableSfx').checked,false);assert.equal(mixer.querySelector('[data-kind="sfx"]'),null);
   await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(effect.paused,true);assert.equal(h.audios.at(-1).volume,0.5);
   assert.equal(mixer.querySelector('[aria-label="Narrator volume"]').value,'1');await until(()=>h.store.get('chat:chat-a').enableSfx===false);await h.reload();assert.equal(sfx().textContent,'SFX Off');
   const off=await globalThis.__CHOIR_API__.playParagraph({text:h.message.content});assert.equal(off.played,1);assert.equal(await playedFoley(h),1);
   h.$('enableSfx').checked=true;h.$('enableSfx').dispatchEvent(new h.dom.window.Event('change'));assert.equal(sfx().textContent,'SFX On');
-  const cueStart=h.audios.length;const on=await globalThis.__CHOIR_API__.playParagraph({text:h.message.content});assert.equal(on.played,3);level(h.audios[cueStart+1].volume,0.225);assert.equal(h.audios[cueStart].volume,0.5);
+  assert.equal(document.querySelector('[aria-label="SFX volume"]').value,'0.4');
+  const cueStart=h.audios.length;const on=await globalThis.__CHOIR_API__.playParagraph({text:h.message.content});assert.equal(on.played,3);level(h.audios[cueStart+1].volume,0.09);assert.equal(h.audios[cueStart].volume,0.5);
   const generated=h.synthesis.length,searched=h.requests.filter(request=>request.action==='freesound').length;await h.play();assert.equal(h.synthesis.length,generated);assert.equal(h.requests.filter(request=>request.action==='freesound').length,searched);
  }finally{await h.close();}
 });
 
 test('mixer plans silently, plays the latest reply, filters voices by plan and retains hidden preferences',async()=>{
  const h=await harness();try{
-  const mixer=document.querySelector('[data-choir-mixer]'),names=()=>[...document.querySelectorAll('[data-choir-mixer] .cm-channel')].map(row=>row.dataset.speaker);
+  const mixer=document.querySelector('[data-choir-mixer]'),names=()=>[...document.querySelectorAll('[data-choir-mixer] .cm-channel[data-kind="voice"]')].map(row=>row.dataset.speaker);
   assert.deepEqual(names(),[]);assert.match(mixer.textContent,/Plan the latest reply to see its voices/);assert.equal(h.$('play').getAttribute('aria-label'),'Play latest reply');assert.equal(h.$('play').disabled,false);
   h.$('plan-latest').click();await until(()=>h.requests.filter(r=>r.action==='plan').length===1 && !h.$('latest').disabled && names().length===3);
   assert.equal(h.audios.length,0);assert.equal(h.synthesis.length,0);assert.deepEqual(names(),['Narrator','Mira','Guard']);
@@ -296,7 +298,7 @@ test('SFX can be reenabled before its cue after prefetch skipped it, and disabli
 
 test('Cue and cached recordings show their own speakers rather than the previously planned reply',async()=>{
  const h=await harness();try{
-  const names=()=>[...document.querySelectorAll('.cm-channel')].map(row=>row.dataset.speaker);
+  const names=()=>[...document.querySelectorAll('.cm-channel[data-kind="voice"]')].map(row=>row.dataset.speaker);
   await h.plan();await h.play();const savedPlan=[...h.store.keys()].find(key=>key.startsWith('plan:'));h.store.delete(savedPlan);
   const cue=await globalThis.__CHOIR_API__.playParagraph({text:'A separate narrated paragraph.'});assert.equal(cue.played,1);assert.deepEqual(names(),['Narrator']);
   const replay=[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay');replay.click();await until(()=>h.$('status').textContent==='Replay finished.');assert.deepEqual(names(),['Narrator','Mira','Guard']);
@@ -350,6 +352,62 @@ const bedName=(h,audio)=>h.audioBlobs[h.audios.indexOf(audio)].text();
 const scene='Night fell. Rain drummed on the roof. "Hello." The tavern door swung open. "Wait."';
 const toggle=async(h,name,checked)=>{h.$(name).checked=checked;h.$(name).dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');};
 
+test('Channel levels collapse independently, persist their state and hide disabled sound levels while retaining voice controls',async()=>{
+ const h=await harness();try{
+  h.$('showMixer').click();const mixer=()=>document.querySelector('[data-choir-mixer]'),menu=()=>mixer().querySelector('[aria-label="Channel levels"]'),body=()=>mixer().querySelector('.cm-levels-body');
+  assert.equal(menu().getAttribute('aria-expanded'),'false');assert.equal(body().hidden,true);assert.equal(mixer().querySelector('[aria-label="Master volume"]').closest('.cm-levels-body'),null);
+  menu().click();assert.equal(menu().getAttribute('aria-expanded'),'true');assert.equal(body().hidden,false);await until(()=>h.store.get('ui:mixer')?.levelsCollapsed===false);
+  await h.plan();assert.deepEqual([...mixer().querySelectorAll('.cm-channel')].map(row=>row.dataset.speaker),['Narrator','Mira','Guard','SFX','Ambience']);
+  h.$('ambience').click();assert.equal(h.$('ambience').textContent,'Ambience Off');assert.equal(h.$('ambience').getAttribute('aria-pressed'),'false');assert.equal(h.$('enableAmbience').checked,false);assert.equal(mixer().querySelector('[data-kind="ambience"]'),null);
+  h.$('sfx').click();assert.equal(mixer().querySelector('[data-kind="sfx"]'),null);assert.equal(mixer().querySelectorAll('.cm-channel[data-kind="voice"]').length,3);assert.equal(menu().getAttribute('aria-expanded'),'true');
+  await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(menu().getAttribute('aria-expanded'),'true');assert.equal(body().hidden,false);assert.equal(h.$('ambience').textContent,'Ambience Off');assert.equal(mixer().querySelector('[data-kind="ambience"]'),null);
+  await toggle(h,'enableAmbience',true);assert.equal(h.$('ambience').textContent,'Ambience On');assert.equal(mixer().querySelector('[aria-label="Ambience volume"]').value,'1');
+  menu().click();await until(()=>h.store.get('ui:mixer')?.levelsCollapsed===true);await h.reload();assert.equal(body().hidden,true);assert.equal(menu().getAttribute('aria-expanded'),'false');
+ }finally{await h.close();}
+});
+
+test('mixer Ambience toggle stops the carried loop, keeps speech playing and remembers Off after reload',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);const bridge=globalThis.__CHOIR_API__;h.state.blockAudio=true;
+  const paragraph=bridge.playParagraph({text:'Rain drummed on the roof.'});await until(()=>beds(h).length===1 && !beds(h)[0].paused && voices(h).length===1 && !voices(h)[0].paused);
+  h.$('ambience').click();assert.equal(beds(h)[0].paused,true);assert.equal(voices(h)[0].paused,false);assert.equal(document.querySelector('[data-kind="ambience"]'),null);
+  h.state.blockAudio=false;voices(h)[0].onended();assert.equal((await paragraph).played,1);await until(()=>h.store.get('chat:chat-a').enableAmbience===false);
+  await h.reload();assert.equal(h.$('ambience').textContent,'Ambience Off');assert.equal(document.querySelector('[aria-label="Ambience volume"]'),null);
+ }finally{await h.close();}
+});
+
+test('turning Ambient sound off stops a carried Cue bed and prevents later beds without interrupting speech',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);const bridge=globalThis.__CHOIR_API__;
+  await bridge.playParagraph({text:'Rain drummed on the roof.'});await until(()=>beds(h).length===1 && !beds(h)[0].paused);
+  await toggle(h,'enableAmbience',false);assert.equal(beds(h)[0].paused,true);
+  assert.equal((await bridge.playParagraph({text:'The tavern was full.'})).played,1);assert.equal(beds(h).length,1);
+  await toggle(h,'enableAmbience',true);await bridge.playParagraph({text:'The tavern was full.'});await until(()=>beds(h).length===2 && !beds(h)[1].paused);
+ }finally{await h.close();}
+});
+
+test('Ambient sound off stops both crossfading beds while speech continues and no later marker restarts them',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);h.message.content=scene;await h.plan();h.state.blockAudio=true;h.$('play').click();
+  await until(()=>voices(h).length===1 && !voices(h)[0].paused);voices(h)[0].onended();
+  await until(()=>beds(h).length===1 && !beds(h)[0].paused && voices(h).length===2);voices(h)[1].onended();
+  await until(()=>voices(h).length===3 && !voices(h)[2].paused);voices(h)[2].onended();
+  await until(()=>beds(h).length===2 && beds(h).every(audio=>!audio.paused) && voices(h).length===4);
+  await toggle(h,'enableAmbience',false);assert.ok(beds(h).every(audio=>audio.paused));assert.equal(voices(h)[3].paused,false);
+  h.state.blockAudio=false;voices(h)[3].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.equal(beds(h).length,2);assert.ok(beds(h).every(audio=>audio.paused));
+ }finally{await h.close();}
+});
+
+test('Ambient sound off prevents a late bed download from starting and reenabling can retry it',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);const bridge=globalThis.__CHOIR_API__;h.state.holdBeds=true;
+  await bridge.playParagraph({text:'Rain drummed on the roof.'});await until(()=>h.state.releaseBed);
+  await toggle(h,'enableAmbience',false);h.state.holdBeds=false;h.state.releaseBed();await tick();assert.equal(beds(h).length,0);
+  await toggle(h,'enableAmbience',true);await bridge.playParagraph({text:'Rain drummed on the roof.'});await until(()=>beds(h).length===1 && !beds(h)[0].paused);
+ }finally{h.state.releaseBed?.();await h.close();}
+});
+
 test('ambience beds start at their anchor, loop under speech, crossfade, follow pause and fade out at the end',async()=>{
  const h=await harness();try{
   await configureFoley(h);h.message.content=scene;await h.plan();assert.equal(h.requests.filter(request=>request.action==='sfx').length,1);
@@ -390,7 +448,7 @@ test('saved beds survive reload, replay from the recording, follow Next, Previou
 
 test('Ambience slider sets bed level live without touching speech and persists after reload',async()=>{
  const h=await harness();try{
-  h.$('showMixer').click();assert.equal(document.querySelector('[data-speaker="Ambience"]'),null);
+  h.$('showMixer').click();assert.equal(document.querySelector('[data-speaker="Ambience"]').dataset.kind,'ambience');
   await configureFoley(h);h.message.content='Rain drummed on the roof. "Hello."';await h.plan();h.state.blockAudio=true;h.$('play').click();
   await until(()=>beds(h).length===1 && beds(h)[0].volume===0.25);const rain=beds(h)[0],speech=voices(h)[0];
   const volume=document.querySelector('[aria-label="Ambience volume"]');volume.value='0.4';volume.dispatchEvent(new h.dom.window.Event('input'));volume.dispatchEvent(new h.dom.window.Event('change'));
