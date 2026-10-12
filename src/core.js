@@ -283,10 +283,15 @@ export function restoreAttribution(saved, transcript, config) {
 }
 
 export function passageKey(segment, settings, connection, parameters={}) {
+  const effectiveParameters={...connection?.default_parameters,...parameters};
+  // This preference changes the transport, not the generated audio.
+  delete effectiveParameters.use_streaming_endpoint;
+  const canonical=value=>Array.isArray(value)?value.map(canonical):value && typeof value==='object'
+    ? Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
   return JSON.stringify([2,segment.text,segment.voice,segment.route || settings.defaultRoute,
     segment.style || '',connection?.model || settings.model,connection?.provider || '',
     connection?.api_url || connection?.base_url || '',
-    settings.allowVoiceFallback===true,parameters]);
+    settings.allowVoiceFallback===true,canonical(effectiveParameters)]);
 }
 
 export function mixerVolume(master, speaker, channels) {

@@ -938,6 +938,66 @@ test('reload and chat navigation restore plans; recasting and edited text regene
   }finally{await h.close();}
 });
 
+test('connection speed and format changes regenerate only affected saved speech',async()=>{
+  const h=await harness();try{
+    h.connections[0].default_parameters={speed:1,output_format:'mp3'};await h.reload();await h.plan();await h.play();
+    assert.equal(h.synthesis.length,4);
+    h.connections[0].default_parameters.speed=1.2;await h.reload();await h.play();
+    assert.equal(h.synthesis.length,7);assert.ok(h.synthesis.slice(4).every(request=>request.connectionId==='a'));
+    h.connections[0].default_parameters.output_format='wav';await h.reload();await h.play();
+    assert.equal(h.synthesis.length,10);assert.ok(h.synthesis.slice(7).every(request=>request.connectionId==='a'));
+    h.connections[0].default_parameters.use_streaming_endpoint=true;await h.reload();await h.play();assert.equal(h.synthesis.length,10);
+    assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+  }finally{await h.close();}
+});
+
+test('companion speech applies actor pronunciation and accent just like the main player',async()=>{
+  const h=await harness();try{
+    await globalThis.__CHOIR_API__.playParagraph({text:'"A companion-only line."',speaker:'Mira'});
+    assert.equal(h.synthesis.length,1);assert.equal(h.synthesis[0].connectionId,'b');
+    assert.equal(h.synthesis[0].parameters.accent,'Irish');assert.match(h.synthesis[0].parameters.instructions,/mee-rah/);
+    await globalThis.__CHOIR_API__.playParagraph({text:'"A companion-only line."',speaker:'Mira'});assert.equal(h.synthesis.length,1);
+  }finally{await h.close();}
+});
+
+test('companion cache changes with the Gemini model and delivery settings',async()=>{
+  const h=await harness();try{
+    const saved=h.store.get('chat:chat-a');h.store.set('chat:chat-a',{...saved,mode:'gemini',fixed:[{speaker:'Narrator',voice:'Charon',style:'Calm'}],casts:{gemini:[]}});await h.reload();
+    h.$('key').value='test-key';const text='A companion-only narration.';
+    const calls=()=>h.requests.filter(request=>request.action==='gemini');
+    await globalThis.__CHOIR_API__.playParagraph({text});await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(calls().length,1);
+    h.$('model').value='gemini-3.8-flash-lite-tts';h.$('model').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+    await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(calls().length,2);assert.equal(calls()[1].input.model,'gemini-3.8-flash-lite-tts');
+    await toggle(h,'useStyle',false);await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(calls().length,3);assert.equal(calls()[2].input.segment.style,'');
+  }finally{await h.close();}
+});
+
+test('companion sound-choice requests cancel on Stop or external abort before speech starts',async()=>{
+  for(const cancel of ['stop','signal','replacement']){
+    const h=await harness();let pending;try{
+      await configureFoley(h);h.state.holdSfx=true;const ctrl=new AbortController();
+      pending=globalThis.__CHOIR_API__.playParagraph({text:'A companion-only narration.',signal:ctrl.signal}).then(result=>({result}),error=>({error}));
+      await until(()=>h.requests.some(request=>request.action==='sfx'));
+      assert.equal(h.$('stop').disabled,false,'Stop must be usable while optional sound choices are pending');
+      if(cancel==='stop')globalThis.__CHOIR_API__.stop();
+      else if(cancel==='signal')ctrl.abort();
+      else{h.state.holdSfx=false;assert.equal((await globalThis.__CHOIR_API__.playParagraph({text:'The replacement narration.'})).played,1);}
+      const outcome=await Promise.race([pending,new Promise(resolve=>setTimeout(()=>resolve({timeout:true}),500))]);
+      assert.equal(outcome.error?.name,'AbortError');assert.equal(h.synthesis.length,cancel==='replacement'?1:0);assert.equal(h.audios.length,cancel==='replacement'?1:0);
+      assert.ok(h.requests.some(request=>request.action==='cancel'));
+    }finally{h.releaseHeld();await h.close();await pending;}
+  }
+});
+
+test('replacing a companion request for the same text retries an aborted flight and caches the completed audio',async()=>{
+  const h=await harness();try{
+    h.state.delay=60;const bridge=globalThis.__CHOIR_API__,text='A companion-only narration.';
+    const first=bridge.playParagraph({text}).then(result=>({result}),error=>({error}));await until(()=>h.synthesis.length===1);
+    assert.equal((await bridge.playParagraph({text})).played,1);assert.equal((await first).error?.name,'AbortError');assert.equal(h.synthesis.length,2);
+    assert.equal((await bridge.playParagraph({text})).played,1);assert.equal(h.synthesis.length,2);
+  }finally{await h.close();}
+});
+
 test('429 retains completed audio across reload and retry bills only missing passages',async()=>{
   const h=await harness();try{
     await h.plan();h.state.failVoice='g';await h.click('play',text=>text.includes('Completed passages were retained'));
