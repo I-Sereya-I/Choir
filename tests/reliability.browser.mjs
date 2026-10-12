@@ -41,6 +41,7 @@ async function harness(mixerPreferences,mobile=false){
     }
     if(url.endsWith('/tts/synthesize')){
       const input=JSON.parse(options.body);synthesis.push(input);const requestNumber=synthesis.length;
+      if(state.allowedVoices && !state.allowedVoices[input.connectionId]?.includes(input.voice))return Response.json({error:'Invalid provider voice ID'},{status:400});
       if(state.delay)await new Promise((resolve,reject)=>{
         const timeout=setTimeout(resolve,state.delay);
         options.signal.addEventListener('abort',()=>{clearTimeout(timeout);state.aborted++;reject(new DOMException('Stopped','AbortError'));},{once:true});
@@ -50,7 +51,7 @@ async function harness(mixerPreferences,mobile=false){
     }
     let value;
     if(url.includes('/providers'))value={providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}},{id:'accent_tts',capabilities:{parameters:{instructions:{type:'string'},accent:{enum:['Irish','French']}}}}]};
-    else if(url.endsWith('/voices')){if(state.failCatalogue)throw Error('Voice catalogue unavailable');value={voices:['n','y','m','g','new'].map(id=>({id,name:id,description:id==='m'?'A mature, husky Irish voice.':'A light, youthful voice.'}))};}
+    else if(url.endsWith('/voices')){if(state.failCatalogue)throw Error('Voice catalogue unavailable');value=state.catalogues?.[url.split('/').at(-2)] || {voices:['n','y','m','g','new'].map(id=>({id,name:id,description:id==='m'?'A mature, husky Irish voice.':'A light, youthful voice.'}))};}
     else if(url.includes('/chats/') && url.includes('/messages?'))value={data:state.savedMessages || []};
     else if(url.includes('/personas/'))value=state.persona;
     else if(url.includes('/decision-connections?'))value={data:[{id:'decision-a',name:'Decision A',provider:'typesafe',model:'jev'},{id:'decision-b',name:'Decision B',provider:'typesafe',model:'jev'}]};
@@ -86,6 +87,15 @@ async function harness(mixerPreferences,mobile=false){
         else if(request.action==='gemini')result={base64:'AAABAA==',mimeType:'audio/L16;rate=24000'};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
         else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
+        else if(request.action==='plan' && state.planForCatalogue){
+          const cast=request.input.config;
+          result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>{
+            const speaker=unit.kind==='narration'?'Narrator':unit.text.includes('Wait')?'Guard':'Mira';
+            const actor=[...cast.fixed,...cast.npcs].find(actor=>actor.speaker===speaker),route=actor?.route || cast.defaultRoute;
+            const voice=cast.voices.filter(voice=>voice.route===route).at(-1).id;
+            return {speaker,voice,route,text:unit.text};
+          })},request.input.transcript,cast);
+        }
         else if(request.action==='plan')result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({
           text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Wait')?'Guard':'Mira',voice:unit.kind==='narration'?'n':unit.text.includes('Wait')?'g':'m',style:unit.kind==='dialogue'?'Warm':''
         }))},request.input.transcript,request.input.config);
@@ -222,6 +232,7 @@ test('Fish voice IDs can be assigned, described, auditioned and restored in both
    assert.equal(card().querySelector('[data-choir-voice]').value,id);assert.equal(h.synthesis.length,0);
    const saved=h.store.get('chat:chat-a');assert.equal(mode==='one'?saved.singleVoices['native:a'].Mira:saved.fixed[2].voice,id);
    assert.equal(saved.extraVoices,`${id} | ${description}`);
+   assert.deepEqual(saved.extraVoiceRoutes[id],[`native:${connection.id}`]);
    card().querySelector('[data-choir-preview]').click();await until(()=>h.$('status').textContent==='Audition finished.');
    assert.equal(h.synthesis[0].voice,id);assert.equal(h.synthesis[0].connectionId,connection.id);
    card().querySelector('[data-choir-voice-id]').click();assert.equal(card().querySelector('[data-choir-voice-id-input]').value,id);
@@ -232,6 +243,7 @@ test('Fish voice IDs can be assigned, described, auditioned and restored in both
    await h.plan();const casting=h.requests.filter(request=>request.action==='plan').at(-1).input.config;
    assert.equal(casting.fixed.find(actor=>actor.speaker==='Mira').voice,id);
    assert.equal(casting.voices.find(item=>item.id===id && item.route===`native:${connection.id}`).description,'A calm Irish storyteller.');
+   assert.ok(casting.voices.filter(item=>item.id===id).every(item=>item.route===`native:${connection.id}`));
    if(mode==='several')assert.equal(h.$('fixed').children[0].querySelector('[data-choir-voice-id]').hidden,true);
   }finally{await h.close();}
  }
@@ -1240,6 +1252,55 @@ test('NPC No voice follows the character across One TTS provider changes and can
   document.querySelector('[aria-label="Guard no voice"]').click();await tick();const before=h.synthesis.length;await h.play();assert.equal(h.synthesis.length,before+1);assert.match(h.synthesis.at(-1).text,/Wait/);
   h.$('connection').value='a';h.$('connection').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('status').textContent.includes('Provider selected.'));assert.equal(document.querySelector('[aria-label="Guard no voice"]').getAttribute('aria-pressed'),'false');assert.equal(h.requests.filter(v=>v.action==='plan').length,1);
  }finally{await h.close();}
+});
+
+test('Fish automatic casting excludes foreign voice IDs and plays with the chosen reference ID in both TTS modes',async()=>{
+ for(const mode of ['one','several']){
+  const h=await harness();try{
+   const fishId='0123456789abcdef0123456789abcdef';h.connections[1].provider='fish_audio';
+   h.state.catalogues={a:{voices:[{id:'alloy',name:'Alloy'},{id:'coral',name:'Coral'}]},b:{voices:[{id:fishId,name:'Storyteller'}]}};
+   h.state.allowedVoices={a:['alloy','coral'],b:[fishId]};h.state.planForCatalogue=true;
+   const saved=h.store.get('chat:chat-a');saved.connectionMode=mode;saved.connection=mode==='one'?'b':'a';
+   saved.fixed.forEach(actor=>{actor.voice='';});saved.casts={'native:a':[{speaker:'Guard',voice:'',style:''}],'native:b':[{speaker:'Guard',voice:'',style:''}]};
+   saved.extraVoices=`${fishId} | A warm Irish storyteller.\nKore | Firm\nvoice_bespoke_old | Gemini design\ncoral | Bright`;
+   h.store.set('chat:chat-a',saved);await h.reload();await h.plan();
+   const planned=h.requests.find(request=>request.action==='plan').input.config;
+   assert.deepEqual(planned.voices.filter(voice=>voice.route==='native:b').map(voice=>voice.id),[fishId]);
+   assert.equal(planned.voices.find(voice=>voice.route==='native:b').description,'A warm Irish storyteller.');
+   await h.play();assert.ok(h.synthesis.some(request=>request.connectionId==='b'));
+   assert.ok(h.synthesis.filter(request=>request.connectionId==='b').every(request=>request.voice===fishId));
+   await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,fishId);
+   h.message.content='A new dawn. "Hello again."';await h.plan();await h.play();
+   assert.ok(h.synthesis.filter(request=>request.connectionId==='b').every(request=>request.voice===fishId));
+   if(mode==='one'){
+    h.$('connection').value='a';h.$('connection').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('status').textContent.includes('Provider selected.'));
+    await h.plan();const switched=h.requests.filter(request=>request.action==='plan').at(-1).input.config;
+    assert.ok(switched.voices.every(voice=>voice.route==='native:a' && ['alloy','coral'].includes(voice.id)));
+    await h.play();assert.ok(h.synthesis.filter(request=>request.connectionId==='a').every(request=>['alloy','coral'].includes(request.voice)));
+   }
+  }finally{await h.close();}
+ }
+});
+
+test('GPT TTS retains unknown-gender choices, recovers built-in voices, and excludes saved Fish voices',async()=>{
+ for(const failure of ['normal','empty','error','network']){
+  const h=await harness();try{
+   const fishId='0123456789abcdef0123456789abcdef';
+   h.state.catalogues={a:failure==='normal'?{voices:[{id:'coral',name:'Coral'},{id:'onyx',name:'Onyx'}]}:failure==='error'?{voices:[],error:'Catalogue unavailable'}:{voices:[]}};h.state.failCatalogue=failure==='network';
+   const saved=h.store.get('chat:chat-a');saved.connectionMode='one';saved.fixed.forEach(actor=>{actor.voice='';actor.gender='female';});saved.casts={'native:a':[]};
+   saved.extraVoices=`${fishId} | Fish storyteller\nKore | Firm`;
+   h.store.set('chat:chat-a',saved);h.state.planForCatalogue=true;h.message.content='At dawn. "Hello."';
+   h.state.allowedVoices={a:['alloy','ash','ballad','cedar','coral','echo','fable','marin','nova','onyx','sage','shimmer','verse']};
+   await h.reload();
+   for(const select of h.$('fixed').querySelectorAll('[data-choir-voice]')){
+    assert.ok([...select.options].some(option=>option.value==='coral'));
+    assert.ok(![...select.options].some(option=>option.value===fishId || option.value==='Kore'));
+   }
+   await h.plan();assert.equal(h.requests.find(request=>request.action==='plan').input.config.voices.length,failure==='normal'?2:13);
+   await h.play();assert.ok(h.synthesis.length);assert.ok(h.synthesis.every(request=>h.state.allowedVoices.a.includes(request.voice)));
+   await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,failure==='normal'?'onyx':'verse');
+  }finally{await h.close();}
+ }
 });
 
 test('LLM-selected fixed and NPC voices persist across new replies and reload in both TTS modes',async()=>{

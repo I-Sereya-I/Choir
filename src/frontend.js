@@ -1,4 +1,4 @@
-import { GEMINI_VOICES, MAX_SPEECH_CHARS, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, transcriptFromMessage, planningSections, validateCastConfig, validatePlan, parsePlanJson, speechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset } from './core.js';
+import { GEMINI_VOICES, OPENAI_VOICES, additionalVoices, MAX_SPEECH_CHARS, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, transcriptFromMessage, planningSections, validateCastConfig, validatePlan, parsePlanJson, speechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset } from './core.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
 const ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
@@ -699,29 +699,60 @@ export async function setup(ctx) {
     if (['google_tts','google_vertex_tts','google','aistudio','vertex','google-ai-studio','vertex-ai','gemini'].includes(p) || p.includes('vertex') || p.includes('aistudio')) return 'gemini';
     return p || 'generic';
   };
-  async function ensureCatalogue(route) {
+  function extraVoiceRoutes(id) {
+    return Object.hasOwn(config.extraVoiceRoutes || {},id) && Array.isArray(config.extraVoiceRoutes[id])?config.extraVoiceRoutes[id]:[];
+  }
+  function rememberExtraVoiceRoute(id,route) {
+    const routes=extraVoiceRoutes(id);
+    config.extraVoiceRoutes={...config.extraVoiceRoutes,[id]:[...new Set([...routes,route])]};
+  }
+  function scopeLegacyExtraVoices() {
+    const routes=['gemini',...nativeConnections.map(connection=>`native:${connection.id}`)];
+    for(const voice of additionalVoices(config.extraVoices)) {
+      if(extraVoiceRoutes(voice.id).length)continue;
+      // Older versions shared this textarea across all providers. Recover known
+      // provider IDs and explicit assignments before exposing them to the LLM.
+      const provider=GEMINI_VOICES.some(item=>item.id===voice.id) || voice.id.startsWith('voice_')?'gemini':
+        OPENAI_VOICES.some(item=>item.id===voice.id)?'openai_tts':/^[a-f0-9]{32}$/i.test(voice.id)?'fish_audio':null;
+      const assigned=[...(config.fixed || []),...Object.values(config.casts || {}).flat()]
+        .filter(actor=>actor.voice===voice.id).map(actor=>actor.route || scope(config));
+      const selected=provider?routes.filter(route=>detectProvider(route)===provider):assigned.length?assigned:[scope(config)];
+      config.extraVoiceRoutes={...config.extraVoiceRoutes,[voice.id]:[...new Set(selected)]};
+    }
+  }
+  async function ensureCatalogue(route,version=loadVersion) {
+    if(disposed || version!==loadVersion)return [];
     if(voiceCatalogues.has(route))return voiceCatalogues.get(route);
-    if(route==='gemini')return GEMINI_VOICES;
+    scopeLegacyExtraVoices();
+    const extra=additionalVoices(config.extraVoices).filter(voice=>extraVoiceRoutes(voice.id).includes(route));
+    if(route==='gemini'){
+      const catalogue=normalizeVoiceCatalogue([...new Map([...GEMINI_VOICES,...extra].map(voice=>[voice.id,voice])).values()]);
+      voiceCatalogues.set(route,catalogue);return catalogue;
+    }
     const connectionId=route.startsWith('native:')?route.slice(7):'';
     if(!nativeConnections.some(c=>c.id===connectionId))throw new Error('Select an available TTS connection for this speaker.');
     const conn=nativeConnections.find(c=>c.id===connectionId);
-    const data=await api(`/tts-connections/${encodeURIComponent(connectionId)}/voices`).then(response=>response.json());
-    if(data.error && !data.voices?.length)throw new Error(data.error);
-    const extra=String(config.extraVoices || '').split('\n').filter(s=>s.trim()).map(line=>{
-      const [id,...desc]=line.split('|');return {id:id.trim(),name:id.trim(),description:desc.join('|').trim()};
-    });
+    const provider=detectProvider(route);
+    const fallback=nativeProviders.find(item=>item.id===conn.provider)?.capabilities?.staticVoices || [];
+    let data;
+    try{data=await api(`/tts-connections/${encodeURIComponent(connectionId)}/voices`).then(response=>response.json());}
+    catch(error){if(!fallback.length && provider!=='openai_tts')throw error;data={voices:[]};}
+    if(disposed || version!==loadVersion)return [];
     let baseVoices=data.voices || [];
-    if(detectProvider(route)==='gemini' && !baseVoices.some(v=>GEMINI_VOICES.some(gv=>gv.id===v.id))) {
+    if(!baseVoices.length)baseVoices=fallback.length?fallback:provider==='openai_tts'?OPENAI_VOICES:[];
+    if(provider==='gemini' && !baseVoices.some(v=>GEMINI_VOICES.some(gv=>gv.id===v.id))) {
       baseVoices=[...baseVoices,...GEMINI_VOICES];
     }
-    const catalogue=normalizeVoiceCatalogue([...new Map([...baseVoices, ...extra].map(v=>[v.id,v])).values()]);
-    if(!catalogue.length)throw new Error('This TTS connection returned no voices. Configure its voice catalogue in Lumiverse.');
+    const merged=new Map(baseVoices.map(voice=>[voice.id,voice]));
+    for(const voice of extra)merged.set(voice.id,{...merged.get(voice.id),...voice});
+    const catalogue=normalizeVoiceCatalogue([...merged.values()]);
+    if(!catalogue.length)throw new Error(data.error || 'This TTS connection returned no voices. Configure its voice catalogue in Lumiverse.');
     voiceCatalogues.set(route,catalogue);return catalogue;
   }
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
   const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
-  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','useStyle','auto','autoPlan','showAutoPlanAction','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','enableAmbience','freesoundApiKey'];
+  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','enableAmbience','freesoundApiKey'];
   const defaultVoiceFields=['voice','route','gender','style','accent','excluded'];
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   const preferenceSnapshot=value=>Object.fromEntries(preferenceFields.filter(name=>value && Object.hasOwn(value,name)).map(name=>[name,structuredClone(value[name])]));
@@ -1095,9 +1126,9 @@ export async function setup(ctx) {
       const selected=voice.value;voice.replaceChildren();option(voice,'','Let LLM choose');
       const q=searchFilter.toLowerCase().trim();
       for(const item of rowVoices) {
-        if(gender.value!=='auto' && item.gender!==gender.value && item.id!==selected)continue;
+        if(gender.value!=='auto' && item.gender && item.gender!==gender.value && item.id!==selected)continue;
         if(q && !String(item.name || '').toLowerCase().includes(q) && !String(item.id || '').toLowerCase().includes(q) && !String(item.description || '').toLowerCase().includes(q) && item.id!==selected)continue;
-        const mismatch=gender.value!=='auto' && item.gender!==gender.value;
+        const mismatch=gender.value!=='auto' && item.gender && item.gender!==gender.value;
         option(voice,item.id,`${item.name || item.id} · ${item.gender==='female'?'Female':item.gender==='male'?'Male':item.gender==='neutral'?'Neutral':'Gender unknown'}${item.description ? ` · ${item.description}`:''}${mismatch?' · selected voice differs from filter':''}`);
       }
       if(selected && !rowVoices.some(v=>v.id===selected))option(voice,selected,`${selected} · unavailable`);
@@ -1123,6 +1154,7 @@ export async function setup(ctx) {
         targetSpeaker: name.value || 'Character',
         defaultQuery: voiceSearchInput.value.trim() || name.value.trim() || 'narrator',
         onSelect: async (item) => {
+          rememberExtraVoiceRoute(item.id,route.value || scope(config));
           const entry = `${item.id} | ${item.name}${item.description ? ` · ${item.description}` : ''}`;
           const existing = String(config.extraVoices || '').trim();
           if (!existing.includes(item.id)) {
@@ -1168,6 +1200,7 @@ export async function setup(ctx) {
       const selectedRoute=route.value || scope(config),targetChat=chatId,version=loadVersion;
       if(detectProvider(selectedRoute)!=='fish_audio')throw new Error('Select a Fish Audio connection for this voice.');
       const existingVoice=rowVoices.find(item=>item.id===id);
+      rememberExtraVoiceRoute(id,selectedRoute);
       const description=voiceDescription.value.trim().replace(/[|\r\n]+/g,' ') || existingVoice?.description || '';
       const lines=$('extraVoices').value.split('\n').filter(line=>line.trim() && line.split('|')[0].trim()!==id);
       lines.push(description?`${id} | ${description}`:id);$('extraVoices').value=lines.join('\n');
@@ -1203,6 +1236,7 @@ export async function setup(ctx) {
         if(!apiKey && (route.value || config.mode)==='gemini')throw new Error('Enter a Gemini API key for this session.');
         const res=await rpc('designVoice',{prompt:promptText,apiKey},null,15000);
         const voiceId=res.result.id;
+        rememberExtraVoiceRoute(voiceId,route.value || scope(config));
         const entry=`${voiceId} | ${promptText}`;
         const existing=String(config.extraVoices || '').trim();
         if(!existing.includes(voiceId)) {
@@ -1329,6 +1363,10 @@ export async function setup(ctx) {
     refreshDefaultControls();
   }
   function capture() {
+    // New bulk entries belong to the selected default connection. Card actions
+    // record their own route before capture, including non-default Fish voices.
+    scopeLegacyExtraVoices();
+    for(const voice of additionalVoices($('extraVoices').value))if(!Object.hasOwn(config.extraVoiceRoutes || {},voice.id))rememberExtraVoiceRoute(voice.id,scope(config));
     return {...config,showAutoPlanAction:$('showAutoPlanAction').checked,fixed:castRows.filter(v=>v.row.parentElement===$('fixed')).map(v=>v.read()),
       singleVoices:config.connectionMode==='one'?{...config.singleVoices,[scope(config)]:Object.fromEntries([...castRows,...npcRows].filter(v=>v.row.isConnected || v.row.parentElement).map(v=>v.voiceChoice()))}:config.singleVoices,
       casts:{...config.casts,[scope(config)]:npcRows.filter(v=>v.row.parentElement===$('npcs')).map(v=>v.read())},
@@ -1542,25 +1580,10 @@ export async function setup(ctx) {
   }
   async function loadVoices(version=loadVersion) {
     voiceCatalogues.clear();
-    const extra=String(config.extraVoices || '').split('\n').filter(s=>s.trim()).map(line=>{
-      const [id,...description]=line.split('|');return {id:id.trim(),name:id.trim(),description:description.join('|').trim()};
-    });
-    if(config.mode==='gemini') {
-      voices=[...new Map([...GEMINI_VOICES,...extra].map(v=>[v.id,v])).values()];
-    } else if(config.connection) {
-      const conn=nativeConnections.find(c=>c.id===config.connection);
-      const response=await api(`/tts-connections/${encodeURIComponent(config.connection)}/voices`);
-      const data=await response.json();if(disposed || version!==loadVersion)return;
-      let baseVoices=data.voices || [];
-      if(detectProvider(config)==='gemini' && !baseVoices.some(v=>GEMINI_VOICES.some(gv=>gv.id===v.id))) {
-        baseVoices=[...baseVoices,...GEMINI_VOICES];
-      }
-      voices=[...new Map([...baseVoices, ...extra].map(v=>[v.id,v])).values()];
-      if(!voices.length)throw new Error('This connection returned no voices. Configure its voice catalogue in Lumiverse.');
-    } else {voices=[...extra];}
-    voices=normalizeVoiceCatalogue(voices);
-    voiceCatalogues.set(scope(config),voices);
-    if(!voiceCatalogues.has('gemini'))voiceCatalogues.set('gemini',normalizeVoiceCatalogue(GEMINI_VOICES));
+    const catalogue=await ensureCatalogue(scope(config),version);
+    if(disposed || version!==loadVersion)return;
+    voices=catalogue;
+    if(!voiceCatalogues.has('gemini'))await ensureCatalogue('gemini',version);
     const selectedRoutes=new Set(config.connectionMode==='one'?[]:[...config.fixed,...(config.casts[scope(config)] || [])].map(actor=>actor.route).filter(Boolean));
     const catalogues=await Promise.allSettled([...selectedRoutes].map(route=>ensureCatalogue(route)));
     for(const result of catalogues)if(result.status==='rejected')status(result.reason.message,true);
@@ -1911,6 +1934,7 @@ export async function setup(ctx) {
               const result=await rpc('designVoice',{apiKey,prompt},ctrl.signal,45000);
               if(token!==revision || ctrl.signal.aborted)return;
               const bespokeId=result.id;
+              rememberExtraVoiceRoute(bespokeId,scope(config));
               npc.voice=bespokeId;
               for(const s of plan.segments) {
                 if(normalizeName(s.speaker)===normalizeName(npc.speaker))s.voice=bespokeId;
@@ -2643,6 +2667,9 @@ export async function setup(ctx) {
     openVoiceLibraryModal({
       defaultQuery: query || 'narrator',
       onSelect: async (item) => {
+        const fishRoute=[scope(config),...casting(config).fixed.map(actor=>actor.route),...casting(config).npcs.map(actor=>actor.route)].find(route=>route && detectProvider(route)==='fish_audio');
+        if(!fishRoute)throw new Error('Select a Fish Audio connection before adding community voices.');
+        rememberExtraVoiceRoute(item.id,fishRoute);
         const entry = `${item.id} | ${item.name}${item.description ? ` · ${item.description}` : ''}`;
         const existing = $('extraVoices').value.trim();
         $('extraVoices').value = existing ? `${existing}\n${entry}` : entry;

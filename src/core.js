@@ -11,6 +11,17 @@ export const GEMINI_VOICES = [
 ].map(([id,description]) => ({id,name:id,description,
   gender:['Zephyr','Kore','Leda','Aoede','Callirrhoe','Autonoe','Despina','Erinome','Laomedeia','Achernar','Gacrux','Pulcherrima','Vindemiatrix','Sulafat'].includes(id)?'female':'male'}));
 
+// Lumiverse's OpenAI provider exposes these built-in IDs without gender metadata.
+export const OPENAI_VOICES = ['alloy','ash','ballad','cedar','coral','echo','fable','marin','nova','onyx','sage','shimmer','verse']
+  .map(id=>({id,name:id[0].toUpperCase()+id.slice(1)}));
+
+export function additionalVoices(value) {
+  return String(value || '').split('\n').filter(line=>line.trim()).map(line=>{
+    const [id,...description]=line.split('|');
+    return {id:id.trim(),name:id.trim(),description:description.join('|').trim()};
+  });
+}
+
 export function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }

@@ -12,6 +12,17 @@ const GEMINI_VOICES = [
 ].map(([id,description]) => ({id,name:id,description,
   gender:['Zephyr','Kore','Leda','Aoede','Callirrhoe','Autonoe','Despina','Erinome','Laomedeia','Achernar','Gacrux','Pulcherrima','Vindemiatrix','Sulafat'].includes(id)?'female':'male'}));
 
+// Lumiverse's OpenAI provider exposes these built-in IDs without gender metadata.
+const OPENAI_VOICES = ['alloy','ash','ballad','cedar','coral','echo','fable','marin','nova','onyx','sage','shimmer','verse']
+  .map(id=>({id,name:id[0].toUpperCase()+id.slice(1)}));
+
+function additionalVoices(value) {
+  return String(value || '').split('\n').filter(line=>line.trim()).map(line=>{
+    const [id,...description]=line.split('|');
+    return {id:id.trim(),name:id.trim(),description:description.join('|').trim()};
+  });
+}
+
 function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -1026,7 +1037,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.5-staging.15',ready:true}});return;
+      send({result:{version:'1.1.5-staging.16',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);
