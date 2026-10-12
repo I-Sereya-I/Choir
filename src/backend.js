@@ -46,25 +46,18 @@ async function jevPost(url, headers, payload, signal) {
   throw new Error('No HTTP transport available (spindle.cors or fetch).');
 }
 
-function extractChoices(data) {
-  let arr = [];
-  if (Array.isArray(data)) arr = data;
-  else if (Array.isArray(data?.choices)) arr = data.choices;
-  else if (Array.isArray(data?.classifications)) arr = data.classifications;
-  else if (Array.isArray(data?.results)) arr = data.results;
-  else if (Array.isArray(data?.predictions)) arr = data.predictions;
-  else if (Array.isArray(data?.data)) arr = data.data;
-  else if (data && typeof data === 'object' && data.choice) arr = [data.choice];
-  return arr.map(item => {
-    if (typeof item === 'string') return item;
-    if (item && typeof item === 'object') {
-      return item.choice || item.label || item.candidate || item.text || item.result || '';
-    }
-    return String(item ?? '');
-  });
+// TypeSafe's Decision API, the contract behind Lumiverse Decision connections, called with a Jev key.
+async function jevDecision({ apiKey, endpoint, state, questions, signal }) {
+  const key = apiKey.trim();
+  const base = (typeof endpoint === 'string' && endpoint.trim() || 'https://api.typesafe.ai/v1').replace(/\/classify$/, '');
+  const data = await jevPost(`${base}/systemone`, {
+    'Content-Type': 'application/json',
+    'Authorization': key.startsWith('Bearer ') ? key : `Bearer ${key}`
+  }, { model: 'jev-latest', state, questions }, signal);
+  return data?.answers || {};
 }
 
-export async function classifyWithJev({ items = [], candidates = [], apiKey, endpoint, signal } = {}) {
+export async function classifyWithJev({ items = [], candidates = [], apiKey, endpoint, signal, question = 'Which choice fits this text' } = {}) {
   if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
     throw new Error('Enter a Jev API key for classification.');
   }
@@ -74,36 +67,26 @@ export async function classifyWithJev({ items = [], candidates = [], apiKey, end
   if (!Array.isArray(items) || items.length === 0) {
     return [];
   }
-  const url = (typeof endpoint === 'string' && endpoint.trim())
-    ? endpoint.trim()
-    : 'https://api.typesafe.ai/v1/classify';
+  const inputs = items.map(it => ({
+    text: typeof it?.text === 'string' ? it.text : String(it?.text || ''),
+    context: typeof it?.context === 'string' ? it.context : String(it?.context || '')
+  }));
+  const choices = candidates.map(c => typeof c === 'string' ? c : String(c.name || c.speaker || c));
+  const criteria = Object.fromEntries(choices.map(choice => [choice, choice]));
+  const questions = Object.fromEntries(inputs.map((input, i) => [`q${i}`, { type: 'choice', instructions: `${question}: "${input.text}"?`, criteria }]));
 
-  const cleanKey = apiKey.trim();
-  const authHeader = cleanKey.startsWith('Bearer ') ? cleanKey : `Bearer ${cleanKey}`;
-  const headers = {
-    'Content-Type': 'application/json',
-    'Authorization': authHeader
-  };
-  const payload = {
-    inputs: items.map(it => ({
-      text: typeof it?.text === 'string' ? it.text : String(it?.text || ''),
-      context: typeof it?.context === 'string' ? it.context : String(it?.context || '')
-    })),
-    choices: candidates.map(c => typeof c === 'string' ? c : String(c.name || c.speaker || c))
-  };
-
-  let data;
+  let answers;
   try {
-    data = await jevPost(url, headers, payload, signal);
+    answers = await jevDecision({ apiKey, endpoint, state: inputs, questions, signal });
   } catch (err) {
     if (signal?.aborted) throw err;
     throw new Error(`Jev classification failed: ${err.message}`, {cause:err});
   }
-  const choices = extractChoices(data);
-  if (choices.length !== items.length || choices.some(choice => !payload.choices.includes(choice))) {
+  const result = inputs.map((_, i) => answers[`q${i}`]?.choice);
+  if (result.some(choice => !choices.includes(choice))) {
     throw new Error('Jev returned incomplete or unknown classification choices.');
   }
-  return choices;
+  return result;
 }
 
 export async function planWithJev({ transcript, config, apiKey, endpoint, context = '', decisionConnection, signal, userId } = {}) {
@@ -216,7 +199,8 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
         candidates,
         apiKey: key,
         endpoint: ep,
-        signal
+        signal,
+        question: 'Which character speaks this dialogue'
       });
 
       if (config.useStyle !== false) {
@@ -227,7 +211,8 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
             candidates: emotions,
             apiKey: key,
             endpoint: ep,
-            signal
+            signal,
+            question: 'What is the emotional delivery style for'
           });
         } catch (error) {
           if(signal?.aborted)throw error;
@@ -298,6 +283,19 @@ const jsonResponseParameters = connection =>
     ? {responseMimeType:'application/json'}
     : connection.provider==='openai' ? {response_format:{type:'json_object'}} : {};
 
+// Freesound ranks clips by their words alone, so a Decision model picks the clip that is heard in the story moment.
+async function chooseSound(sounds, input, userId, signal) {
+  const ids = sounds.map((_, i) => `s${i}`);
+  const state = { sound: input.query, moment: input.moment };
+  const questions = { q0: { type: 'choice',
+    instructions: `The story needs a ${input.kind === 'ambience' ? 'looping background ambience' : 'short sound effect'} for this moment. Wanted sound: "${input.query}". Story moment: "${input.moment}". Which sound file best matches what is actually heard in the story moment? Reject files whose name or tags describe a different action, setting, or sound source.`,
+    criteria: Object.fromEntries(sounds.map((sound, i) => [ids[i], `${sound.name} — tags: ${sound.tags.join(', ')} (${Math.round(sound.duration * 10) / 10}s)`])) } };
+  const answers = typeof spindle.decisions?.evaluate === 'function'
+    ? (await spindle.decisions.evaluate({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal })).answers
+    : input.jevApiKey?.trim() ? await jevDecision({ apiKey: input.jevApiKey, endpoint: input.jevEndpoint, state, questions, signal }) : {};
+  return Math.max(0, ids.indexOf(answers?.q0?.choice));
+}
+
 // Spindle supplies this global before importing the backend bundle.
 const running = new Map();
 const identity = (user,session,id) => JSON.stringify([user,session || '',id]);
@@ -359,7 +357,8 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
           candidates: ['Alice', 'Bob'],
           apiKey,
           endpoint,
-          signal: controller.signal
+          signal: controller.signal,
+          question: 'Which character speaks'
         });
         const duration = Date.now() - start;
         send({result:{provider:'TypeSafe AI',model:'Jev System 1',response:`READY · Classified in ${duration}ms (choice: ${res[0] || 'Alice'})`}});
@@ -544,7 +543,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       const query = typeof input.query === 'string' ? input.query.trim() : '';
       if (!query) throw new Error('Search query is required.');
       const filter = typeof input.filter === 'string' && input.filter.trim() ? input.filter.trim() : 'duration:[0.1 TO 2.5]';
-      const url = `https://freesound.org/apiv2/search/?query=${encodeURIComponent(query)}&filter=${encodeURIComponent(filter)}&fields=id,name,duration,previews,tags&sort=score&page_size=5`;
+      const url = `https://freesound.org/apiv2/search/?query=${encodeURIComponent(query)}&filter=${encodeURIComponent(filter)}&fields=id,name,duration,previews,tags&sort=score&page_size=8`;
       const headers={'Accept':'application/json','Authorization':`Token ${apiKey}`};
       let resData;
       if (typeof spindle !== 'undefined' && typeof spindle?.cors === 'function') {
@@ -567,8 +566,15 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         name: r.name,
         duration: r.duration,
         previewUrl: r.previews?.['preview-hq-mp3'] || r.previews?.['preview-lq-mp3'] || Object.values(r.previews || {})[0] || null,
-        tags: Array.isArray(r.tags) ? r.tags.slice(0, 5) : []
+        tags: Array.isArray(r.tags) ? r.tags.slice(0, 8) : []
       })).filter(r => r.previewUrl);
+      if (results.length > 1 && typeof input.moment === 'string' && input.moment.trim()) {
+        // A slow or failed choice keeps Freesound's top result.
+        let wait;
+        const pick = await Promise.race([chooseSound(results, input, userId, controller.signal), new Promise(resolve => { wait = setTimeout(() => resolve(0), 5000); })]).catch(() => 0);
+        clearTimeout(wait);
+        results.unshift(...results.splice(pick, 1));
+      }
       send({ result: { query, results } }); return;
     }
     if (message.action === 'searchVoices') {

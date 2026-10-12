@@ -449,6 +449,18 @@ test('Freesound searches drop trailing words until a sound matches',async()=>{
  }finally{await h.close();}
 });
 
+test('each Freesound search carries the story moment at its anchor, its sound kind and the Decision connection',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);h.$('decisionConnection').value='decision-b';h.$('decisionConnection').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  await until(()=>h.store.get('chat:chat-a').decisionConnection==='decision-b');
+  h.message.content='Rain drummed on the roof while the old clock ticked, the candles burned low and she listened until the page snapped under her thumb.';await h.plan();await h.play();
+  const searches=h.requests.filter(request=>request.action==='freesound').map(({input})=>({query:input.query,kind:input.kind,moment:input.moment,decisionConnection:input.decisionConnection}));
+  assert.deepEqual(searches.sort((a,b)=>a.query.localeCompare(b.query)),[
+   {query:'page turn',kind:'sfx',moment:'k ticked, the candles burned low and she listened until the page snapped under her thumb.',decisionConnection:'decision-b'},
+   {query:'rain',kind:'ambience',moment:h.message.content,decisionConnection:'decision-b'}]);
+ }finally{await h.close();}
+});
+
 test('mixer Auto-plan is opt-in, persists, reuses cached plans, and never automatically starts TTS',async()=>{
   const h=await harness();try{
     const event=()=>h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content});

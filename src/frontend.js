@@ -387,7 +387,7 @@ export async function setup(ctx) {
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
   const defaults = () => ({mode:'native',model:'gemini-3.8-flash-tts',planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
-    extraVoices:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,freesoundApiKey:'',autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1/classify',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
+    extraVoices:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,freesoundApiKey:'',autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
       {speaker:'Character',voice:'',style:''} ]});
@@ -1968,7 +1968,7 @@ export async function setup(ctx) {
       for(const {part,at} of points.map(part=>({part,at:Math.max(0,cueOffset(speech.text,part[part.kind].trigger))})).sort((a,b)=>a.at-b.at)){
         const head=speech.text.slice(start,Math.max(start,at)).trim();
         if(head)parts.push({...speech,text:head});
-        parts.push(part);
+        parts.push({...part,moment:speech.text.slice(Math.max(0,at-60),at+240)});
         start=Math.max(start,at);
       }
       const tail=speech.text.slice(start).trim();
@@ -2039,7 +2039,7 @@ export async function setup(ctx) {
     const loadBed=index=>{
       if(!bedLoads.has(index))bedLoads.set(index,(async()=>{
         const seg=segments[index],key=cacheKey(seg,snapshot);
-        blobs[index]=passages[key] ||= await fetchFoleyAudio(seg.ambience,snapshot,ctrl.signal);
+        blobs[index]=passages[key] ||= await fetchFoleyAudio(seg,snapshot,ctrl.signal);
         await persist();return blobs[index];
       })().catch(error=>{if(!ctrl.signal.aborted && token===revision)warnFoley(error);throw error;}));
       return bedLoads.get(index);
@@ -2078,7 +2078,7 @@ export async function setup(ctx) {
             if(blob) {
               status(`Replaying ${idx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
             } else if(seg.kind==='sfx') {
-              blob=await fetchFoleyAudio(seg.sfx,snapshot,ctrl.signal);
+              blob=await fetchFoleyAudio(seg,snapshot,ctrl.signal);
             } else if((seg.route || scope(snapshot))==='gemini') {
               if(!apiKey)throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');
               const result=await rpc('gemini',{segment:request.segment,model:snapshot.model,apiKey,allowVoiceFallback:snapshot.allowVoiceFallback},ctrl.signal);
@@ -2708,8 +2708,10 @@ export async function setup(ctx) {
   $('freesoundApiKey').addEventListener('input',()=>showFoleyStatus());
 
   const foleyCache = new Map();
-  async function fetchFoleyAudio(sfx, snapshot, signal) {
+  // The story moment lets the backend's Decision model pick among Freesound's results.
+  async function fetchFoleyAudio(seg, snapshot, signal) {
     signal.throwIfAborted();
+    const sfx = seg[seg.kind];
     const query = sfx.query || 'thump';
     const filter = sfx.filter || 'duration:[0.2 TO 4]';
     const key=foleyKey(sfx);
@@ -2719,7 +2721,8 @@ export async function setup(ctx) {
     let previewUrl;
     // Freesound requires every search word to match, so drop trailing words until one matches.
     for(let words=query.split(' ');!previewUrl && words.length;words=words.slice(0,-1)){
-      const result=await rpc('freesound',{query:words.join(' '),filter,apiKey},signal,10000);
+      const result=await rpc('freesound',{query:words.join(' '),filter,apiKey,kind:seg.kind,moment:seg.moment,
+        decisionConnection:snapshot.decisionConnection,jevApiKey:snapshot.jevApiKey,jevEndpoint:snapshot.jevEndpoint},signal,10000);
       signal.throwIfAborted();
       previewUrl=result?.results?.find(sound=>sound.previewUrl)?.previewUrl;
     }
@@ -2737,7 +2740,7 @@ export async function setup(ctx) {
   }
 
   async function synthesizeSegment(seg,snapshot,apiKey,signal) {
-    if(seg.kind)return fetchFoleyAudio(seg[seg.kind],snapshot,signal);
+    if(seg.kind)return fetchFoleyAudio(seg,snapshot,signal);
     if((seg.route || scope(snapshot))==='gemini') {
       if(!apiKey)throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');
       const result=await rpc('gemini',{segment:seg,model:snapshot.model,apiKey},signal);
