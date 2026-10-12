@@ -37,7 +37,8 @@ try{
   const page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',error=>errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.ready);
   const saveStatus=await page.locator('[data-et="saveState"]').boundingBox();
-  const toolbarButtons=await page.locator('.et-toolbar button').all();
+  const toolbarButtons=await page.locator('.et-toolbar button:visible').all();
+  assert.equal(await page.getByRole('button',{name:'Retry save',exact:true}).count(),0);
   const toolbarBounds=await Promise.all(toolbarButtons.map(button=>button.boundingBox()));
   assert.ok(toolbarBounds.every(bounds=>bounds.y>=saveStatus.y+saveStatus.height));
   assert.ok(toolbarBounds.every(bounds=>Math.abs(bounds.y-toolbarBounds[0].y)<1));
@@ -51,7 +52,8 @@ try{
   assert.equal(await page.getByText('Guided setup',{exact:true}).count(),0);
   const cast=page.locator('[data-et="fixed"]');assert.equal(await cast.locator('[data-choir-cast-editor]').first().isVisible(),false);
   const narratorBounds=await cast.locator('.et-card').first().boundingBox();assert.ok(narratorBounds.height<55);
-  await cast.getByRole('button',{name:'Edit Narrator',exact:true}).click();assert.equal(await cast.getByLabel('TTS connection',{exact:true}).first().isVisible(),true);
+  await cast.getByRole('button',{name:'Edit Narrator',exact:true}).click();
+  assert.equal(await cast.locator('[data-choir-route]').first().isVisible(),true);
   await cast.getByRole('button',{name:'Close Narrator editor',exact:true}).click();assert.equal(await cast.locator('[data-choir-cast-editor]').first().isVisible(),false);
   const launcher=page.getByRole('button',{name:'Open Choir voice mixer',exact:true});
   const iconBounds=await launcher.boundingBox();assert.equal(Math.round(iconBounds.width),44);assert.equal(Math.round(iconBounds.height),44);
@@ -61,6 +63,11 @@ try{
   assert.equal(await launcher.getAttribute('aria-expanded'),'false');
   if(process.env.CHOIR_ICON_SCREENSHOT)await page.screenshot({path:process.env.CHOIR_ICON_SCREENSHOT,clip:{x:Math.max(0,movedBounds.x-16),y:Math.max(0,movedBounds.y-16),width:76,height:76}});
   await launcher.press('Enter');assert.equal(await page.getByRole('slider',{name:'Master volume',exact:true}).isVisible(),true);
+  const autoPlanSwitch=page.getByRole('button',{name:'Auto-plan new replies',exact:true});
+  assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'true');
+  await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').autoPlan===true);await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');
+  await page.locator('[data-et="showAutoPlanAction"]').check();await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').showAutoPlanAction===true);
+  await page.locator('[data-et="showAutoPlanAction"]').uncheck();
   const master=page.getByRole('slider',{name:'Master volume',exact:true});await master.press('Home');await master.press('ArrowRight');
   assert.equal(await master.getAttribute('aria-valuetext'),'1 percent');assert.equal(await page.locator('.cm-master .cm-percent').innerText(),'1%');await master.press('End');
   await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
@@ -101,9 +108,9 @@ try{
   if(process.env.CHOIR_SCREENSHOT)await page.screenshot({path:process.env.CHOIR_SCREENSHOT,fullPage:true});
   if(process.env.CHOIR_MIXER_SCREENSHOT)await mixer.screenshot({path:process.env.CHOIR_MIXER_SCREENSHOT});
   assert.equal(await drawerStop.isEnabled(),true);await drawerStop.click();assert.equal(await drawerStop.isDisabled(),true);
-  await page.locator('[data-et="connectionMode"]').selectOption('one');await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('One TTS now'));
+  await page.locator('[data-et="connectionMode"]').selectOption('one',{force:true});await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('One TTS now'));
   assert.equal(await cast.locator('[data-choir-route]').evaluateAll(nodes=>nodes.every(node=>node.parentElement.hidden)),true);
-  await page.locator('[data-et="connectionMode"]').selectOption('several');await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Several TTS restored'));
+  await page.locator('[data-et="connectionMode"]').selectOption('several',{force:true});await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Several TTS restored'));
   assert.equal(await cast.locator('[data-choir-route]').nth(2).inputValue(),'native:b');
   await cast.getByRole('button',{name:'Edit Narrator',exact:true}).click();await cast.getByLabel('Aliases (comma separated)',{exact:true}).first().fill('Gentle narration');
   await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');

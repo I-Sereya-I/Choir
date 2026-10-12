@@ -1,4 +1,4 @@
-import { GEMINI_VOICES, normalizeName, normalizeVoiceCatalogue, transcriptFromMessage, planningSections, validateCastConfig, validatePlan, parsePlanJson, speechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport } from './core.js';
+import { GEMINI_VOICES, MAX_SPEECH_CHARS, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, transcriptFromMessage, planningSections, validateCastConfig, validatePlan, parsePlanJson, speechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport } from './core.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
 const ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
@@ -129,6 +129,10 @@ export async function setup(ctx) {
     .choir-mixer .cm-seek input{flex:1}
     .choir-mixer .cm-seek span{white-space:nowrap}
     .choir-mixer .cm-master{display:grid;grid-template-columns:auto minmax(0,1fr) 34px;align-items:center;gap:10px;margin:0;padding:10px 14px;color:#cad2e1;font-size:11px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
+    .choir-mixer .cm-auto-plan{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 14px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
+    .choir-mixer .cm-auto-plan button{padding:5px 8px;border:1px solid #ffffff25;border-radius:7px;font-size:11px}
+    .choir-mixer .cm-auto-plan button[aria-pressed="true"]{background:#c4b5fd20;color:var(--cm-accent)}
+    .choir-mixer .cm-auto-plan small{font-size:10px;color:var(--cm-muted)}
     .choir-mixer .cm-percent{font-size:10px;text-align:right;font-variant-numeric:tabular-nums;color:var(--cm-muted)}
     .choir-mixer .cm-channels-title{display:flex;justify-content:space-between;padding:10px 14px 3px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--cm-muted);flex-shrink:0}
     .choir-mixer .cm-channels{overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#ffffff25 transparent;padding:0 8px;min-height:0}
@@ -162,14 +166,14 @@ export async function setup(ctx) {
     <div class="et-header">
       <div class="et-title-group">
         <h2>Choir</h2>
-        <span class="et-badge">Voices</span>
+        <span class="et-badge">Staging</span>
       </div>
       <div class="et-header-actions">
         <span class="et-save-state" data-et="saveState" role="status" aria-live="polite">Settings saved per chat</span>
         <div class="et-toolbar">
           <button data-et="latest">Plan latest</button>
           <button data-et="stop" disabled title="Stop planning, speech generation, and playback">${ICON_STOP} Stop</button>
-          <button data-et="save" class="et-btn-primary">Save settings</button>
+          <button data-et="save" class="et-btn-primary" hidden>Retry save</button>
           <button data-et="showMixer">Open mixer</button>
         </div>
       </div>
@@ -222,6 +226,7 @@ export async function setup(ctx) {
     <div class="et-row" style="margin-top:10px;flex-wrap:wrap;gap:12px">
       <label class="et-check" hidden><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
       <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
+      <label class="et-check"><input data-et="showAutoPlanAction" type="checkbox"> Show Auto-plan in chat toolbar</label>
       <label class="et-check"><input data-et="muteNarrator" type="checkbox"> Mute narrator (dialogue only)</label>
       <label class="et-check" hidden><input data-et="enableSfx" type="checkbox" checked> Sound effects (Foley cues)</label>
       <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show section play buttons</label>
@@ -234,7 +239,7 @@ export async function setup(ctx) {
       <div class="et-grid" style="margin-top:10px">
         <label>Audio retention<select data-et="retention"><option value="session">This session only</option><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option><option value="forever">Indefinitely</option></select></label>
         <label>Concurrent TTS requests<select data-et="concurrency"><option value="1">1 (sequential)</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
-        <label>Max characters per request<input data-et="chunk" type="number" min="80" max="2000" value="1800"></label>
+        <label>Max characters per request<input data-et="chunk" type="number" min="80" max="10000" value="1800" aria-describedby="choir-chunk-hint"></label>
         <label>Planner output tokens<input data-et="plannerTokens" type="number" min="1024" max="32768" step="1024" value="8192"></label>
         <label>Prefetch passages<input data-et="prefetch" type="number" min="0" max="4" value="1"></label>
         <label class="et-check"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
@@ -244,6 +249,7 @@ export async function setup(ctx) {
         <label>Freesound API key (Foley)<input data-et="freesoundApiKey" type="password" placeholder="Freesound token"></label>
         <label data-et="batchGeminiWrap" class="et-check" style="align-self:end"><input data-et="batchGemini" type="checkbox" checked> Batch Gemini turns (2 speakers)</label>
       </div>
+      <p id="choir-chunk-hint" style="font-size:.85em;opacity:.75">Up to 10,000. Smaller chunks start playing sooner; Choir applies lower limits where needed for each voice provider.</p>
       <label data-et="autoDesignNPCsWrap" class="et-check" style="margin-top:10px"><input data-et="autoDesignNPCs" type="checkbox"> Auto-design custom voices for new NPCs (Gemini / AI Studio)</label>
       <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
       <div data-et="voiceDesignBox" style="margin-top:10px;padding:8px 10px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;background:rgba(128,128,128,0.03)">
@@ -352,6 +358,7 @@ export async function setup(ctx) {
   }
   const recordingKey=(chat,message)=>JSON.stringify([audioNamespace,chat,message]);
   const unsubs = [];
+  let autoPlanAction=null,autoPlanActionKey='';
   const messageStatuses=new Map(),messageSections=new Set(),seekControls=new Set();let messagePlaybackId=null,messageOperation=null;
   let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, planAttribution=null, planningSource=null, busy=false;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
@@ -359,7 +366,7 @@ export async function setup(ctx) {
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
   const defaults = () => ({mode:'native',model:'gemini-3.8-flash-tts',planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
-    extraVoices:'',useStyle:true,auto:false,muteNarrator:false,enableSfx:true,freesoundApiKey:'',autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1/classify',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
+    extraVoices:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,freesoundApiKey:'',autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1/classify',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
       {speaker:'Character',voice:'',style:''} ]});
@@ -397,7 +404,25 @@ export async function setup(ctx) {
   const mixerSeek=makeSeekControl(),legend=document.createElement('small');legend.className='cm-legend';legend.textContent='Silent = mute · No voice = skip & don’t generate';
   const channelsTitle=document.createElement('div');channelsTitle.className='cm-channels-title';channelsTitle.innerHTML='<span>Cast levels</span>';
   const channelCount=document.createElement('span');channelCount.setAttribute('aria-hidden','true');channelsTitle.append(channelCount);
-  player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,channelsTitle,channelsRoot,legend);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
+  const autoPlanRow=document.createElement('div');autoPlanRow.className='cm-auto-plan';
+  const mixerAutoPlan=document.createElement('button');mixerAutoPlan.type='button';mixerAutoPlan.dataset.choirAction='auto-plan';mixerAutoPlan.setAttribute('aria-label','Auto-plan new replies');mixerAutoPlan.onclick=()=>run(toggleAutoPlan);
+  const autoPlanNote=document.createElement('small');autoPlanNote.textContent='Plan without playback';autoPlanRow.append(mixerAutoPlan,autoPlanNote);
+  player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,autoPlanRow,channelsTitle,channelsRoot,legend);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
+  unsubs.push(()=>{autoPlanAction?.destroy();autoPlanAction=null;});
+  function refreshAutoPlanControls(){
+    mixerAutoPlan.textContent=`Auto-plan ${config?.autoPlan?'On':'Off'}`;
+    mixerAutoPlan.setAttribute('aria-pressed',String(Boolean(config?.autoPlan)));mixerAutoPlan.disabled=!chatId;
+    mixerAutoPlan.title='Plan new assistant replies with the selected engine. Jev and LLM planning can incur costs. Auto-play is controlled separately.';
+    autoPlanNote.textContent=config?.auto?'Auto-play is also on':'Plan without playback';
+    const key=config?.showAutoPlanAction?`${Boolean(chatId)}:${Boolean(config.autoPlan)}`:'';
+    if(key===autoPlanActionKey)return;
+    autoPlanAction?.destroy();autoPlanAction=null;autoPlanActionKey=key;
+    if(key){autoPlanAction=ctx.ui.registerInputBarAction({id:'choir_auto_plan',label:`Auto-plan ${config.autoPlan?'On':'Off'}`,subtitle:mixerAutoPlan.title,iconSvg:ICON_SPARKLE,enabled:Boolean(chatId)});autoPlanAction.onClick(()=>run(toggleAutoPlan));}
+  }
+  function toggleAutoPlan(){
+    if(!chatId)throw new Error('Open a chat first.');
+    config=capture();config.autoPlan=!config.autoPlan;scheduleSettingsSave();refreshAutoPlanControls();
+  }
   let mixerWriteQueue=null;
   const persistMixer=()=>{const snapshot=structuredClone(mixerState),write=()=>ctx.settings.set('ui:mixer',snapshot);const operation=mixerWriteQueue?mixerWriteQueue.catch(()=>{}).then(write):write();mixerWriteQueue=operation;return operation.then(()=>{if(mixerWriteQueue===operation)mixerWriteQueue=null;},error=>{if(mixerWriteQueue===operation)mixerWriteQueue=null;status(`Mixer preferences could not be saved: ${error.message}`,true);});};
   function applyVolume(){
@@ -438,6 +463,7 @@ export async function setup(ctx) {
   function renderMixer(){
     const doc=root?.ownerDocument || (typeof document!=='undefined'?document:null);
     if(!doc)return;
+    refreshAutoPlanControls();
     const focused=doc.activeElement,focusLabel=channelsRoot.contains(focused)?focused.getAttribute('aria-label'):null,scrollTop=channelsRoot.scrollTop;
     updateNextControls();
     channelsRoot.replaceChildren();speakerLabel.replaceChildren();
@@ -470,7 +496,7 @@ export async function setup(ctx) {
     mixerPlay.innerHTML=(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,'');mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || !plan;
     mixerStop.disabled=!controller && !currentAudio;
     $('stop').disabled=mixerStop.disabled;
-    mixer.dataset.playState=currentAudio?(paused?'paused':'playing'):busy?'loading':'idle';playbackCaption.textContent=currentAudio?(paused?'Paused':'Now playing'):busy?'Preparing audio':'Playback';
+    mixer.dataset.playState=currentAudio?(paused?'paused':'playing'):busy?'loading':'idle';playbackCaption.textContent=currentAudio?(paused?'Paused':'Now playing'):busy?(planningSource?'Planning speech':'Preparing audio'):'Playback';
   }
   function speakerExcluded(speaker){return [...(config?.fixed || []),...Object.values(config?.casts || {}).flat()].some(actor=>normalizeName(actor.speaker)===normalizeName(speaker) && actor.excluded);}
   async function setSpeakerExcluded(speaker,excluded){
@@ -543,9 +569,9 @@ export async function setup(ctx) {
   }
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
-  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','useStyle','auto','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','freesoundApiKey'];
+  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','useStyle','auto','autoPlan','showAutoPlanAction','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','freesoundApiKey'];
   let settingsWriteQueue=null,pendingSettings=null,autosaveTimer=null,settingsEdit=0;const retentionPolicies=new Map();
-  function saveState(text,error=false){if(disposed)return;$('saveState').textContent=text;$('saveState').classList.toggle('et-error',error);}
+  function saveState(text,error=false){if(disposed)return;$('saveState').textContent=text;$('saveState').classList.toggle('et-error',error);$('save').hidden=!error || !text.startsWith('Save failed');}
   async function persistConfig(targetChat=chatId,value=config,inherit=false){
     if(pendingSettings?.chatId===targetChat){pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;inherit=true;}
     validateNumericSettings(value);
@@ -557,7 +583,7 @@ export async function setup(ctx) {
       }
     };
     const operation=settingsWriteQueue?settingsWriteQueue.catch(()=>{}).then(write):write();settingsWriteQueue=operation;
-    try{await operation;if(inherit && chatId===targetChat && edit===settingsEdit && !pendingSettings)saveState('Saved automatically');}catch(error){if(chatId===targetChat && edit===settingsEdit)saveState('Save failed · retry Save settings',true);throw error;}finally{if(settingsWriteQueue===operation)settingsWriteQueue=null;}
+    try{await operation;if(inherit && chatId===targetChat && edit===settingsEdit && !pendingSettings)saveState('Saved automatically');}catch(error){if(chatId===targetChat && edit===settingsEdit)saveState('Save failed · Retry save',true);throw error;}finally{if(settingsWriteQueue===operation)settingsWriteQueue=null;}
   }
   function scheduleSettingsSave(){
     if(disposed || !chatId || !config)return;
@@ -579,7 +605,7 @@ export async function setup(ctx) {
       if(!disposed && chatId===pending.chatId && pending.edit===settingsEdit)saveState('Saved automatically');
     }catch(error){
       if(!pendingSettings && chatId===pending.chatId)pendingSettings=pending;
-      if(!disposed && chatId===pending.chatId && pending.edit===settingsEdit)saveState('Save failed · retry Save settings',true);
+      if(!disposed && chatId===pending.chatId && pending.edit===settingsEdit)saveState('Save failed · Retry save',true);
       throw error;
     }
   }
@@ -1084,7 +1110,7 @@ export async function setup(ctx) {
     renderMixer();
   }
   function capture() {
-    return {...config,fixed:castRows.filter(v=>v.row.parentElement===$('fixed')).map(v=>v.read()),
+    return {...config,showAutoPlanAction:$('showAutoPlanAction').checked,fixed:castRows.filter(v=>v.row.parentElement===$('fixed')).map(v=>v.read()),
       singleVoices:config.connectionMode==='one'?{...config.singleVoices,[scope(config)]:Object.fromEntries([...castRows,...npcRows].filter(v=>v.row.isConnected || v.row.parentElement).map(v=>v.voiceChoice()))}:config.singleVoices,
       casts:{...config.casts,[scope(config)]:npcRows.filter(v=>v.row.parentElement===$('npcs')).map(v=>v.read())},
       mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,decisionConnection:$('decisionConnection')?$('decisionConnection').value:(config.decisionConnection||''),
@@ -1117,7 +1143,7 @@ export async function setup(ctx) {
     }else config.casts[scope(config)]=result.npcs;
   }
   function validateNumericSettings(c){
-    if(!Number.isInteger(c.chunk) || c.chunk<80 || c.chunk>2000)throw new Error('Max characters per request must be a whole number from 80 to 2000 (default: 1800).');
+    if(!Number.isInteger(c.chunk) || c.chunk<80 || c.chunk>MAX_SPEECH_CHARS)throw new Error('Max characters per request must be a whole number from 80 to 10000 (default: 1800).');
     if(!Number.isInteger(c.concurrency) || c.concurrency<1 || c.concurrency>4)throw new Error('Choose 1–4 concurrent TTS requests.');
     if(!Number.isInteger(c.prefetch) || c.prefetch<0 || c.prefetch>4)throw new Error('Prefetch must be 0–4 passages.');
     if(!Number.isInteger(c.plannerTokens) || c.plannerTokens<1024 || c.plannerTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
@@ -1188,6 +1214,7 @@ export async function setup(ctx) {
     for(const name of ['mode','model','planner','connection','decisionConnection','styleParam','apiBase','chunk','plannerTokens','extraVoices','retention'])if($(name))$(name).value=config[name] || '';
     $('connectionMode').value=config.connectionMode;
     $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;
+    $('showAutoPlanAction').checked=Boolean(config.showAutoPlanAction);
     if($('muteNarrator'))$('muteNarrator').checked=Boolean(config.muteNarrator);
     if($('enableSfx'))$('enableSfx').checked=config.enableSfx!==false;
     if($('enableMixer'))$('enableMixer').checked=Boolean(config.enableMixer);
@@ -1414,7 +1441,7 @@ export async function setup(ctx) {
     const record=await recordingStore('get',recordingKey(source.chatId,source.messageId)).catch(()=>null);
     if(source!==planSource)return;
     for(const [index,segment] of segments.entries()){
-      const batches=speechBatches([segment],snapshot.chunk,scope(snapshot),false);
+      const batches=ttsBatches([segment],snapshot);
       const count=batches.filter(batch=>record?.passages?.[cacheKey(batch,snapshot)]).length;
       const node=$('preview').querySelector(`[data-cache-index="${index}"]`);
       if(node)node.textContent=speakerExcluded(segment.speaker)?'No voice · text retained':count===batches.length?'Cached':`${count}/${batches.length} cached · requires generation`;
@@ -1449,8 +1476,9 @@ export async function setup(ctx) {
     const snapshot=structuredClone(casting(config));
     let context=ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
       .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content).slice(0,1000)}`).join('\n').slice(-4000);
-    const ctrl=new AbortController();controller=ctrl;setBusy(true);status('Checking Choir backend…');
+    const ctrl=new AbortController();controller=ctrl;
     planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;
+    setBusy(true);status('Checking Choir backend…');
     let streaming=false, player=null;
     try {
       if(/\{\{\s*user\s*\}\}/i.test(transcript+context)) {
@@ -1576,7 +1604,7 @@ export async function setup(ctx) {
           combined.push(...stripBase(checked.segments)); previous = section;
           if (streaming) {
             const offset=combined.length-checked.segments.length;
-            const sectionBatches = checked.segments.flatMap((segment,index)=>speechBatches([segment],config.chunk,scope(config),false).map((batch,chunkIndex)=>({...batch,passageIndex:offset+index,chunkIndex})));
+            const sectionBatches = checked.segments.flatMap((segment,index)=>ttsBatches([segment],config).map((batch,chunkIndex)=>({...batch,passageIndex:offset+index,chunkIndex})));
             player.push(sectionBatches);
           }
         }
@@ -1701,6 +1729,21 @@ export async function setup(ctx) {
   function cacheKey(segment,snapshot){
     const request=synthesisSettings(segment,snapshot);
     return passageKey(request.segment,{...snapshot,defaultRoute:scope(snapshot)},request.connection,request.parameters);
+  }
+  function ttsBatches(segments,snapshot,batchGemini=false){
+    return speechBatches(segments,snapshot.chunk,scope(snapshot),batchGemini,(segment,route)=>{
+      if(segment.kind==='sfx')return {maxChars:MAX_SPEECH_CHARS};
+      const connection=nativeConnections.find(item=>`native:${item.id}`===route);
+      const limits=speechRequestLimits(route==='gemini'?'gemini':connection?.provider,connection?.model || snapshot.model);
+      if(limits.maxBytes){
+        const request=synthesisSettings(segment,snapshot);
+        const delivery=route==='gemini'?request.segment.style:[segment.style,...Object.values(request.parameters)].filter(value=>typeof value==='string').join('\n');
+        limits.maxBytes-=new TextEncoder().encode(delivery || '').length;
+        if(limits.maxBytes<80)throw new Error('Shorten the Gemini delivery instructions to leave room for speech text.');
+      }
+      if(detectProvider(route)==='fish_audio' && snapshot.useStyle && segment.style && !segment.text.startsWith('['))limits.maxChars-=segment.style.trim().length+(segment.style.trim().startsWith('[')?1:3);
+      return limits;
+    });
   }
   function createStreamingPlayer(snapshot,source,cached,apiKey,ctrl,token) {
     const segments=[];
@@ -1868,7 +1911,7 @@ export async function setup(ctx) {
     const segments=plan.segments.flatMap((segment,index)=>{
       if(snapshot.muteNarrator && normalizeName(segment.speaker)==='narrator')return [];
       if(options.indices && !options.indices.includes(index))return [];
-      return speechBatches([segment],snapshot.chunk,scope(snapshot),false).map((batch,chunkIndex)=>({...batch,passageIndex:index,chunkIndex}));
+      return ttsBatches([segment],snapshot).map((batch,chunkIndex)=>({...batch,passageIndex:index,chunkIndex}));
     });
     if(!segments.some(segment=>!speakerExcluded(segment.speaker))){controller=null;status('All characters have No voice enabled. Text and saved audio remain available.');updateTransport();return;}
     validateSettings(snapshot);
@@ -2230,9 +2273,11 @@ export async function setup(ctx) {
   unsubs.push(ctx.state.subscribe('chat.messageCount',()=>renderMessages()));
   unsubs.push(ctx.events.on('GENERATION_ENDED',payload=>{
     renderMessages();
-    if(payload?.chatId!==chatId || payload.error || !payload.messageId || !config?.auto || busy)return;
+    if(payload?.chatId!==chatId || payload.error || !payload.messageId || !config || (!config.autoPlan && !config.auto) || busy)return;
     if(payload.generationType==='impersonate')return;
-    run(()=>prepare(payload.messageId,true,payload.content));
+    const message=ctx.messages.getRecent(200).find(item=>item.id===payload.messageId);
+    if(message?.is_user || message?.extra?.is_system)return;
+    run(()=>prepare(payload.messageId,Boolean(config.auto),payload.content));
   }));
   for(const event of ['MESSAGE_EDITED','MESSAGE_SWIPED','SWIPE_EDITED','MESSAGE_DELETED']) {
     unsubs.push(ctx.events.on(event,payload=>{
@@ -2305,7 +2350,7 @@ export async function setup(ctx) {
         ? (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:undefined)
         : (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:['instructions','instruct','prompt'].find(p=>supported[p]));
       if(snapshot.useStyle && styleParam && seg.style)parameters[styleParam]=seg.style;
-      const isFish=detectProvider(connection?.provider || route)==='fish_audio';
+      const isFish=detectProvider(route)==='fish_audio';
       const textToSend=isFish && snapshot.useStyle && seg.style && !seg.text.startsWith('[')
         ? (seg.style.trim().startsWith('[') ? `${seg.style.trim()} ${seg.text}` : `[${seg.style.trim()}] ${seg.text}`)
         : seg.text;
@@ -2381,7 +2426,7 @@ const paragraphAudioCache = new Map();
             speaker: u.kind === 'dialogue' ? (charActor?.speaker || 'Character') : 'Narrator',
             voice: u.kind === 'dialogue' ? (charActor?.voice || narratorVoice) : narratorVoice,
             route: u.kind === 'dialogue' ? (charActor?.route || scope(snap)) : (snap.fixed[0]?.route || scope(snap)),
-            style: '',
+            style: snap.useStyle===false?'':(u.kind==='dialogue'?charActor:snap.fixed.find(actor=>normalizeName(actor.speaker)==='narrator'))?.style || '',
             text: u.text,
             unit_ids: [u.id]
           }))
@@ -2418,7 +2463,7 @@ const paragraphAudioCache = new Map();
       segments = segments.filter(s => normalizeName(s.speaker) !== 'narrator');
     }
 
-    return speechBatches(segments, snap.chunk, scope(snap), snap.batchGemini);
+    return ttsBatches(segments, snap, snap.batchGemini);
   }
 
   const bridge = {

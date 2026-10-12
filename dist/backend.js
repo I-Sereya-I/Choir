@@ -370,15 +370,35 @@ function planningSections(transcript,maxChars=1200,maxUnits=8) {
   return sections;
 }
 
-function splitSegment(segment, maxChars = 350) {
-  if (!Number.isInteger(maxChars) || maxChars < 80 || maxChars > 2000) throw new Error('Chunk size must be 80–2000 characters.');
+const MAX_SPEECH_CHARS = 10000;
+const GEMINI_SPEECH_BYTES = 6000;
+
+function speechRequestLimits(provider = '', model = '') {
+  const name=String(provider).toLowerCase();
+  if(name.includes('openai'))return {maxChars:4096};
+  if(name.includes('fish'))return {maxChars:MAX_SPEECH_CHARS};
+  if(name.includes('eleven'))return {maxChars:String(model).startsWith('eleven_v3')?5000:MAX_SPEECH_CHARS};
+  if(['gemini','google','aistudio','vertex'].some(part=>name.includes(part)))return {maxChars:MAX_SPEECH_CHARS,maxBytes:GEMINI_SPEECH_BYTES};
+  return {maxChars:2000};
+}
+
+function splitSegment(segment, maxChars = 350, maxBytes = Infinity) {
+  if (!Number.isInteger(maxChars) || maxChars < 80 || maxChars > MAX_SPEECH_CHARS) throw new Error('Chunk size must be 80–10000 characters.');
+  if(maxBytes!==Infinity && (!Number.isInteger(maxBytes) || maxBytes<80))throw new Error('Speech byte budget must be at least 80.');
+  const bytes=text=>maxBytes===Infinity?0:new TextEncoder().encode(text).length;
   const out = [];
   let text = segment.text;
-  while (text.length > maxChars) {
-    const head = text.slice(0, maxChars);
+  while (text.length > maxChars || bytes(text)>maxBytes) {
+    let limit=Math.min(text.length,maxChars);
+    if(bytes(text.slice(0,limit))>maxBytes){
+      let low=0,high=limit;
+      while(low<high){const mid=Math.ceil((low+high)/2);if(bytes(text.slice(0,mid))<=maxBytes)low=mid;else high=mid-1;}
+      limit=low;
+    }
+    const head = text.slice(0, limit);
     const sentence = [...head.matchAll(/[.!?…]["'”’]?\s+/g)].at(-1);
-    let end = sentence && sentence.index > maxChars/3 ? sentence.index + sentence[0].length : head.lastIndexOf(' ');
-    if (end < maxChars/3) end = maxChars;
+    let end = sentence && sentence.index > limit/3 ? sentence.index + sentence[0].length : head.lastIndexOf(' ');
+    if (end < limit/3) end = limit;
     // Do not split a UTF-16 surrogate pair.
     if (/[\uD800-\uDBFF]/.test(text[end-1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
     out.push({...segment, text:text.slice(0,end).trim()});
@@ -390,9 +410,13 @@ function splitSegment(segment, maxChars = 350) {
 
 function geminiRequest(segment, model) {
   if (!/^gemini-3\.8-.*tts$/.test(model)) throw new Error('The metadata adapter requires a Gemini 3.8 TTS model.');
+  const turns=segment.turns || [segment];
+  if(!Array.isArray(turns) || !turns.length || turns.some(turn=>!turn || typeof turn.text!=='string' || (turn.style!=null && typeof turn.style!=='string')))throw new Error('Invalid Gemini speech batch.');
+  const inputBytes=turns.reduce((sum,turn)=>sum+new TextEncoder().encode((turn.text || '')+(turn.style || '')).length,0);
+  if(inputBytes>GEMINI_SPEECH_BYTES)throw new Error('Gemini speech text and delivery instructions exceed the safe input budget. Use shorter chunks.');
   if(segment.turns) {
     const turns=segment.turns;
-    if(!Array.isArray(turns) || !turns.length || turns.length>200 || turns.reduce((n,s)=>n+s.text.length,0)>2000)throw new Error('Invalid Gemini speech batch.');
+    if(!Array.isArray(turns) || !turns.length || turns.length>200 || turns.reduce((n,s)=>n+s.text.length,0)>MAX_SPEECH_CHARS)throw new Error('Invalid Gemini speech batch.');
     const speakers=new Map();
     for(const turn of turns) {
       if(!turn.speaker || !turn.voice || !turn.text?.trim())throw new Error('Invalid Gemini batch turn.');
@@ -410,18 +434,25 @@ function geminiRequest(segment, model) {
   };
 }
 
-function speechBatches(segments,maxChars,defaultRoute,batchGemini=true) {
+function speechBatches(segments,maxChars,defaultRoute,batchGemini=true,limitsForSegment=(segment,route)=>route==='gemini'?{maxChars:MAX_SPEECH_CHARS,maxBytes:GEMINI_SPEECH_BYTES-new TextEncoder().encode(segment.style || '').length}:{}) {
   const batches=[];
-  for(const segment of segments.flatMap(s=>splitSegment(s,maxChars))) {
+  for(const source of segments) {
+    const limits=limitsForSegment(source,source.route || defaultRoute);
+    const charLimit=Math.min(maxChars,limits.maxChars || maxChars),byteLimit=limits.maxBytes ?? Infinity;
+    for(const segment of splitSegment(source,charLimit,byteLimit)) {
     const route=segment.route || defaultRoute,previous=batches.at(-1);
+    const joined=previous?previous.text+'\n'+segment.text:'';
+    const fits=previous && joined.length<=charLimit && (byteLimit===Infinity || new TextEncoder().encode(joined).length<=byteLimit);
     if(batchGemini && route==='gemini') {
       const turns=previous?.turns;
       const names=new Set(turns?.map(turn=>turn.speaker) || []);names.add(segment.speaker);
-      if(turns && previous.route===route && names.size<=2 && turns.length<200 && previous.text.length+segment.text.length+1<=maxChars) {
+      const metadataBytes=new TextEncoder().encode([...(turns || []),segment].map(turn=>turn.style || '').join('')).length;
+      if(turns && previous.route===route && names.size<=2 && turns.length<200 && fits && new TextEncoder().encode(joined).length+metadataBytes<=GEMINI_SPEECH_BYTES) {
         turns.push(segment);previous.text+='\n'+segment.text;previous.speaker=[...names].join(' / ');
       } else batches.push({...segment,route,turns:[segment]});
-    } else if(previous && !previous.turns && previous.route===route && previous.voice===segment.voice && previous.speaker===segment.speaker && previous.style===segment.style && previous.text.length+segment.text.length+1<=maxChars)previous.text+='\n'+segment.text;
+    } else if(previous && !previous.turns && previous.route===route && previous.voice===segment.voice && previous.speaker===segment.speaker && previous.style===segment.style && fits)previous.text+='\n'+segment.text;
     else batches.push({...segment,route});
+    }
   }
   return batches;
 }
@@ -1015,7 +1046,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.0',ready:true}});return;
+      send({result:{version:'1.1.5-staging.2',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);
@@ -1281,7 +1312,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     if (message.action === 'gemini') {
       if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Gemini API key for this session.');
       const segment = input.segment;
-      if (!segment || typeof segment.text !== 'string' || segment.text.length > 2000 || !segment.text.trim()) throw new Error('Invalid speech chunk.');
+      if (!segment || typeof segment.text !== 'string' || segment.text.length > MAX_SPEECH_CHARS || !segment.text.trim()) throw new Error('Invalid speech chunk.');
       if (typeof segment.voice !== 'string' || segment.voice.length > 200 || typeof segment.style !== 'string' || segment.style.length > 1300) throw new Error('Invalid voice or style.');
       if(segment.turns && (!Array.isArray(segment.turns) || segment.turns.some(turn=>typeof turn.text!=='string' || typeof turn.speaker!=='string' || turn.speaker.length>200 || typeof turn.voice!=='string' || turn.voice.length>200 || typeof turn.style!=='string' || turn.style.length>1300)))throw new Error('Invalid batch turns.');
       const body = geminiRequest(segment,input.model);

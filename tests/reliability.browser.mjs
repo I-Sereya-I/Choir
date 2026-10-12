@@ -13,7 +13,7 @@ async function harness(mixerPreferences){
   const original={document:globalThis.document,Audio:globalThis.Audio,fetch:globalThis.fetch,indexedDB:globalThis.indexedDB};
   globalThis.document=dom.window.document;globalThis.indexedDB=new IDBFactory();
   const root=document.querySelector('main'),footer=document.querySelector('footer');
-  const state={active:'chat-a',blockAudio:false,failVoice:null,delay:0,held:false,aborted:0},store=new Map(),requests=[],synthesis=[],audios=[],events=new Map(),subscriptions=new Map(),heldPlans=[];
+  const state={active:'chat-a',blockAudio:false,failVoice:null,delay:0,held:false,aborted:0},store=new Map(),requests=[],synthesis=[],audios=[],events=new Map(),subscriptions=new Map(),heldPlans=[],toolbarActions=new Map();
   if(mixerPreferences)store.set('ui:mixer',mixerPreferences);
   const message={id:'message-a',content:'At dawn. "Hello." "Wait." The gate closed.',name:'Mira',is_user:false};
   store.set('chat:chat-a',{mode:'native',connection:'a',styleParam:'instructions',chunk:500,concurrency:1,prefetch:0,
@@ -49,7 +49,7 @@ async function harness(mixerPreferences){
     messages:{getRecent:()=>state.active==='chat-a'?[message]:[],getContent:id=>id===message.id && state.active==='chat-a'?message.content:null},
     state:{subscribe:(key,fn)=>{subscriptions.set(key,fn);return()=>subscriptions.delete(key);}},events:{on:(key,fn)=>{events.set(key,fn);return()=>events.delete(key);}},
     characters:{get:async()=>({name:'Mira'})},getActiveChat:()=>({chatId:state.active,characterId:'mira'}),dom:{addStyle:()=>()=>{}},
-    ui:{registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:()=>({onClick(){},destroy(){}}),
+    ui:{registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:options=>{const action={...options,onClick(handler){this.click=handler;},destroy(){if(toolbarActions.get(options.id)===action)toolbarActions.delete(options.id);}};toolbarActions.set(options.id,action);return action;},
       registerDomDecorator:options=>{decorationCleanup=options.render(footer,{messageId:message.id});return decorationCleanup;}},
     onBackendMessage:fn=>{backend=fn;return()=>backend=null;},sendToBackend:request=>{
       requests.push(request);if(request.action==='cancel')return;
@@ -59,6 +59,7 @@ async function harness(mixerPreferences){
         if(request.action==='plan' && state.failPlanAt===requests.filter(r=>r.action==='plan').length){backend({namespace:'choir',id:request.id,error:'Planner quota exhausted'});return;}
         let result;
         if(request.action==='ping')result={ready:true};
+        else if(request.action==='gemini')result={base64:'AAABAA==',mimeType:'audio/L16;rate=24000'};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
         else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
         else if(request.action==='plan')result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({
@@ -73,10 +74,107 @@ async function harness(mixerPreferences){
   const plan=()=>click('latest',text=>text.startsWith('Ready:') || text.includes('Saved attribution'));
   const play=async()=>{footer.querySelector('button').click();await tick();await until(()=>$('status').textContent.includes('Playback finished'));};
   const reload=async()=>{cleanup();cleanup=await setup(ctx);};
-  return {dom,state,store,requests,synthesis,audios,message,events,subscriptions,root,footer,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
+  return {dom,state,store,requests,synthesis,audios,message,events,subscriptions,toolbarActions,connections,root,footer,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
     async close(){cleanup();await tick();Object.assign(globalThis,original);dom.window.close();}};
 }
+
+test('autosave hides the manual save button and exposes a working retry only after storage failure',async()=>{
+  const h=await harness();try{
+    assert.equal(h.$('save').hidden,true);assert.equal(h.$('save').textContent,'Retry save');
+    h.state.failConfigSave=true;h.$('prefetch').value='2';h.$('prefetch').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+    await until(()=>h.$('saveState').textContent.includes('Save failed'));assert.equal(h.$('save').hidden,false);
+    h.state.failConfigSave=false;await h.click('save',text=>text.includes('retention saved'));
+    assert.equal(h.store.get('chat:chat-a').prefetch,2);assert.equal(h.$('save').hidden,true);
+    h.$('chunk').value='10001';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+    assert.equal(h.$('save').hidden,true);assert.match(h.$('saveState').textContent,/Not saved/);
+  }finally{await h.close();}
+});
+
+test('mixer Auto-plan is opt-in, persists, reuses cached plans, and never automatically starts TTS',async()=>{
+  const h=await harness();try{
+    const event=()=>h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+    event();await tick();assert.equal(h.requests.length,0);
+    h.$('showMixer').click();h.$('auto-plan').click();assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');
+    event();await until(()=>h.$('status').textContent.startsWith('Ready:') && !h.$('latest').disabled);
+    assert.equal(h.requests.filter(request=>request.action==='plan').length,1);assert.equal(h.synthesis.length,0);assert.equal(h.audios.length,0);
+    event();await until(()=>h.$('status').textContent==='Saved attribution reused.');assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+    await h.reload();assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');assert.equal(h.$('auto').checked,false);
+    h.message.content='A fresh reply.';event();await until(()=>h.requests.filter(request=>request.action==='plan').length===2 && !h.$('latest').disabled);
+    assert.equal(h.synthesis.length,0);h.$('auto-plan').click();await until(()=>h.$('saveState').textContent==='Saved automatically');
+    h.message.content='Another reply.';event();await tick();assert.equal(h.requests.filter(request=>request.action==='plan').length,2);
+  }finally{await h.close();}
+});
+
+test('Auto-plan toolbar visibility and mixer state stay synchronized through reload and teardown',async()=>{
+  const h=await harness();try{
+    assert.equal(h.toolbarActions.has('choir_auto_plan'),false);
+    h.$('showAutoPlanAction').checked=true;h.$('showAutoPlanAction').dispatchEvent(new h.dom.window.Event('change'));
+    await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan Off');
+    await h.toolbarActions.get('choir_auto_plan').click();assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan On');
+    await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();
+    assert.equal(h.$('showAutoPlanAction').checked,true);assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan On');
+    h.$('auto-plan').click();assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan Off');
+    h.$('showAutoPlanAction').checked=false;h.$('showAutoPlanAction').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.toolbarActions.has('choir_auto_plan'),false);
+    await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(h.toolbarActions.has('choir_auto_plan'),false);
+  }finally{await h.close();assert.equal(h.toolbarActions.size,0);}
+});
+
+test('automatic planning ignores unsuitable events and duplicate events during a pending plan',async()=>{
+  const h=await harness();try{
+    h.$('auto-plan').click();const emit=extra=>h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content,...extra});
+    emit({chatId:'chat-b'});emit({error:'Failed'});emit({generationType:'impersonate'});
+    h.message.is_user=true;emit({});h.message.is_user=false;h.message.extra={is_system:true};emit({});h.message.extra={};await tick();assert.equal(h.requests.length,0);
+    h.state.held=true;emit({});await until(()=>h.requests.some(request=>request.action==='plan'));emit({});await tick();
+    assert.equal(document.querySelector('.cm-caption').textContent,'Planning speech');
+    assert.equal(h.requests.filter(request=>request.action==='plan').length,1);h.$('stop').click();await tick();h.releaseHeld();await tick();
+    assert.equal(h.$('status').textContent,'Stopped.');assert.equal(h.synthesis.length,0);
+  }finally{await h.close();}
+});
+
+test('existing Auto-play still plans and plays even when Auto-plan is off',async()=>{
+  const h=await harness();try{
+    h.$('auto').checked=true;h.$('auto').dispatchEvent(new h.dom.window.Event('change'));
+    h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+    await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'false');assert.ok(h.synthesis.length>0);
+  }finally{await h.close();}
+});
+
+test('larger native requests apply OpenAI, Fish, and unknown-provider chunk limits without losing text',async()=>{
+  for(const [provider,limit] of [['openai_tts',4096],['fish_audio',10000],['custom_tts',2000]]){
+    const h=await harness();try{
+      h.connections[0].provider=provider;await h.reload();h.message.content='A neutral phrase '.repeat(400)+'ends.';
+      h.$('chunk').value='10000';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+      await h.plan();await h.play();assert.ok(h.synthesis.every(request=>request.text.length<=limit));
+      if(provider!=='custom_tts')assert.ok(h.synthesis.some(request=>request.text.length>2000));
+      const spoken=h.synthesis.map(request=>request.text.replace(/^\[Calm\]\s*/,''));
+      assert.ok(spoken.join(' ').replace(/\s+/g,' ').trim()===h.message.content.replace(/\s+/g,' ').trim(),'Native chunks must preserve the original speech text.');
+    }finally{await h.close();}
+  }
+});
+
+test('larger Gemini requests preserve multilingual text and reserve input space for delivery instructions',async()=>{
+  const h=await harness();try{
+    const saved=h.store.get('chat:chat-a');h.store.set('chat:chat-a',{...saved,mode:'gemini',chunk:10000,fixed:[{speaker:'Narrator',voice:'Charon',style:'Calm'}],casts:{gemini:[]}});
+    await h.reload();h.$('key').value='test-session-key';h.message.content=Array.from({length:1500},(_,index)=>`你好世界${index}`).join(' ');
+    await h.plan();await h.play();const segments=h.requests.filter(request=>request.action==='gemini').map(request=>request.input.segment);
+    assert.ok(segments.length>1);assert.ok(segments.every(segment=>new TextEncoder().encode(segment.text+segment.style).length<=6000));
+    assert.ok(segments.map(segment=>segment.text).join(' ').replace(/\s+/g,' ').trim()===h.message.content,'Gemini chunks must preserve the original multilingual text.');
+  }finally{await h.close();}
+});
+
+test('companion paragraph playback also applies native provider limits and Fish delivery tags',async()=>{
+  for(const [provider,limit] of [['openai_tts',4096],['fish_audio',10000]]){
+    const h=await harness();try{
+      h.connections[0].provider=provider;const saved=h.store.get('chat:chat-a');h.store.set('chat:chat-a',{...saved,chunk:10000});await h.reload();
+      const text='A neutral phrase '.repeat(400)+'ends.';
+      await globalThis.__CHOIR_API__.playParagraph({text,speaker:'Narrator'});
+      assert.ok(h.synthesis.length>0);assert.ok(h.synthesis.every(request=>request.text.length<=limit));
+      if(provider==='fish_audio')assert.ok(h.synthesis.every(request=>request.text.startsWith('[Calm]')));
+      assert.ok(h.synthesis.map(request=>request.text.replace(/^\[Calm\]\s*/,'')).join(' ').replace(/\s+/g,' ').trim()===text,'Companion chunks must preserve the original paragraph.');
+    }finally{await h.close();}
+  }
+});
 
 test('heuristic planning and its test stay local without any backend request',async()=>{
   const h=await harness();try{
@@ -578,16 +676,16 @@ test('chat navigation cancels playback immediately while a pending settings save
 
 test('invalid TTS chunk edits never overwrite saved settings and valid boundaries survive reload',async()=>{
  const h=await harness();try{
-  for(const value of ['', '79', '2001', '80.5']){
+  for(const value of ['', '79', '10001', '80.5']){
    h.$('chunk').value=value;h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
    h.$('planner').value='planner';h.$('planner').dispatchEvent(new h.dom.window.Event('change'));
    await new Promise(resolve=>setTimeout(resolve,280));
    assert.equal(h.store.get('chat:chat-a').chunk,500);assert.equal(h.store.has('settings:global'),false);
-   assert.match(h.$('status').textContent,/Max characters per request.*80.*2000.*1800/);
+   assert.match(h.$('status').textContent,/Max characters per request.*80.*10000.*1800/);
    assert.match(h.$('saveState').textContent,/Not saved/);
    h.$('save').click();await tick();assert.equal(h.store.get('chat:chat-a').chunk,500);
   }
-  for(const value of ['80','2000']){
+  for(const value of ['80','2000','10000']){
    h.$('chunk').value=value;h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
    await until(()=>h.$('saveState').textContent==='Saved automatically');
    assert.equal(h.store.get('chat:chat-a').chunk,Number(value));await h.reload();assert.equal(h.$('chunk').value,value);

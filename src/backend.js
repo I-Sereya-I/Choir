@@ -1,4 +1,4 @@
-import { validateCastConfig, validatePlan, parsePlanJson, resolvePlanReferences, plannerPrompt, geminiRequest, extractGeminiAudio, speechSourceUnits, normalizeName, fastClassifyPlan, resolvePlannerMode } from './core.js';
+import { MAX_SPEECH_CHARS, validateCastConfig, validatePlan, parsePlanJson, resolvePlanReferences, plannerPrompt, geminiRequest, extractGeminiAudio, speechSourceUnits, normalizeName, fastClassifyPlan, resolvePlannerMode } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -315,7 +315,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.0',ready:true}});return;
+      send({result:{version:'1.1.5-staging.2',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);
@@ -581,7 +581,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     if (message.action === 'gemini') {
       if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Gemini API key for this session.');
       const segment = input.segment;
-      if (!segment || typeof segment.text !== 'string' || segment.text.length > 2000 || !segment.text.trim()) throw new Error('Invalid speech chunk.');
+      if (!segment || typeof segment.text !== 'string' || segment.text.length > MAX_SPEECH_CHARS || !segment.text.trim()) throw new Error('Invalid speech chunk.');
       if (typeof segment.voice !== 'string' || segment.voice.length > 200 || typeof segment.style !== 'string' || segment.style.length > 1300) throw new Error('Invalid voice or style.');
       if(segment.turns && (!Array.isArray(segment.turns) || segment.turns.some(turn=>typeof turn.text!=='string' || typeof turn.speaker!=='string' || turn.speaker.length>200 || typeof turn.voice!=='string' || turn.voice.length>200 || typeof turn.style!=='string' || turn.style.length>1300)))throw new Error('Invalid batch turns.');
       const body = geminiRequest(segment,input.model);

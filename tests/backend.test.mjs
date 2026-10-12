@@ -3,7 +3,21 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const bundle=readFileSync(new URL('../dist/backend.js',import.meta.url),'utf8');
+const manifest=JSON.parse(readFileSync(new URL('../spindle.json',import.meta.url),'utf8'));
 const config={voices:[{id:'Charon'},{id:'Kore'}],fixed:[{speaker:'Narrator',voice:'Charon',style:''}],npcs:[],useStyle:true};
+test('Gemini accepts speech beyond the old 2000-character cap when it fits the input budget',async()=>{
+  let calls=0;const h=await harness(null,async(url,options)=>{calls++;assert.equal(JSON.parse(options.body).contents[0].parts[0].text.length,3000);return {status:200,body:JSON.stringify({candidates:[{content:{parts:[{inlineData:{data:'YQ==',mimeType:'audio/wav'}}]}}]})};});
+  h.send('gemini',{apiKey:'test-key',model:'gemini-3.8-flash-tts',segment:{text:'x'.repeat(3000),voice:'Kore',style:'Warm'}});
+  assert.equal((await h.result()).message.result.base64,'YQ==');assert.equal(calls,1);
+});
+
+test('oversized Gemini text or multilingual input is rejected before making a provider request',async()=>{
+  for(const text of ['x'.repeat(6001),'你'.repeat(2001)]){
+    let calls=0;const h=await harness(null,async()=>{calls++;throw Error('Unexpected request');});
+    h.send('gemini',{apiKey:'test-key',model:'gemini-3.8-flash-tts',segment:{text,voice:'Kore',style:''}});
+    assert.match((await h.result()).message.error,/safe input budget/);assert.equal(calls,0);
+  }
+});
 test('Jev proxy options are clone-safe and cancellation discards a late response',async()=>{
   let release,options;
   const h=await harness(()=>{throw Error('No LLM fallback');},async(url,input)=>{
@@ -108,7 +122,7 @@ async function harness(generate, cors, provider, deadline, stream, decisions) {
   let handler;const sent=[];let wake;
   const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider};
   vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate,rawStream:stream},connections:{get:async()=>connection,list:async()=>[connection]},cors,decisions},
-    console,Map,Set,AbortController,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView,fetch:globalThis.fetch});
+    console,Map,Set,AbortController,TextEncoder,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView,fetch:globalThis.fetch});
   return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
     result:()=>sent.some(item=>item.message.result || item.message.error)?Promise.resolve(sent.findLast(item=>item.message.result || item.message.error)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
 }
@@ -162,7 +176,7 @@ test('empty planner responses produce an actionable error',async()=>{
 test('backend readiness check replies without making an LLM or TTS request',async()=>{
   const h=await harness(()=>{throw new Error('Should not call planner');},()=>{throw new Error('Should not call TTS');});
   h.send('ping',{});
-  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,'1.1.0');
+  const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,manifest.version);
 });
 
 test('prose-only planner responses expose a useful diagnostic after retry',async()=>{

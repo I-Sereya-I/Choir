@@ -1,6 +1,33 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode} from '../src/core.js';
+
+test('larger speech chunks respect provider limits while retaining a conservative unknown-provider limit',()=>{
+  assert.equal(speechRequestLimits('openai_tts').maxChars,4096);
+  assert.equal(speechRequestLimits('fish_audio').maxChars,10000);
+  assert.equal(speechRequestLimits('elevenlabs','eleven_v3').maxChars,5000);
+  assert.equal(speechRequestLimits('custom').maxChars,2000);
+  assert.equal(speechRequestLimits('google_vertex_tts').maxBytes,6000);
+  const text='A long neutral phrase '.repeat(400);
+  const batches=speechBatches([{speaker:'Narrator',voice:'n',text}],10000,'native:a',false,()=>speechRequestLimits('openai_tts'));
+  assert.ok(batches.length>1);assert.ok(batches.every(batch=>batch.text.length<=4096));
+  assert.equal(batches.map(batch=>batch.text).join(' ').trim(),text.trim());
+  assert.equal(splitSegment({text:'x'.repeat(10000)},10000).length,1);
+  assert.throws(()=>splitSegment({text:'x'},10001),/80–10000/);
+});
+
+test('multilingual byte-limited chunks preserve text and never split Unicode surrogate pairs',()=>{
+  const text='你好🙂世界'.repeat(1200);
+  const chunks=splitSegment({text,speaker:'Narrator',style:'Warm'},10000,6000);
+  assert.equal(chunks.map(chunk=>chunk.text).join(''),text);
+  assert.ok(chunks.every(chunk=>new TextEncoder().encode(chunk.text).length<=6000 && !/[\uD800-\uDBFF]$/.test(chunk.text) && !/^[\uDC00-\uDFFF]/.test(chunk.text)));
+});
+
+test('Gemini batching includes delivery metadata in its safe input budget',()=>{
+  const batches=speechBatches([{speaker:'A',voice:'Kore',text:'a'.repeat(3000),style:'Warm'},{speaker:'B',voice:'Puck',text:'b'.repeat(3000),style:'Quiet'}],10000,'gemini');
+  assert.equal(batches.length,2);assert.ok(batches.every(batch=>geminiRequest(batch,'gemini-3.8-flash-tts')));
+  assert.throws(()=>geminiRequest({text:'你'.repeat(2000),voice:'Kore',style:'Warm'},'gemini-3.8-flash-tts'),/safe input budget/);
+});
 
 test('Gemini batches preserve turn metadata and split on third speaker or provider change',()=>{
   const turns=['Narrator','Alice','Narrator','Bob','Alice'].map((speaker,i)=>({speaker,voice:speaker==='Narrator'?'Charon':speaker==='Alice'?'Kore':'Puck',text:'Turn '+i,style:'Soft',route:'gemini'}));
