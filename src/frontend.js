@@ -1,4 +1,4 @@
-import { GEMINI_VOICES, MAX_SPEECH_CHARS, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, transcriptFromMessage, planningSections, validateCastConfig, validatePlan, parsePlanJson, speechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport } from './core.js';
+import { GEMINI_VOICES, MAX_SPEECH_CHARS, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, transcriptFromMessage, planningSections, validateCastConfig, validatePlan, parsePlanJson, speechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset } from './core.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
 const ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
@@ -696,7 +696,7 @@ export async function setup(ctx) {
         try{ctx.sendToBackend({namespace:'choir',id,action:'cancel'});}catch{}
         done(new Error(action==='ping'
           ? 'Choir backend did not respond. Update and restart Choir in Extensions, then reload the page. Both backend and frontend must be running.'
-          : `${action==='plan' || action==='testPlanner'?'Planner':'TTS'} request timed out waiting for the backend. ${lastProgress?`Last reported stage: ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}.`:'The backend did not acknowledge this request; restart Choir and reload the page.'}`));
+          : `${action==='plan' || action==='testPlanner'?'Planner':action==='sfx'?'Sound effect':'TTS'} request timed out waiting for the backend. ${lastProgress?`Last reported stage: ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}.`:'The backend did not acknowledge this request; restart Choir and reload the page.'}`));
       },timeoutMs);
       const done=(error,result)=>{clearTimeout(timer);signal?.removeEventListener('abort',cancel);pending.delete(id);error?reject(error):resolve(result);};
       done.progress=progress=>{lastProgress=progress;onProgress?.(progress);};
@@ -1541,7 +1541,7 @@ export async function setup(ctx) {
     const restored=restoreAttribution(saved.attribution,saved.transcript,cast);
     planAttribution=saved.attribution;
     const chosen=rememberPlanCast(restored);
-    plan={...restored,warning:saved.warning || ''};planSource={messageId,content:saved.content,transcript:saved.transcript,chatId:targetChat,sections:saved.sections};
+    plan={...restored,warning:saved.warning || ''};planSource={messageId,content:saved.content,transcript:saved.transcript,chatId:targetChat,sections:saved.sections,soundCues:Boolean(saved.soundCues)};
     if(renderRows)renderCast();renderPreview();
     if(chosen)await persistConfig(targetChat,config);
     return !disposed && targetChat===chatId && version===loadVersion && token===revision;
@@ -1631,7 +1631,7 @@ export async function setup(ctx) {
   }
   async function prepare(messageId,autoPlay=false,contentOverride,forceReplan=false) {
     if(!chatId)throw new Error('Open a chat first.');
-    stop(false);clearPlan();config=capture();validateSettings(config);
+    stop(false);clearPlan();config=capture();validateSettings(config);showFoleyStatus(missingFoleyKey(config),false);
     const token=revision, targetChat=chatId;
     const content=contentOverride ?? ctx.messages.getContent(messageId);
     if(content==null)throw new Error('Message is no longer available.');
@@ -1643,7 +1643,7 @@ export async function setup(ctx) {
     const ctrl=new AbortController();controller=ctrl;
     planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;
     setBusy(true);status('Checking Choir backend…');
-    let streaming=false, player=null;
+    let streaming=false, player=null, soundsChosen=false;
     try {
       if(/\{\{\s*user\s*\}\}/i.test(transcript+context)) {
         const name=await personaName();
@@ -1717,6 +1717,7 @@ export async function setup(ctx) {
         const completedSections=savedProgress?.content===content && savedProgress.transcript===transcript && Array.isArray(savedProgress.sections)?savedProgress.sections.filter(saved=>saved && typeof saved.text==='string'):[];
         let timeoutSplits=0;
         streaming = autoPlay && sections.length > 1 && !config.autoDesignNPCs;
+        soundsChosen=streaming && soundCuesWanted(config);
         if (streaming) {
           const apiKey = $('key').value.trim();
           const cached=await recordingStore('get',recordingKey(targetChat,messageId)).catch(()=>null);
@@ -1766,11 +1767,17 @@ export async function setup(ctx) {
           for (const actor of snapshot.fixed) {
             if (!actor.voice) actor.voice = checked.segments.find(s => normalizeName(s.speaker) === normalizeName(actor.speaker))?.voice || '';
           }
-          playbackSections.push(checked.segments.map((_,index)=>combined.length+index));
-          combined.push(...stripBase(checked.segments)); previous = section;
+          let sectionSegments=checked.segments;
           if (streaming) {
-            const offset=combined.length-checked.segments.length;
-            const sectionBatches = checked.segments.flatMap((segment,index)=>playbackBatches([segment],config).map((batch,chunkIndex)=>({...batch,passageIndex:offset+index,chunkIndex})));
+            const cued=await cuePlannedSegments(sectionSegments,ctrl,token);
+            if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
+            sectionSegments=cued.segments;soundsChosen&&=cued.checked;
+          }
+          playbackSections.push(sectionSegments.map((_,index)=>combined.length+index));
+          combined.push(...stripBase(sectionSegments)); previous = section;
+          if (streaming) {
+            const offset=combined.length-sectionSegments.length;
+            const sectionBatches = sectionSegments.flatMap((segment,index)=>playbackBatches([segment],config).map((batch,chunkIndex)=>({...batch,passageIndex:offset+index,chunkIndex})));
             player.push(sectionBatches);
           }
         }
@@ -1778,7 +1785,12 @@ export async function setup(ctx) {
       }
       // Validate the complete original reply before audio or cast persistence.
       const validated=validatePlan({segments:combined},transcript,snapshot);
-      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat,sections:playbackSections};
+      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat,sections:playbackSections,soundCues:soundsChosen};
+      if(!streaming){
+        const cued=await cuePlannedSegments(plan.segments,ctrl,token);
+        if(token!==revision || ctrl.signal.aborted)return;
+        plan.segments=cued.segments;planSource.soundCues=cued.checked;
+      }
       rememberPlanCast(validated);
       if(config.autoDesignNPCs && detectProvider(config)==='gemini' && $('key').value) {
         const apiKey=$('key').value.trim();
@@ -1813,7 +1825,7 @@ export async function setup(ctx) {
       await persistConfig(targetChat,config);
       if(token!==revision || disposed)return;
       await persistPlan();
-      if(!streaming)status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.map(s=>s.speaker)).size} speakers.${plannerMode==='heuristic'?' Local heuristic attribution; no LLM request.':plannerMode==='jev' && !jevFailure?' Jev attribution; no LLM request.':''}${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''}`);
+      if(!streaming)status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.map(s=>s.speaker)).size} speakers.${plannerMode==='heuristic' || plannerMode==='jev' && !jevFailure?` ${plannerMode==='heuristic'?'Local heuristic':'Jev'} attribution; ${planSource.soundCues?'one LLM request for sound effects':'no LLM request'}.`:''}${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''}`);
       if(streaming) {
         const {blobs,segments:playedBatches,warnings}=await player.playbackPromise;
         const key=recordingKey(targetChat,messageId);
@@ -1912,23 +1924,48 @@ export async function setup(ctx) {
   function playbackBatches(segments,snapshot,{filterMuted=true,batchGemini=false}={}){
     const expanded=segments.flatMap(segment=>{
       const {sfx,...speech}=segment;
-      if(snapshot.enableSfx===false || !sfx?.query)return [speech];
-      const index=sfx.trigger?speech.text.toLowerCase().indexOf(sfx.trigger.toLowerCase()):0;
-      const head=index>0?speech.text.slice(0,index).trim():'';
-      const tail=index>0?speech.text.slice(index).trim():speech.text;
-      return [...(head?[{...speech,text:head}]:[]),{kind:'sfx',speaker:'SFX',voice:'',text:`[SFX: ${sfx.query}]`,route:'sfx',sfx},...(tail?[{...speech,text:tail}]:[])];
+      if(snapshot.enableSfx===false || !sfx?.length)return [speech];
+      // Each effect plays right before the words it was anchored to.
+      const points=sfx.map(cue=>({cue,at:Math.max(0,cueOffset(speech.text,cue.trigger))})).sort((a,b)=>a.at-b.at);
+      const parts=[];let start=0;
+      for(const {cue,at} of points){
+        const head=speech.text.slice(start,Math.max(start,at)).trim();
+        if(head)parts.push({...speech,text:head});
+        parts.push({kind:'sfx',speaker:'SFX',voice:'',text:`[SFX: ${cue.query}]`,route:'sfx',sfx:cue});
+        start=Math.max(start,at);
+      }
+      const tail=speech.text.slice(start).trim();
+      return tail?[...parts,{...speech,text:tail}]:parts;
     }).filter(segment=>!(filterMuted && snapshot.muteNarrator && normalizeName(segment.speaker)==='narrator'));
     return ttsBatches(expanded,snapshot,batchGemini);
   }
-  const foleyKey=sfx=>JSON.stringify([sfx?.query || 'thump',sfx?.filter || 'duration:[0.1 TO 2.5]']);
+  const foleyKey=sfx=>JSON.stringify([sfx?.query || 'thump',sfx?.filter || 'duration:[0.2 TO 4]']);
+  const freesoundKey=snapshot=>(snapshot.freesoundApiKey || $('freesoundApiKey')?.value || '').trim();
+  const soundCuesWanted=snapshot=>snapshot.enableSfx!==false && Boolean(freesoundKey(snapshot));
+  const missingFoleyKey=snapshot=>snapshot.enableSfx!==false && !freesoundKey(snapshot)?'Sound effects need a Freesound API key in Advanced settings. Speech continues.':'';
+  async function chooseSoundCues(segments,signal,onStage=status){
+    onStage('Choosing sound effects…');
+    const result=await rpc('sfx',{segments:segments.map(({speaker,text})=>({speaker,text})),connectionId:config.planner},signal,60000,
+      progress=>onStage(`Choosing sound effects: ${progress.stage}${progress.model?` · ${progress.model}`:''}`));
+    return Array.isArray(result?.cues)?result.cues:[];
+  }
+  // Sound effects are optional: a failed choice never blocks speech.
+  async function cuePlannedSegments(segments,ctrl,token){
+    if(!soundCuesWanted(config))return {segments,checked:false};
+    try{return {segments:applySoundCues(segments,await chooseSoundCues(segments,ctrl.signal)),checked:true};}
+    catch(error){
+      if(ctrl.signal.aborted || token!==revision)throw error;
+      showFoleyStatus(`SFX skipped: ${error.message}. Speech continues.`);return {segments,checked:false};
+    }
+  }
   const foleyWarning=warnings=>warnings?.length?` SFX skipped: ${warnings.join('; ')}.`:'';
-  function showFoleyStatus(message=''){
+  function showFoleyStatus(message='',error=true){
     if(disposed)return;
-    $('sfxStatus').hidden=!message;$('sfxStatus').textContent=message;$('sfxStatus').classList.toggle('et-error',Boolean(message));
+    $('sfxStatus').hidden=!message;$('sfxStatus').textContent=message;$('sfxStatus').classList.toggle('et-error',Boolean(message) && error);
   }
   function createStreamingPlayer(snapshot,source,cached,apiKey,ctrl,token) {
     const segments=[];
-    const warnings=new Set();showFoleyStatus();
+    const warnings=new Set();
     const warnFoley=error=>{warnings.add(error.message);if(token===revision)showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
     const ready=new Map();
     const resolvers=new Map();
@@ -2111,6 +2148,17 @@ export async function setup(ctx) {
     }
     stop(false);const token=revision;const ctrl=new AbortController();controller=ctrl;
     const snapshot=structuredClone(capture());
+    showFoleyStatus(missingFoleyKey(snapshot),false);
+    if(!planSource.soundCues && soundCuesWanted(snapshot)){
+      // Plans made before SFX were enabled get their effects chosen once, then saved.
+      const source=planSource,cued=await cuePlannedSegments(plan.segments,ctrl,token);
+      if(token!==revision || ctrl.signal.aborted || source!==planSource)throw abortError();
+      if(cued.checked){
+        plan={...plan,segments:cued.segments};planSource.soundCues=true;
+        try{await persistPlan();}catch(error){status(`Sound effects chosen, but the plan could not be saved: ${error.message}`,true);}
+        if(token!==revision || ctrl.signal.aborted)throw abortError();
+      }
+    }
     const resume=options.resume?await ctx.settings.get(`position:${chatId}`):null;
     if(token!==revision || ctrl.signal.aborted)throw abortError();
     const validResume=resume?.messageId===planSource.messageId && resume.content===planSource.content && !resume.complete?resume:null;
@@ -2611,7 +2659,7 @@ export async function setup(ctx) {
   async function fetchFoleyAudio(sfx, snapshot, signal) {
     signal.throwIfAborted();
     const query = sfx.query || 'thump';
-    const filter = sfx.filter || 'duration:[0.1 TO 2.5]';
+    const filter = sfx.filter || 'duration:[0.2 TO 4]';
     const key=foleyKey(sfx);
     if(foleyCache.has(key))return foleyCache.get(key);
     const apiKey = snapshot.freesoundApiKey || $('freesoundApiKey')?.value?.trim() || '';
@@ -2687,9 +2735,10 @@ const paragraphAudioCache = new Map();
     return prom;
   }
 
-  function planAndBatchParagraph(rawText, snap, filterMuted = false, preferredSpeaker = '') {
+  const paragraphCues = new Map();
+  function paragraphSegments(rawText, snap, preferredSpeaker = '') {
     const cleanPara = (transcriptFromMessage(rawText) || rawText).trim();
-    if (!cleanPara) return [];
+    if (!cleanPara) return {segments: [], cleanPara, fromPlan: false};
 
     let segments = null;
 
@@ -2699,9 +2748,7 @@ const paragraphAudioCache = new Map();
         const segText = s.text.trim();
         return cleanPara.includes(segText) || segText.includes(cleanPara);
       });
-      if (matched.length) {
-        segments = matched;
-      }
+      if (matched.length) return {segments: matched, cleanPara, fromPlan: true};
     }
 
     // 2. Otherwise plan the paragraph directly in 0ms without blocking on LLM RPC
@@ -2734,7 +2781,20 @@ const paragraphAudioCache = new Map();
       segments = planResult?.segments || [];
     }
 
-    return playbackBatches(attachFoleyCues(segments),snap,{filterMuted,batchGemini:snap.batchGemini});
+    return {segments: applySoundCues(segments, paragraphCues.get(cleanPara) || []), cleanPara, fromPlan: false};
+  }
+
+  function planAndBatchParagraph(rawText, snap, filterMuted = false, preferredSpeaker = '') {
+    return playbackBatches(paragraphSegments(rawText, snap, preferredSpeaker).segments, snap, {filterMuted, batchGemini: snap.batchGemini});
+  }
+
+  // Paragraphs outside the current message plan get their effects chosen once per text.
+  async function loadParagraphCues(rawText, snap, preferredSpeaker, signal) {
+    const {segments, cleanPara, fromPlan} = paragraphSegments(rawText, snap, preferredSpeaker);
+    if (fromPlan || !segments.length || paragraphCues.has(cleanPara) || !soundCuesWanted(snap)) return;
+    const cues = await chooseSoundCues(segments, signal, () => {});
+    paragraphCues.set(cleanPara, cues);
+    if (paragraphCues.size > 80) paragraphCues.delete(paragraphCues.keys().next().value);
   }
 
   const bridge = {
@@ -2768,6 +2828,10 @@ const paragraphAudioCache = new Map();
       const castInfo = casting(cap);
       const snapshot = { ...structuredClone(cap), fixed: castInfo.fixed, voices: castInfo.voices, npcs: castInfo.npcs, defaultRoute: castInfo.defaultRoute };
 
+      let cueWarning='';
+      try{await loadParagraphCues(text,snapshot,speaker,signal);}
+      catch(error){if(signal?.aborted)throw error;cueWarning=error.message;}
+      if(disposed)return { played: 0 };
       mixerPlaybackSegments=planAndBatchParagraph(text,snapshot,false,speaker);renderMixer();
       const batches = planAndBatchParagraph(text,snapshot,true,speaker).filter(batch=>!playbackExcluded(batch));
       if (!batches.length) {
@@ -2781,16 +2845,16 @@ const paragraphAudioCache = new Map();
       const onAbort = () => ctrl.abort();
       signal?.addEventListener('abort', onAbort, { once: true });
       const apiKey = $('key')?.value?.trim() || '';
-      let played=0;const warnings=new Set();showFoleyStatus();
+      let played=0;const warnings=new Set(cueWarning?[cueWarning]:[]);showFoleyStatus(cueWarning?`SFX skipped: ${cueWarning}. Speech continues.`:missingFoleyKey(snapshot),Boolean(cueWarning));
 
       // Prefetch upcoming paragraph in background for 0ms transition latency
       if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
-        try {
+        void loadParagraphCues(nextText, snapshot, '', ctrl.signal).catch(() => {}).then(() => {
           const nextBatches = planAndBatchParagraph(nextText, snapshot, true);
-          if (nextBatches[0] && !playbackExcluded(nextBatches[0])) {
+          if (!ctrl.signal.aborted && nextBatches[0] && !playbackExcluded(nextBatches[0])) {
             getCachedOrSynthesize(nextBatches[0], snapshot, apiKey, ctrl.signal).catch(() => {});
           }
-        } catch {}
+        }).catch(() => {});
       }
 
       try {

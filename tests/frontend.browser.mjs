@@ -1221,7 +1221,7 @@ test('__CHOIR_API__ companion bridge exposes controls and handles paragraph play
 
 
 
-test('Cue companion keeps narration when no Freesound key is configured and reports skipped effects', async () => {
+test('Cue companion keeps narration when no Freesound key is configured and points to the missing key', async () => {
   const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
   const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB, Blob: globalThis.Blob, URL: globalThis.URL, __CHOIR_API__: globalThis.__CHOIR_API__};
   globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
@@ -1231,6 +1231,7 @@ test('Cue companion keeps narration when no Freesound key is configured and repo
 
   const nativeRequests = [];
   const audiosPlayed = [];
+  const backendRequests = [];
   let freesoundRequests=0;
   class FakeAudio {
     constructor(url) { this.url = url; this.paused = true; }
@@ -1307,7 +1308,7 @@ test('Cue companion keeps narration when no Freesound key is configured and repo
     state: { subscribe: () => () => {}, get: () => null },
     events: { on: () => () => {} },
     onBackendMessage: () => () => null,
-    sendToBackend: () => {}
+    sendToBackend: request => backendRequests.push(request)
   };
 
   try {
@@ -1326,14 +1327,12 @@ test('Cue companion keeps narration when no Freesound key is configured and repo
     assert.equal($('enableSfx').checked, true);
     assert.equal(globalThis.__CHOIR_API__.getConfig().enableSfx,true);
 
-    // Plan text containing a sound cue: 'The page snapped under her thumb.'
+    // Without a Freesound key no effects are chosen, so no LLM or Freesound request is made.
     const textWithCue = 'The page snapped under her thumb.';
     const plan = globalThis.__CHOIR_API__.planParagraph(textWithCue);
     assert.ok(plan.segments.length > 0);
-    const sfxSegment = plan.segments.find(s => s.sfx);
-    assert.equal(sfxSegment.kind,'sfx');assert.equal(sfxSegment.sfx.query,'page turn');
+    assert.ok(plan.segments.every(s => s.kind !== 'sfx'));
 
-    // Missing-key effects are skipped without replacing them with cached silence.
     audiosPlayed.length = 0;
     nativeRequests.length = 0;
     const playRes = await globalThis.__CHOIR_API__.playParagraph({
@@ -1342,9 +1341,9 @@ test('Cue companion keeps narration when no Freesound key is configured and repo
       paragraphIndex: 0
     });
 
-    assert.equal(playRes.played,2);assert.equal(audiosPlayed.length,2);assert.equal(freesoundRequests,0);
-    assert.equal(nativeRequests.length,2);assert.equal(nativeRequests.map(request=>request.text).join(' '),textWithCue);
-    assert.match(playRes.warnings[0],/Freesound API key/);assert.equal($('sfxStatus').hidden,false);
+    assert.equal(playRes.played,1);assert.equal(audiosPlayed.length,1);assert.equal(freesoundRequests,0);assert.equal(backendRequests.length,0);
+    assert.equal(nativeRequests.length,1);assert.equal(nativeRequests[0].text,textWithCue);assert.equal(playRes.warnings,undefined);
+    assert.equal($('sfxStatus').hidden,false);assert.match($('sfxStatus').textContent,/Freesound API key/);
 
     cleanup?.();
   } finally {
