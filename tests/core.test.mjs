@@ -432,6 +432,19 @@ The countertop had never seen this much purposeful flurry.`;
   assert.equal(clean, 'The countertop had never seen this much purposeful flurry.');
 });
 
+test('sound choices accept complete JSON surrounded by commentary and ignore reasoning examples',()=>{
+  const segments=[{speaker:'Narrator',text:'She slammed the door marked "{exit}". Rain fell outside.'}];
+  const chosen={cues:[{segment:0,trigger:'She slammed the door',query:'door slam'}],ambience:[{segment:0,trigger:'Rain fell outside',query:'rain'}]};
+  const expected={cues:[{segment:0,trigger:'She slammed the door',query:'door slam'}],ambience:[{segment:0,trigger:'Rain fell outside',query:'rain'}]};
+  for(const response of [
+    `Metadata: {"status":"ready"}\n\`\`\`json\n${JSON.stringify(chosen)}\n\`\`\`\nSummary: {"count":2}`,
+    `<think>{"cues":[{"segment":0,"query":"footsteps"}],"ambience":[]}</think>\n${JSON.stringify(chosen)}`,
+    `Here are the choices for the door marked "{exit}":\n${JSON.stringify(chosen)}`
+  ])assert.deepEqual(parseSoundCues(response,segments),expected);
+  assert.throws(()=>parseSoundCues('{"cues":[{"segment":0,"query":"door slam"}',segments),/not valid JSON/);
+  assert.throws(()=>parseSoundCues('<think>{"cues":[]}</think>',segments),/no text/);
+});
+
 test('LLM sound cues and ambience beds are validated against the segments, keep the story language and survive saved attribution',()=>{
   const segments=[{speaker:'Narrator',text:'La puerta se cerró de golpe. Afuera llovía.'},{speaker:'Mira',text:'"¿Quién anda ahí?"'}];
   const prompt=soundCuePrompt(segments);
