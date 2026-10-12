@@ -1256,6 +1256,27 @@ test('mixer Silent and No voice retain text; resume, volume and position survive
   }finally{await h.close();}
 });
 
+test('drawer mixer button toggles and stays synchronized with the floating control, visibility and reload on desktop and mobile',async()=>{
+  for(const mobile of [false,true]){
+    const h=await harness({master:0.4,channels:{},x:50,y:100,collapsed:false});try{
+      const mixer=()=>document.querySelector('[data-choir-mixer]');
+      const check=expanded=>{assert.equal(h.$('showMixer').textContent,expanded?'Close mixer':'Open mixer');assert.equal(h.$('showMixer').getAttribute('aria-expanded'),String(expanded));assert.equal(!mixer().hidden && !mixer().children[1].hidden,expanded);};
+      check(false);h.$('showMixer').click();check(true);
+      assert.equal(h.$('enableMixer').checked,true);assert.equal(mixer().querySelector('[aria-label="Master volume"]').value,'0.4');
+      h.$('showMixer').click();check(false);assert.equal(mixer().hidden,false);assert.ok(mixer().querySelector('[aria-label="Open Choir voice mixer"]'));
+      h.$('showMixer').click();check(true);mixer().querySelector('[aria-label="Collapse Choir voice mixer"]').click();check(false);
+      mixer().querySelector('[aria-label="Open Choir voice mixer"]').click();check(true);
+      await toggle(h,'enableMixer',false);check(false);assert.equal(mixer().hidden,true);
+      h.$('showMixer').click();check(true);assert.equal(h.$('enableMixer').checked,true);
+      await until(()=>h.store.get('ui:mixer').collapsed===false && h.store.get('chat:chat-a').enableMixer===true);
+      h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent.includes('Ready.'));check(true);
+      h.$('showMixer').click();check(false);h.$('showMixer').click();check(true);
+      await h.reload();check(false);h.$('showMixer').click();check(true);
+      assert.equal(mixer().querySelector('[aria-label="Master volume"]').value,'0.4');assert.equal(h.synthesis.length,0);
+    }finally{await h.close();}
+  }
+});
+
 test('mixer starts as a draggable sound icon even with old expanded preferences, and dragging does not open it',async()=>{
   const h=await harness({master:0.4,channels:{},x:50,y:100,collapsed:false});try{
     const mixer=document.querySelector('[data-choir-mixer]'),button=mixer.querySelector('[aria-label="Open Choir voice mixer"]');
