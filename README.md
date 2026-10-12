@@ -4,7 +4,7 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.5--staging.9-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.5-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/main)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
 [![Tests](https://img.shields.io/badge/tests-180%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -13,7 +13,7 @@ An installable Lumiverse Spindle extension for multi-voice narration, dialogue a
 
 </div>
 
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.9** adds a compact **Plan latest** control beside Previous, makes the main Play button target the latest reply, and moves **SFX On / Off** beside Auto-plan and Auto-play. Mixer channels show only the voices in the current plan or playback, retaining preferences for hidden speakers. Freesound effects work in Choir and Cue; failed effects show a warning and let speech continue. It retains queued reply automation, description-based LLM voice selection with saved choices, the visible Auto-plan toolbar shortcut, and save status alongside the Choir title. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
+Version **1.1.5** adds a compact **Plan latest** control beside Previous, makes the main Play button target the latest reply, and moves **SFX On / Off** beside Auto-plan and Auto-play. Mixer channels show only the voices in the current plan or playback, retaining preferences for hidden speakers. Freesound effects work in Choir and Cue; failed effects show a warning and let speech continue. It includes queued reply automation, description-based LLM voice selection with saved choices, the visible Auto-plan toolbar shortcut, and save status alongside the Choir title. This release uses the original `choir` identifier and existing settings. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **main** branch. The **staging** branch remains available for testing future features before release.
 
 
 ## Overview
@@ -56,7 +56,7 @@ Choir also applies limits per voice route: Fish Audio uses up to the 10,000-char
 ### From GitHub
 
 1. In Lumiverse, open **Extensions -> Add -> Install from source**.
-2. Enter `https://github.com/patatasbravasch-arch/Choir` and select the `staging` branch.
+2. Enter `https://github.com/patatasbravasch-arch/Choir` and select the `main` branch.
 3. Enable **Choir** in your extension list.
 
 ### Local copy
