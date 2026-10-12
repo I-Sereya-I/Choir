@@ -23,7 +23,12 @@ async function harness(mixerPreferences,mobile=false){
     casts:{'native:a':[{speaker:'Guard',voice:'g',style:''}]}});
   class FakeAudio{
     constructor(){this.paused=true;this.currentTime=0;this.duration=20;audios.push(this);}
-    play(){this.paused=false;this.onloadedmetadata?.();if(!state.blockAudio)setTimeout(()=>{this.currentTime=20;this.onended?.();},2);return Promise.resolve();}
+    play(){
+      if(this.loop && state.bedPlayError)return Promise.reject(Object.assign(new Error('Playback requires a user gesture'),{name:'NotAllowedError'}));
+      this.paused=false;this.onloadedmetadata?.();
+      if(this.loop && state.bedDecodeError)setTimeout(()=>{this.paused=true;this.onerror?.();},2);
+      if(!state.blockAudio)setTimeout(()=>{this.currentTime=20;this.onended?.();},2);return Promise.resolve();
+    }
     pause(){this.paused=true;}
   }
   globalThis.Audio=FakeAudio;
@@ -559,6 +564,25 @@ test('Cue keeps a bed across paragraphs until a stop entry, stop() or cancellati
   await until(()=>/SFX skipped: No Freesound result for "tavern crowd"/.test(h.$('sfxStatus').textContent));assert.equal(beds(h).length,3);
   assert.deepEqual(h.requests.filter(request=>request.action==='freesound').map(request=>request.input.query).slice(-2),['tavern crowd','tavern']);
  }finally{await h.close();}
+});
+
+test('ambience playback and decode failures stay visible, keep speech running and allow a later paragraph to retry',async()=>{
+ for(const failure of ['start','decode','resume']){
+  const h=await harness();let pending;try{
+   await configureFoley(h);h.state.blockAudio=true;
+   h.state.bedPlayError=failure==='start';h.state.bedDecodeError=failure==='decode';
+   const bridge=globalThis.__CHOIR_API__,text='Rain drummed on the roof.';
+   pending=bridge.playParagraph({text}).then(result=>({result}),error=>({error}));
+   await until(()=>beds(h).length===1 && voices(h).length===1 && !voices(h)[0].paused);
+   if(failure==='resume'){h.$('play').click();await until(()=>voices(h)[0].paused);h.state.bedPlayError=true;h.$('play').click();}
+   await until(()=>h.$('sfxStatus').textContent.includes('Ambience skipped'));
+   assert.match(h.$('sfxStatus').textContent,/rain/);assert.match(h.$('sfxStatus').textContent,failure==='decode'?/decode/i:/blocked/i);
+   assert.equal(h.$('sfxStatus').hidden,false);assert.equal(voices(h)[0].paused,false);assert.equal(beds(h)[0].paused,true);
+   h.state.bedPlayError=false;h.state.bedDecodeError=false;h.state.blockAudio=false;
+   assert.equal((await bridge.playParagraph({text})).played,1);assert.equal((await pending).error?.name,'AbortError');
+   await until(()=>beds(h).length===2 && !beds(h)[1].paused);assert.equal(h.$('sfxStatus').hidden,true);
+  }finally{await h.close();await pending;}
+ }
 });
 
 test('one sound request serves both toggles and none is made with both off',async()=>{
