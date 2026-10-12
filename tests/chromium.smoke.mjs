@@ -105,6 +105,7 @@ try{
   assert.equal(await cast.locator('[data-choir-route]').first().isVisible(),true);
   await cast.getByRole('button',{name:'Close Narrator editor',exact:true}).click();assert.equal(await cast.locator('[data-choir-cast-editor]').first().isVisible(),false);
   const launcher=page.getByRole('button',{name:'Open Choir voice mixer',exact:true});
+  const drawerMixer=page.locator('[data-et="showMixer"]');assert.equal(await drawerMixer.innerText(),'Open mixer');assert.equal(await drawerMixer.getAttribute('aria-expanded'),'false');
   const iconBounds=await launcher.boundingBox();assert.equal(Math.round(iconBounds.width),44);assert.equal(Math.round(iconBounds.height),44);
   assert.equal(await page.getByRole('slider',{name:'Master volume',exact:true}).isVisible(),false);
   await page.mouse.move(iconBounds.x+22,iconBounds.y+22);await page.mouse.down();await page.mouse.move(iconBounds.x+92,iconBounds.y+82);await page.mouse.up();
@@ -112,6 +113,10 @@ try{
   assert.equal(await launcher.getAttribute('aria-expanded'),'false');
   if(process.env.CHOIR_ICON_SCREENSHOT)await page.screenshot({path:process.env.CHOIR_ICON_SCREENSHOT,clip:{x:Math.max(0,movedBounds.x-16),y:Math.max(0,movedBounds.y-16),width:76,height:76}});
   await launcher.press('Enter');assert.equal(await page.getByRole('slider',{name:'Master volume',exact:true}).isVisible(),true);
+  assert.equal(await drawerMixer.innerText(),'Close mixer');assert.equal(await drawerMixer.getAttribute('aria-expanded'),'true');
+  await drawerMixer.click();assert.equal(await page.getByRole('slider',{name:'Master volume',exact:true}).isVisible(),false);assert.equal(await launcher.isVisible(),true);assert.equal(await drawerMixer.innerText(),'Open mixer');
+  await drawerMixer.click();assert.equal(await drawerMixer.innerText(),'Close mixer');assert.equal(await page.getByRole('slider',{name:'Master volume',exact:true}).isVisible(),true);
+  await page.getByRole('button',{name:'Collapse Choir voice mixer',exact:true}).click();assert.equal(await drawerMixer.innerText(),'Open mixer');await drawerMixer.press('Enter');assert.equal(await drawerMixer.innerText(),'Close mixer');
   const levelsToggle=page.getByRole('button',{name:'Channel levels',exact:true});assert.equal(await levelsToggle.getAttribute('aria-expanded'),'false');
   assert.equal(await page.getByRole('slider',{name:'Ambience volume',exact:true}).isVisible(),false);
   if(process.env.CHOIR_LEVELS_COLLAPSED_SCREENSHOT)await page.locator('[data-choir-mixer]').screenshot({path:process.env.CHOIR_LEVELS_COLLAPSED_SCREENSHOT});

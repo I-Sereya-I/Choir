@@ -1392,6 +1392,9 @@ export async function setup(ctx) {
   function pauseBeds(paused){bedsPaused=paused;for(const layer of [bed,...fadingBeds])if(layer?.audio){if(paused)layer.audio.pause();else playBed(layer);}}
   function positionMixer(){
     const collapsed=Boolean(mixerState.collapsed);
+    const isEnabled=Boolean(config?.enableMixer),expanded=isEnabled && !collapsed;
+    $('showMixer').textContent=expanded?'Close mixer':'Open mixer';
+    $('showMixer').setAttribute('aria-expanded',String(expanded));
     mixer.dataset.collapsed=String(collapsed);mixerBody.hidden=collapsed;mixerTitle.hidden=collapsed;
     mixer.style.width=collapsed?'44px':'300px';mixer.style.padding='0';mixer.style.borderRadius=collapsed?'50%':'16px';
     mixer.style.borderWidth=collapsed?'0':'1px';
@@ -1404,7 +1407,6 @@ export async function setup(ctx) {
     mixerState.x=Math.max(0,Math.min(Number(mixerState.x)||0,Math.max(0,(view?.innerWidth || 1024)-mixer.offsetWidth-10)));
     mixerState.y=Math.max(0,Math.min(Number(mixerState.y)||0,Math.max(0,(view?.innerHeight || 768)-mixer.offsetHeight-10)));
     mixer.style.left=`${mixerState.x}px`;mixer.style.top=`${mixerState.y}px`;
-    const isEnabled = Boolean(config?.enableMixer);
     mixer.hidden = !isEnabled;
     mixer.style.display = isEnabled ? 'flex' : 'none';
   }
@@ -1519,7 +1521,7 @@ export async function setup(ctx) {
       const part=(activePlayback?.chunk ?? 0)+1;control.slider.title=`${currentSpeaker || 'Current block'}${part>1?` · part ${part}`:''}`;control.slider.setAttribute('aria-valuetext',`${clock(seconds)} of ${clock(duration)}${part>1?`, part ${part}`:''}`);
     }
   }
-  $('showMixer').onclick=()=>{config.enableMixer=true;if($('enableMixer'))$('enableMixer').checked=true;mixerState.enabled=true;mixerState.collapsed=false;positionMixer();persistMixer();scheduleSettingsSave();};
+  $('showMixer').onclick=()=>{const close=Boolean(config?.enableMixer) && !mixerState.collapsed;config.enableMixer=true;if($('enableMixer'))$('enableMixer').checked=true;mixerState.enabled=true;mixerState.collapsed=close;positionMixer();persistMixer();scheduleSettingsSave();};
   if($('enableMixer'))$('enableMixer').onchange=()=>{config.enableMixer=$('enableMixer').checked;mixerState.enabled=config.enableMixer;positionMixer();scheduleSettingsSave();persistMixer();};
   positionMixer();
   function status(text,error=false) {
