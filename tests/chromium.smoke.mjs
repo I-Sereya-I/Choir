@@ -206,11 +206,11 @@ try{
     const start=await page.evaluate(()=>({plans:window.plans,calls:window.calls.length,audios:window.audios.length}));
     await (mode==='auto-plan'?autoPlanSwitch:autoPlaySwitch).click();
     const event={generationId:`chrome-${mode}`,chatId:'fixture',messageId:'reply',content:`A completed ${mode} reply appeared in chat.`};
-    await page.evaluate(payload=>{window.fixtureEvents.get('GENERATION_ENDED')(payload);setTimeout(()=>window.fixtureMessage.content=payload.content,300);},event);
+    await page.evaluate(payload=>{window.fixtureEvents.get('GENERATION_ENDED')(payload,{stateRevision:{epoch:'chrome-fixture',sequence:42}});setTimeout(()=>window.fixtureMessage.content=payload.content,300);},event);
     await page.waitForTimeout(150);assert.equal(await page.evaluate(()=>window.plans),start.plans);assert.equal(await page.evaluate(()=>window.audios.length),start.audios);
     await page.waitForFunction(({mode,start})=>window.plans===start.plans+1 && document.querySelector('[data-et="status"]').textContent.includes(mode==='auto-play'?'Playback finished':'Ready:') && !document.querySelector('[data-et="latest"]').disabled,{mode,start});
     assert.equal(await page.evaluate(()=>window.calls.length),start.calls+(mode==='auto-play'?1:0));assert.equal(await page.evaluate(()=>window.audios.length),start.audios+(mode==='auto-play'?1:0));
-    await page.evaluate(payload=>window.fixtureEvents.get('GENERATION_ENDED')(payload),event);await page.waitForTimeout(150);assert.equal(await page.evaluate(()=>window.plans),start.plans+1);assert.equal(await page.evaluate(()=>window.audios.length),start.audios+(mode==='auto-play'?1:0));
+    await page.evaluate(payload=>window.fixtureEvents.get('GENERATION_ENDED')(payload,{stateRevision:{epoch:'chrome-fixture',sequence:42}}),event);await page.waitForTimeout(150);assert.equal(await page.evaluate(()=>window.plans),start.plans+1);assert.equal(await page.evaluate(()=>window.audios.length),start.audios+(mode==='auto-play'?1:0));
     await (mode==='auto-plan'?autoPlanSwitch:autoPlaySwitch).click();
   }
   await cast.getByRole('button',{name:'Edit Mira',exact:true}).click();
