@@ -52,7 +52,7 @@ async function harness(mixerPreferences,mobile=false){
     let value;
     if(url.includes('/providers'))value={providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}},{id:'accent_tts',capabilities:{parameters:{instructions:{type:'string'},accent:{enum:['Irish','French']}}}}]};
     else if(url.endsWith('/voices')){if(state.failCatalogue)throw Error('Voice catalogue unavailable');value=state.catalogues?.[url.split('/').at(-2)] || {voices:['n','y','m','g','new'].map(id=>({id,name:id,description:id==='m'?'A mature, husky Irish voice.':'A light, youthful voice.'}))};}
-    else if(url.includes('/chats/') && url.includes('/messages?'))value={data:state.savedMessages || []};
+    else if(url.includes('/chats/') && url.includes('/messages?')){state.canonicalReads=(state.canonicalReads || 0)+1;value={data:state.savedMessages || []};}
     else if(url.includes('/personas/'))value=state.persona;
     else if(url.includes('/decision-connections?'))value={data:[{id:'decision-a',name:'Decision A',provider:'typesafe',model:'jev'},{id:'decision-b',name:'Decision B',provider:'typesafe',model:'jev'}]};
     else if(url.includes('/connections?'))value={data:[{id:'planner',name:'Planner',model:'text-model'}]};
@@ -632,6 +632,23 @@ test('Auto-plan toolbar visibility and mixer state stay synchronized through rel
   }finally{await h.close();assert.equal(h.toolbarActions.size,0);assert.equal(h.toolbar.childElementCount,0);}
 });
 
+test('WebSocket completion metadata cannot make Auto-plan or Auto-play wait for an already published reply',async()=>{
+ for(const mode of ['auto-plan','auto-play']){
+  const h=await harness();try{
+   h.$(mode).click();
+   const event={generationId:`websocket-${mode}`,chatId:'chat-a',messageId:h.message.id,content:h.message.content};
+   const metadata={stateRevision:{epoch:'server-session',sequence:42},runtimeMutationId:'saved-reply'};
+   // Lumiverse forwards the WebSocket callback's second argument to extensions.
+   h.events.get('GENERATION_ENDED')(event,metadata);
+   await until(()=>h.$('status').textContent.includes(mode==='auto-play'?'Playback finished':'Ready:') && !h.$('latest').disabled);
+   assert.equal(h.state.canonicalReads || 0,0);assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+   assert.equal(h.synthesis.length>0,mode==='auto-play');
+   h.events.get('GENERATION_ENDED')(event,metadata);await new Promise(resolve=>setTimeout(resolve,150));
+   assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+  }finally{await h.close();}
+ }
+});
+
 test('automatic planning recovers missed completion events and waits for the saved swipe before planning',async()=>{
  for(const playing of [false,true]){
   const h=await harness();try{
@@ -639,7 +656,7 @@ test('automatic planning recovers missed completion events and waits for the sav
    const original=h.message.content,completed='The saved reply arrived. "Hello."';
    h.state.savedMessages=[{...h.message,content:completed,swipes:[original,completed],swipe_id:1}];
    const event={generationId:'metrics-fallback',chatId:'chat-a',messageId:h.message.id,swipeId:1};
-   h.events.get('GENERATION_METRICS_READY')(event);await until(()=>h.$('status').textContent.includes('Waiting for the completed reply'));
+   h.events.get('GENERATION_METRICS_READY')(event,{stateRevision:{epoch:'server-session',sequence:42}});await until(()=>h.$('status').textContent.includes('Waiting for the completed reply'));
    assert.equal(h.requests.filter(request=>request.action==='plan').length,0);assert.equal(h.synthesis.length,0);
    h.message.content=completed;h.message.swipe_id=1;
    await until(()=>h.$('status').textContent.includes(playing?'Playback finished':'Ready:') && !h.$('latest').disabled);
@@ -720,7 +737,7 @@ test('Auto-plan and Auto-play wait for message publication after the host comple
  for(const mode of ['auto-plan','auto-play'])for(const existing of [false,true]){
   const h=await harness();try{
    h.$(mode).click();const finalContent='A completed assistant reply.';h.state.messages=existing?[{...h.message,content:'Previous swipe.'}]:[];
-   const event={generationId:`generated-${mode}-${existing}`,chatId:'chat-a',messageId:h.message.id,content:finalContent};h.events.get('GENERATION_ENDED')(event);
+   const event={generationId:`generated-${mode}-${existing}`,chatId:'chat-a',messageId:h.message.id,content:finalContent};h.events.get('GENERATION_ENDED')(event,{stateRevision:{epoch:'server-session',sequence:42}});
    await new Promise(resolve=>setTimeout(resolve,150));assert.equal(h.requests.length,0,'Do not plan an unpublished reply');assert.equal(h.audios.length,0);
    h.message.content=finalContent;h.state.messages=[h.message];h.subscriptions.get('chat.messageCount')();
    await until(()=>h.$('status').textContent.includes(mode==='auto-play'?'Playback finished':'Ready:') && !h.$('latest').disabled);

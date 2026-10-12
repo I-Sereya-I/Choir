@@ -3501,11 +3501,12 @@ export async function setup(ctx) {
     if(autoReplyActive?.messageId===payload.messageId && autoReplyActive.content===payload.content)return;
     remember();
     const existing=autoReplyQueue.get(payload.messageId);
-    autoReplyQueue.set(payload.messageId,{chatId:payload.chatId,messageId:payload.messageId,content:payload.content,generationType:payload.generationType,swipeId:payload.swipeId,needsCanonical:needsCanonical || payload.generationType==='continue',queuedAt:existing?.queuedAt ?? Date.now()});
+    autoReplyQueue.set(payload.messageId,{chatId:payload.chatId,messageId:payload.messageId,content:payload.content,generationType:payload.generationType,swipeId:payload.swipeId,needsCanonical:needsCanonical===true || payload.generationType==='continue',queuedAt:existing?.queuedAt ?? Date.now()});
     scheduleAutoReplies();updateTransport();
   }
   unsubs.push(ctx.state.subscribe('chat.messageCount',()=>{renderMessages();scheduleAutoReplies();updateTransport();}));
-  unsubs.push(ctx.events.on('GENERATION_ENDED',queueAutoReply));
+  // The host also passes WebSocket metadata; it is not our canonical-read flag.
+  unsubs.push(ctx.events.on('GENERATION_ENDED',payload=>queueAutoReply(payload)));
   // Lumiverse sends this after successful persistence. Recover a missed terminal
   // event, and deduplicate it with GENERATION_ENDED using the same generation ID.
   unsubs.push(ctx.events.on('GENERATION_METRICS_READY',payload=>queueAutoReply(payload,true)));
