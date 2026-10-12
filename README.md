@@ -4,16 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.5--staging.10-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.5--staging.11-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-185%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-189%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, and sound effects.
 
 </div>
 
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.10** adds **Paste voice ID** beside each Fish Audio voice selector, with an optional description for LLM casting and a saved selection that can be previewed or reused after reload. Auto-plan and Auto-play recover missed completion events through Lumiverse's completion metadata and verify the saved reply before planning continuations or normalized messages. It retains the compact **Plan latest** control beside Previous, latest-reply playback, **SFX On / Off** beside the automation toggles, and mixer channels for voices in the current plan or playback. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
+This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.11** adds a captured **Default setup** as a stable basis for new chats, including lead voice choices that remain editable per chat. It retains **Paste voice ID** for Fish Audio, Auto-plan completion recovery, the compact **Plan latest** control beside Previous, latest-reply playback, **SFX On / Off** beside the automation toggles, and mixer channels for voices in the current plan or playback. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
 
 
 ## Overview
@@ -37,7 +37,9 @@ Click the small draggable speaker icon to open the compact player. The small **P
 
 The **SFX On / Off** button beside Auto-plan and Auto-play stays synchronized with **Sound effects (Foley cues)** in the drawer and saves automatically. Turning it off skips effects in Choir and Cue, including cached playback, while speech continues. SFX has no channel row; effects follow the master level at 45% of speech volume. Old SFX channel volume and mute preferences no longer override the switch.
 
-Cast and connection changes save automatically with Saving / Saved / Save failed feedback. A **Retry save** button appears only after saving fails; normal edits need no Save button. Each chat retains its cast; new chats inherit connection, planner and playback preferences. Gemini and Jev API keys remain session-only. Saved plans and completed audio survive navigation and provider failures.
+Cast and connection changes save automatically with Saving / Saved / Save failed feedback. A **Retry save** button appears only after saving fails; normal edits need no Save button. Each chat retains its cast and settings. Gemini and Jev API keys remain session-only. Saved plans and completed audio survive navigation and provider failures.
+
+Open **Default setup** below Speech & Planner and click **Capture as default** after configuring your preferred setup. Chats without saved settings start from that snapshot: connections, planner, playback and automation options, SFX, advanced settings, and the Narrator, Persona and Character voice choices. Lead voices follow those roles while names come from the new chat's active persona and `{{char}}`; NPCs, aliases and pronunciation instructions stay specific to each chat. Leave a lead voice on **Let LLM choose voice** before capturing to have the planner choose it independently for each chat. Later chat edits do not change the captured default; click **Capture as default** again to replace it. Existing chats keep their saved settings, with **Apply default to this chat** available to restore the captured preferences and lead voices while retaining their names and cast. Before the first capture, new chats continue inheriting your latest general preferences.
 
 In **Standard LLM** mode, **Let LLM choose** sends the active character's description and personality, the active persona's description, and available voice descriptions to your selected planner. It chooses a voice that fits each speaker and saves that choice for later replies and reloads. NPCs use character cues from the story. To request a new choice, select **Let LLM choose** again, then plan or play a message where that character speaks. Cached attribution cannot substitute the first catalogue voice for this choice. Existing voice assignments stay fixed until you change them.
 

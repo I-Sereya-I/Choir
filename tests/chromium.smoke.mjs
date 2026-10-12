@@ -220,9 +220,20 @@ try{
   assert.equal(await fishCard.locator('[data-choir-voice-id-editor]').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   const fieldBounds=await fishCard.locator('[data-choir-voice-id-input]').boundingBox();const fishBounds=await fishCard.boundingBox();assert.ok(fieldBounds.x+fieldBounds.width<=fishBounds.x+fishBounds.width+1);
   if(process.env.CHOIR_VOICE_ID_SCREENSHOT)await fishCard.screenshot({path:process.env.CHOIR_VOICE_ID_SCREENSHOT});
+  const defaultSetup=page.locator('[data-et="defaultSetup"]');await defaultSetup.locator('summary').click();
+  const defaultStart=await page.evaluate(()=>({plans:window.plans,calls:window.calls.length,chunk:document.querySelector('[data-et="chunk"]').value}));
+  await defaultSetup.getByRole('button',{name:'Capture as default',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="defaultStatus"]').textContent.startsWith('Default captured.'));
+  await page.getByText('Advanced Settings',{exact:true}).click();
+  await page.locator('[data-et="chunk"]').fill('8000');await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically' && window.fixtureStore.get('chat:fixture').chunk===8000);
+  await defaultSetup.getByRole('button',{name:'Apply default to this chat',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="defaultStatus"]').textContent.startsWith('Default applied'));
+  assert.equal(await page.locator('[data-et="chunk"]').inputValue(),defaultStart.chunk);assert.equal(await fishCard.locator('[data-choir-voice]').inputValue(),voiceId);
+  assert.equal(await page.evaluate(()=>window.calls.length),defaultStart.calls);assert.equal(await page.evaluate(()=>window.plans),defaultStart.plans);
+  await page.getByText('Advanced Settings',{exact:true}).click();
+  assert.equal(await defaultSetup.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
+  if(process.env.CHOIR_DEFAULT_SETUP_SCREENSHOT)await defaultSetup.screenshot({path:process.env.CHOIR_DEFAULT_SETUP_SCREENSHOT});
   await page.evaluate(()=>window.cleanup());assert.equal(await page.locator('[data-choir-mixer]').count(),0);
   const touch=await browser.newPage({viewport:{width:320,height:640},isMobile:true,hasTouch:true});touch.on('pageerror',error=>errors.push(error.message));await touch.goto(`http://127.0.0.1:${server.address().port}`);await touch.waitForFunction(()=>window.ready);await touch.getByRole('button',{name:'Open Choir voice mixer',exact:true}).tap();
   const targets=await touch.locator('.cm-transport button').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {x:rect.x,width:rect.width,height:rect.height};}));assert.equal(targets.length,5);assert.ok(targets.every((rect,index)=>rect.width>=44 && rect.height>=44 && (!index || rect.x>=targets[index-1].x+targets[index-1].width)));
   assert.equal(await touch.locator('[data-choir-mixer]').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);await touch.evaluate(()=>window.cleanup());await touch.close();
-  assert.deepEqual(errors,[]);console.log('PASS: Chrome Plan latest without audio, main Play latest, current-plan voice filtering, SFX switch synced with drawer and Cue, paused SFX skipping, queued Auto-plan/Auto-play, keyboard controls, narrow and touch layouts, long voice lists, saved preferences, transport, seeking, Freesound cache, loudness, teardown.');
+  assert.deepEqual(errors,[]);console.log('PASS: Chrome captured default setup and application, Fish voice ID entry and preview, Plan latest without audio, main Play latest, current-plan voice filtering, SFX switch synced with drawer and Cue, paused SFX skipping, queued Auto-plan/Auto-play, keyboard controls, narrow and touch layouts, long voice lists, saved preferences, transport, seeking, Freesound cache, loudness, teardown.');
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}
