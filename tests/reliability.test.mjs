@@ -46,7 +46,26 @@ test('audio cache tracks effective connection defaults while ignoring transport 
 test('mixer handles mute, multiple solos, clamping and speaker names that match object properties',()=>{
   const channels={Mira:{volume:0.4,solo:true},Guard:{volume:1},Narrator:{volume:0.5,solo:true,mute:true}};
   assert.equal(mixerVolume(0.5,'Mira',channels),0.2);assert.equal(mixerVolume(1,'Guard',channels),0);assert.equal(mixerVolume(1,'Narrator',channels),0);
-  assert.equal(mixerVolume(1,'constructor',{}),1);assert.equal(mixerVolume(2,'Mira',{Mira:{volume:2}}),1);
+  assert.equal(mixerVolume(1,'constructor',{}),1);assert.equal(mixerVolume(2,'Mira',{Mira:{volume:2}}),2);
+  assert.equal(mixerVolume(0.5,'Mira',{Mira:{volume:3}}),1.5);assert.equal(mixerVolume(1,'Mira',{Mira:{volume:99}}),3);
+  assert.equal(mixerVolume(-1,'Mira',{Mira:{volume:3}}),0);assert.equal(mixerVolume(1,'Mira',{Mira:{volume:-1}}),0);
+});
+
+test('NPC policies restrict only NPC voices, survive cached attribution, and reject unavailable preferred choices',()=>{
+  const transcript='At dawn. "Hello." "Wait."',raw={segments:[{speaker:'Narrator',text:'At dawn.'},{speaker:'Mira',text:'"Hello."'},{speaker:'Courier',voice:'m',text:'"Wait."'}]};
+  const base=validatePlan(raw,transcript,config),saved=attributionPlan(base,config);
+  const single={...config,npcPolicy:{mode:'single',route:'native:b',voice:'new'}};
+  const alias=structuredClone(saved);alias.segments[1].speaker='Captain';assert.equal(restoreAttribution(alias,transcript,single).segments[1].voice,'m');
+  for(const plan of [validatePlan(raw,transcript,single),restoreAttribution(saved,transcript,single)]){
+    assert.equal(plan.segments[1].voice,'m');assert.equal(plan.segments[1].route,'native:a');assert.equal(plan.segments[2].voice,'new');assert.equal(plan.segments[2].route,'native:b');
+  }
+  const preferred={...config,voices:[...config.voices,{id:'other',route:'native:b'}],npcPolicy:{mode:'preferred',route:'native:b',voices:['new']}};
+  const chosen=structuredClone(raw);chosen.segments[2].voice='new';assert.equal(validatePlan(chosen,transcript,preferred).npcs[0].voice,'new');
+  chosen.segments[2].voice='other';assert.throws(()=>validatePlan(chosen,transcript,preferred),/preferred voices/);
+  assert.equal(restoreAttribution(saved,transcript,preferred).segments[2].voice,'new');
+  const skipped=validatePlan(raw,transcript,{...config,npcPolicy:{mode:'skip'}});assert.equal(skipped.segments.map(s=>s.text).join(' '),transcript);assert.equal(skipped.npcs[0].voice,'m');
+  assert.throws(()=>validateCastConfig({...config,npcPolicy:{mode:'preferred',route:'native:b',voices:[]}}),/at least one/);
+  assert.throws(()=>validateCastConfig({...config,npcPolicy:{mode:'single',route:'native:b',voice:'m'}}),/shared NPC voice/);
 });
 
 test('mixed-provider loudness matching raises quiet audio, lowers loud audio and caps peaks without amplifying silence',()=>{
