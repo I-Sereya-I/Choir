@@ -76,6 +76,18 @@ test('explicit LLM mode ignores stale Jev and heuristic flags',async()=>{
   assert.ok((await h.result()).message.result);assert.equal(calls,1);
 });
 
+test('LLM voice selection receives character profiles and catalogue descriptions as data',async()=>{
+  const profiles=[{speaker:'Narrator',description:'An older storyteller with a deep, calm voice.',personality:'Warm and patient.'}];
+  const voices=[{id:'Charon',description:'Deep, mature, and calm.'},{id:'Kore',description:'Bright and youthful.'}];
+  const h=await harness(async input=>{
+    const data=JSON.parse(input.messages.find(message=>message.role==='user').content);
+    assert.deepEqual(data.characterProfiles,profiles);assert.deepEqual(data.availableVoices,voices);assert.equal(data.fixedCast[0].voice,'');
+    return {content:'{"segments":[{"speaker":"Narrator","voice":"Charon","unit_ids":[0]}]}'};
+  });
+  h.send('plan',{transcript:'Once upon a time.',config:{...config,voices,fixed:[{speaker:'Narrator',voice:'',style:''}],characterProfiles:profiles}});
+  assert.equal((await h.result()).message.result.segments[0].voice,'Charon');
+});
+
 test('an opted-in failed LLM fallback retains both provider errors',async()=>{
   const h=await harness(async()=>{throw Error('LLM quota exceeded');},async()=>({status:429,body:'Jev quota exhausted'}));
   h.send('plan',{transcript:'"Hello."',config:{...config,useJev:true,jevApiKey:'secret',allowLlmFallback:true}});

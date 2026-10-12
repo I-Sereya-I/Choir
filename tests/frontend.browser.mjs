@@ -163,7 +163,8 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.equal(peakTTS,2);assert.equal(store.get('chat:chat-a').concurrency,2);
     assert.equal(nativeRequests[0].voice,'alloy');assert.equal(nativeRequests[0].connectionId,'native-a');
     assert.equal(nativeRequests[0].parameters.instructions,'Clear, measured narration. Calm');
-    assert.equal(nativeRequests[2].voice,'alloy'); // Recast from saved attribution, without a new planner call.
+    assert.equal(nativeRequests[2].voice,'echo'); // The LLM chooses the unassigned NPC voice on the new route.
+    assert.equal(store.get('chat:chat-a').casts['native:native-a'].find(actor=>actor.speaker==='Guard').voice,'echo');
     $('retention').value='1';$('save').click();await until(()=>$('status').textContent.includes('retention saved'));
     assert.equal(store.get('chat:chat-a').retention,'1');
     const realNow=Date.now;

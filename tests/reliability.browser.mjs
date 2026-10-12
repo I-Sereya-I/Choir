@@ -38,7 +38,8 @@ async function harness(mixerPreferences){
     }
     let value;
     if(url.includes('/providers'))value={providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}},{id:'accent_tts',capabilities:{parameters:{instructions:{type:'string'},accent:{enum:['Irish','French']}}}}]};
-    else if(url.endsWith('/voices')){if(state.failCatalogue)throw Error('Voice catalogue unavailable');value={voices:['n','y','m','g','new'].map(id=>({id,name:id}))};}
+    else if(url.endsWith('/voices')){if(state.failCatalogue)throw Error('Voice catalogue unavailable');value={voices:['n','y','m','g','new'].map(id=>({id,name:id,description:id==='m'?'A mature, husky Irish voice.':'A light, youthful voice.'}))};}
+    else if(url.includes('/personas/'))value=state.persona;
     else if(url.includes('/decision-connections?'))value={data:[{id:'decision-a',name:'Decision A',provider:'typesafe',model:'jev'},{id:'decision-b',name:'Decision B',provider:'typesafe',model:'jev'}]};
     else if(url.includes('/connections?'))value={data:[{id:'planner',name:'Planner',model:'text-model'}]};
     else value={data:connections};
@@ -47,12 +48,12 @@ async function harness(mixerPreferences){
   let backend,decorationCleanup;
   const ctx={settings:{get:async key=>structuredClone(store.get(key) ?? null),set:async(key,value)=>{const snapshot=structuredClone(value);if(state.failPlanSave && /^(plan:|activeplan:)/.test(key) || state.failConfigSave && /^(chat:|settings:)/.test(key))throw Error('Settings storage failed');if(state.configDelay && /^(chat:|settings:)/.test(key))await new Promise(resolve=>setTimeout(resolve,state.configDelay));store.set(key,snapshot);}},
     messages:{getRecent:()=>state.active==='chat-a'?[message]:[],getContent:id=>id===message.id && state.active==='chat-a'?message.content:null},
-    state:{subscribe:(key,fn)=>{subscriptions.set(key,fn);return()=>subscriptions.delete(key);}},events:{on:(key,fn)=>{events.set(key,fn);return()=>events.delete(key);}},
-    characters:{get:async()=>({name:'Mira'})},getActiveChat:()=>({chatId:state.active,characterId:'mira'}),dom:{addStyle:()=>()=>{}},
+    state:{get:key=>key==='persona.activeId'?state.persona?.id:undefined,subscribe:(key,fn)=>{subscriptions.set(key,fn);return()=>subscriptions.delete(key);}},events:{on:(key,fn)=>{events.set(key,fn);return()=>events.delete(key);}},
+    characters:{get:async()=>{if(state.failProfile)throw Error('Character unavailable');return state.character || {name:'Mira'};}},getActiveChat:()=>({chatId:state.active,characterId:'mira'}),dom:{addStyle:()=>()=>{}},
     ui:{mount:point=>point==='chat_actions'?toolbar:undefined,registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:options=>{const action={...options,onClick(handler){this.click=handler;},destroy(){if(toolbarActions.get(options.id)===action)toolbarActions.delete(options.id);}};toolbarActions.set(options.id,action);return action;},
       registerDomDecorator:options=>{decorationCleanup=options.render(footer,{messageId:message.id});return decorationCleanup;}},
     onBackendMessage:fn=>{backend=fn;return()=>backend=null;},sendToBackend:request=>{
-      requests.push(request);if(request.action==='cancel')return;
+      requests.push(structuredClone(request));if(request.action==='cancel')return;
       setTimeout(()=>{
         if(!backend)return;
         if(request.action==='plan' && state.held || request.action==='designVoice' && state.holdDesignVoice){heldPlans.push(request);return;}
@@ -71,7 +72,7 @@ async function harness(mixerPreferences){
   let cleanup=await setup(ctx);
   const $=name=>(root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
   const click=async(name,done)=>{$(name).click();await until(()=>done($('status').textContent));};
-  const plan=()=>click('latest',text=>text.startsWith('Ready:') || text.includes('Saved attribution'));
+  const plan=async()=>{$('latest').click();await tick();await until(()=>!$('latest').disabled && ($('status').textContent.startsWith('Ready:') || $('status').textContent.includes('Saved attribution')));};
   const play=async()=>{footer.querySelector('button').click();await tick();await until(()=>$('status').textContent.includes('Playback finished'));};
   const reload=async()=>{cleanup();cleanup=await setup(ctx);};
   return {dom,state,store,requests,synthesis,audios,message,events,subscriptions,toolbarActions,connections,root,footer,toolbar,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
@@ -643,6 +644,66 @@ test('NPC No voice follows the character across One TTS provider changes and can
   assert.equal(document.querySelector('[aria-label="Guard no voice"]').getAttribute('aria-pressed'),'true');await h.click('save',text=>text.includes('retention saved'));await h.play();assert.ok(!h.synthesis.some(v=>v.text.includes('Wait')));
   document.querySelector('[aria-label="Guard no voice"]').click();await tick();const before=h.synthesis.length;await h.play();assert.equal(h.synthesis.length,before+1);assert.match(h.synthesis.at(-1).text,/Wait/);
   h.$('connection').value='a';h.$('connection').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('status').textContent.includes('Provider selected.'));assert.equal(document.querySelector('[aria-label="Guard no voice"]').getAttribute('aria-pressed'),'false');assert.equal(h.requests.filter(v=>v.action==='plan').length,1);
+ }finally{await h.close();}
+});
+
+test('LLM-selected fixed and NPC voices persist across new replies and reload in both TTS modes',async()=>{
+ for(const mode of ['several','one']){
+  const h=await harness();try{
+   if(mode==='one'){h.$('connectionMode').value='one';h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('status').textContent.startsWith('One TTS now'));}
+   for(const node of [h.$('fixed').querySelectorAll('[data-choir-voice]')[2],h.$('npcs').querySelector('[data-choir-voice]')]){node.value='';node.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));}
+   await until(()=>h.$('saveState').textContent==='Saved automatically');await h.plan();
+   assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'m');assert.equal(h.$('npcs').querySelector('[data-choir-voice]').value,'g');
+   h.message.content='Another dawn. "Hello again." "Wait here." The gate closed.';await h.plan();
+   const planned=h.requests.filter(v=>v.action==='plan').at(-1).input.config;assert.equal(planned.fixed.find(actor=>actor.speaker==='Mira').voice,'m');assert.equal(planned.npcs.find(actor=>actor.speaker==='Guard').voice,'g');
+   await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'m');assert.equal(h.$('npcs').querySelector('[data-choir-voice]').value,'g');
+  }finally{await h.close();}
+ }
+});
+
+test('Let LLM choose makes and saves a real choice despite current or reloaded attribution and audio caches',async()=>{
+ for(const reload of [false,true]){
+  const h=await harness();try{
+   await h.plan();await h.play();const voice=h.$('fixed').querySelectorAll('[data-choir-voice]')[2];voice.value='';voice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+   await until(()=>h.$('saveState').textContent==='Saved automatically');if(reload)await h.reload();
+   assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'');assert.equal(h.requests.filter(v=>v.action==='plan').length,1);
+   await h.play();assert.equal(h.requests.filter(v=>v.action==='plan').length,2);assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'m');assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'m');
+   h.$('prefetch').value='2';h.$('prefetch').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+   await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'m');await h.play();assert.equal(h.requests.filter(v=>v.action==='plan').length,2);
+  }finally{await h.close();}
+ }
+});
+
+test('LLM casting receives bounded character and persona descriptions with voice catalogue descriptions',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'Mira',description:'A mature captain with a husky Irish voice. '+ 'Detail. '.repeat(1500),personality:'Calm, direct, and warm.',system_prompt:'Private card instructions',creator_notes:'Private notes'};
+  h.state.persona={id:'persona-a',name:'Alex',description:'A young, softly spoken traveller.'};
+  const name=h.$('fixed').children[2].querySelector('input');name.value='Captain Mira';name.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+  await h.plan();const snapshot=h.requests.find(v=>v.action==='plan').input.config;
+  assert.deepEqual(snapshot.characterProfiles,[{speaker:'Captain Mira',description:h.state.character.description.slice(0,8000),personality:h.state.character.personality},{speaker:'You',description:h.state.persona.description,personality:''}]);
+  assert.equal(snapshot.voices.find(voice=>voice.id==='m' && voice.route==='native:b').description,'A mature, husky Irish voice.');
+  assert.ok(!JSON.stringify(snapshot).includes('Private'));assert.ok(!JSON.stringify(h.store.get('chat:chat-a')).includes('mature captain'));
+  h.state.failProfile=true;h.message.content='A new dawn.';await h.plan();assert.equal(h.requests.filter(v=>v.action==='plan').at(-1).input.config.characterProfiles.length,1);
+ }finally{await h.close();}
+});
+
+test('a chosen voice remains visible after a save failure and Retry save persists that choice',async()=>{
+ const h=await harness();try{
+  const voice=h.$('fixed').querySelectorAll('[data-choir-voice]')[2];voice.value='';voice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  h.state.failConfigSave=true;h.$('latest').click();await until(()=>h.$('status').textContent.includes('Settings storage failed') && !h.$('latest').disabled);
+  assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'m');assert.equal(h.$('save').hidden,false);
+  h.state.failConfigSave=false;await h.click('save',text=>text.includes('retention saved'));await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'m');
+ }finally{await h.close();}
+});
+
+test('retrying partial planning asks the LLM for unassigned voices instead of restoring catalogue defaults',async()=>{
+ const h=await harness();try{
+  const voice=h.$('fixed').querySelectorAll('[data-choir-voice]')[2];voice.value='';voice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  h.message.content=h.message.content.repeat(6);h.state.failPlanAt=2;h.$('latest').click();await until(()=>h.$('status').textContent.includes('Planner quota exhausted') && !h.$('latest').disabled);
+  assert.ok([...h.store.keys()].some(key=>key.startsWith('progress:')));assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'');
+  const before=h.requests.filter(v=>v.action==='plan');await h.plan();const after=h.requests.filter(v=>v.action==='plan');
+  assert.equal(after[before.length].input.transcript,before[0].input.transcript);assert.equal(after[before.length].input.config.fixed[2].voice,'');
+  assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'m');assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'m');
  }finally{await h.close();}
 });
 

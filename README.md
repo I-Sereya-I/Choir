@@ -4,16 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.5--staging.4-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.5--staging.5-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-159%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-165%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, and sound effects.
 
 </div>
 
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.4** adds an Auto-play toggle beside Auto-plan in the mixer, a visible Auto-plan shortcut in the chat toolbar, and save status alongside the Choir title, with local-only heuristic planning, drawer Stop, and provider-aware speech chunk sizes. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
+This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.5** adds description-based LLM voice selection and fixes saving automatic choices when reusing plans or retrying a failed save. It includes the mixer Auto-play toggle, visible Auto-plan shortcut in the chat toolbar, and save status alongside the Choir title. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
 
 
 ## Overview
@@ -36,6 +36,8 @@ Choir separates narration and character dialogue from chat messages, assigns dis
 Click the small draggable speaker icon to open the compact player. Previous and Next move between spoken blocks; the playback bar seeks within the current audio part. **Silent** mutes playback. **No voice** skips that character's playback and new synthesis while retaining text and cached audio.
 
 Cast and connection changes save automatically with Saving / Saved / Save failed feedback. A **Retry save** button appears only after saving fails; normal edits need no Save button. Each chat retains its cast; new chats inherit connection, planner and playback preferences. Gemini and Jev API keys remain session-only. Saved plans and completed audio survive navigation and provider failures.
+
+In **Standard LLM** mode, **Let LLM choose** sends the active character's description and personality, the active persona's description, and available voice descriptions to your selected planner. It chooses a voice that fits each speaker and saves that choice for later replies and reloads. NPCs use character cues from the story. To request a new choice, select **Let LLM choose** again, then plan or play a message where that character speaks. Cached attribution cannot substitute the first catalogue voice for this choice. Existing voice assignments stay fixed until you change them.
 
 The mixer's **Auto-plan On / Off** switch opts into planning new assistant replies without starting speech. **Show Auto-plan in chat toolbar** in the drawer adds a synchronized toolbar control. The setting is off by default, saves automatically, and uses your chosen planner engine; Jev and LLM planning may incur costs. The mixer's **Auto-play On / Off** button stays synchronized with **Auto-play new replies** in the drawer, saves automatically, and plans and plays replies when enabled. Auto-plan and Auto-play can be toggled independently.
 
