@@ -13,7 +13,7 @@ async function harness(mixerPreferences){
   const original={document:globalThis.document,Audio:globalThis.Audio,fetch:globalThis.fetch,indexedDB:globalThis.indexedDB};
   globalThis.document=dom.window.document;globalThis.indexedDB=new IDBFactory();
   const root=document.querySelector('main'),footer=document.querySelector('footer'),toolbar=document.querySelector('[data-choir-toolbar]');
-  const state={active:'chat-a',blockAudio:false,failVoice:null,delay:0,held:false,aborted:0,previewFetches:[],previewAborted:0},store=new Map(),requests=[],synthesis=[],audios=[],audioBlobs=[],events=new Map(),subscriptions=new Map(),heldPlans=[],toolbarActions=new Map();
+  const state={active:'chat-a',blockAudio:false,failVoice:null,delay:0,held:false,aborted:0,previewFetches:[],bedFetches:[],previewAborted:0},store=new Map(),requests=[],synthesis=[],audios=[],audioBlobs=[],events=new Map(),subscriptions=new Map(),heldPlans=[],toolbarActions=new Map();
   const createObjectURL=URL.createObjectURL;URL.createObjectURL=blob=>{audioBlobs.push(blob);return createObjectURL(blob);};
   if(mixerPreferences)store.set('ui:mixer',mixerPreferences);
   const message={id:'message-a',content:'At dawn. "Hello." "Wait." The gate closed.',name:'Mira',is_user:false};
@@ -28,6 +28,7 @@ async function harness(mixerPreferences){
   globalThis.Audio=FakeAudio;
   const connections=[{id:'a',name:'Narration provider',provider:'openai_tts',model:'model-a'},{id:'b',name:'Character provider',provider:'accent_tts',model:'model-b'}];
   globalThis.fetch=async(url,options={})=>{
+    if(url.startsWith('https://freesound.test/ambience.mp3?')){state.bedFetches.push(url);return new Response(`AMBIENCE:${new URL(url).searchParams.get('q')}`,{headers:{'Content-Type':'audio/mpeg'}});}
     if(url==='https://freesound.test/preview.mp3'){
       state.previewFetches.push(url);
       if(state.holdPreview)await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>{state.previewAborted++;reject(new DOMException('Stopped','AbortError'));},{once:true}));
@@ -69,11 +70,13 @@ async function harness(mixerPreferences){
         if(request.action==='ping')result={ready:true};
         else if(request.action==='freesound'){
           if(state.foleyError){backend({namespace:'choir',id:request.id,error:state.foleyError});return;}
-          result={results:state.noFoleyResults?[]:[{id:123,name:'Page turn',previewUrl:'https://freesound.test/preview.mp3'}]};
+          const {query,filter}=request.input,bed=filter==='duration:[10 TO 120]';
+          result={results:state.noFoleyResults || query.split(' ').length>(state.foleyWords || 9)?[]:[{id:123,name:query,previewUrl:bed?`https://freesound.test/ambience.mp3?q=${encodeURIComponent(query)}`:'https://freesound.test/preview.mp3'}]};
         }
         else if(request.action==='sfx'){
           if(state.sfxError){backend({namespace:'choir',id:request.id,error:state.sfxError});return;}
-          result={cues:request.input.segments.flatMap((segment,index)=>Object.entries({'page snapped':'page turn','glass shattered':'glass shatter'}).filter(([trigger])=>segment.text.includes(trigger)).map(([trigger,query])=>({segment:index,trigger,query})))};
+          const anchored=entries=>request.input.segments.flatMap((segment,index)=>Object.entries(entries).filter(([trigger])=>segment.text.includes(trigger)).map(([trigger,query])=>({segment:index,trigger,...(query?{query}:{stop:true})})));
+          result={cues:anchored({'page snapped':'page turn','glass shattered':'glass shatter'}),ambience:anchored({'Rain drummed':'rain','The tavern':'tavern crowd','Silence fell':''})};
         }
         else if(request.action==='gemini')result={base64:'AAABAA==',mimeType:'audio/L16;rate=24000'};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
@@ -339,6 +342,93 @@ test('Cue fetches real preview blobs, retries failed SFX and honors companion ca
   const ctrl=new AbortController();ctrl.abort();const searches=h.requests.length;await assert.rejects(bridge.playParagraph({text,signal:ctrl.signal}),{name:'AbortError'});assert.equal(h.requests.length,searches);
   h.state.holdPreview=true;const pendingCtrl=new AbortController();const pending=bridge.playParagraph({text:'The glass shattered.',signal:pendingCtrl.signal});const stopped=assert.rejects(pending,{name:'AbortError'});
   await until(()=>h.state.previewFetches.length===2);pendingCtrl.abort();await stopped;assert.equal(h.state.previewAborted,1);assert.equal(await playedFoley(h),2);assert.ok(h.audios.every(audio=>audio.paused));
+ }finally{await h.close();}
+});
+
+const beds=h=>h.audios.filter(audio=>audio.loop),voices=h=>h.audios.filter(audio=>!audio.loop);
+const bedName=(h,audio)=>h.audioBlobs[h.audios.indexOf(audio)].text();
+const scene='Night fell. Rain drummed on the roof. "Hello." The tavern door swung open. "Wait."';
+const toggle=async(h,name,checked)=>{h.$(name).checked=checked;h.$(name).dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');};
+
+test('ambience beds start at their anchor, loop under speech, crossfade, follow pause and fade out at the end',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);h.message.content=scene;await h.plan();assert.equal(h.requests.filter(request=>request.action==='sfx').length,1);
+  h.state.blockAudio=true;h.$('play').click();
+  await until(()=>voices(h).length===1 && !voices(h)[0].paused);assert.equal(beds(h).length,0);assert.equal(h.synthesis[0].text,'Night fell.');voices(h)[0].onended();
+  await until(()=>beds(h).length===1 && !beds(h)[0].paused && voices(h).length===2);const rain=beds(h)[0];
+  assert.equal(await bedName(h,rain),'AMBIENCE:rain');assert.match(h.synthesis[1].text,/^Rain drummed/);await until(()=>rain.volume===0.25);
+  voices(h)[1].onended();await until(()=>voices(h).length===3 && !voices(h)[2].paused);assert.equal(beds(h).length,1);assert.equal(rain.paused,false);
+  voices(h)[2].onended();await until(()=>beds(h).length===2 && !beds(h)[1].paused);const tavern=beds(h)[1];
+  assert.equal(await bedName(h,tavern),'AMBIENCE:tavern crowd');await until(()=>rain.volume<0.2);assert.equal(rain.paused,false);
+  await until(()=>rain.paused);await until(()=>tavern.volume===0.25);
+  h.$('pause').click();assert.equal(voices(h)[3].paused,true);assert.equal(tavern.paused,true);
+  h.$('pause').click();assert.equal(voices(h)[3].paused,false);assert.equal(tavern.paused,false);
+  h.state.blockAudio=false;voices(h)[3].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.equal(tavern.paused,false);await until(()=>tavern.paused);assert.equal(h.$('stop').disabled,true);
+  assert.equal(h.state.bedFetches.length,2);assert.deepEqual(h.requests.filter(request=>request.action==='freesound').map(request=>request.input.filter),['duration:[10 TO 120]','duration:[10 TO 120]']);
+  assert.equal(h.synthesis.map(request=>request.text.replace(/^\[Calm\]\s*/,'')).join(' '),scene);
+ }finally{await h.close();}
+});
+
+test('saved beds survive reload, replay from the recording, follow Next, Previous, Stop and resume, and honor the persisted Ambient sound toggle',async()=>{
+ const h=await harness();try{
+  const replay=async()=>{[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent==='Replay finished.');};
+  await configureFoley(h);h.message.content=scene;await h.plan();await h.play();await until(()=>beds(h).every(audio=>audio.paused));
+  await h.reload();const searches=h.requests.filter(request=>request.action==='freesound').length,generated=h.synthesis.length,start=beds(h).length;
+  await replay();assert.deepEqual(await Promise.all(beds(h).slice(start).map(audio=>bedName(h,audio))),['AMBIENCE:rain','AMBIENCE:tavern crowd']);await until(()=>beds(h).every(audio=>audio.paused));
+  const ready=()=>until(()=>!h.$('next').disabled && voices(h).at(-1).paused===false),newBeds=()=>beds(h).slice(start+2);
+  const playing=async(count,name)=>{await until(()=>newBeds().length===count && !newBeds().at(-1).paused);assert.equal(await bedName(h,newBeds().at(-1)),name);await ready();};
+  h.state.blockAudio=true;h.$('play').click();await ready();assert.equal(newBeds().length,0);
+  h.$('next').click();await playing(1,'AMBIENCE:rain');h.$('next').click();await until(()=>/Speaking: Mira/.test(document.querySelector('[data-choir-mixer]').textContent));await ready();assert.equal(newBeds().length,1);
+  h.$('next').click();await playing(2,'AMBIENCE:tavern crowd');h.$('previous').click();await playing(3,'AMBIENCE:rain');
+  h.$('stop').click();assert.ok(beds(h).every(audio=>audio.paused));h.$('play').click();await playing(4,'AMBIENCE:rain');assert.match(document.querySelector('[data-choir-mixer]').textContent,/Speaking: Mira/);
+  h.$('stop').click();assert.ok(beds(h).every(audio=>audio.paused));assert.equal(h.requests.filter(request=>request.action==='freesound').length,searches);assert.equal(h.synthesis.length,generated);
+  h.state.blockAudio=false;await toggle(h,'enableAmbience',false);const silent=beds(h).length;await h.play();await replay();assert.equal(beds(h).length,silent);
+  await h.reload();assert.equal(h.$('enableAmbience').checked,false);assert.equal(h.store.get('chat:chat-a').enableAmbience,false);
+ }finally{await h.close();}
+});
+
+test('Ambience slider sets bed level live without touching speech and persists after reload',async()=>{
+ const h=await harness();try{
+  h.$('showMixer').click();assert.equal(document.querySelector('[data-speaker="Ambience"]'),null);
+  await configureFoley(h);h.message.content='Rain drummed on the roof. "Hello."';await h.plan();h.state.blockAudio=true;h.$('play').click();
+  await until(()=>beds(h).length===1 && beds(h)[0].volume===0.25);const rain=beds(h)[0],speech=voices(h)[0];
+  const volume=document.querySelector('[aria-label="Ambience volume"]');volume.value='0.4';volume.dispatchEvent(new h.dom.window.Event('input'));volume.dispatchEvent(new h.dom.window.Event('change'));
+  assert.ok(Math.abs(rain.volume-0.1)<0.000001);assert.equal(speech.volume,1);
+  await until(()=>h.store.get('ui:mixer')?.ambience===0.4);h.$('stop').click();await h.reload();
+  assert.equal(document.querySelector('[aria-label="Ambience volume"]').value,'0.4');
+  h.$('play').click();await until(()=>beds(h).length===2 && beds(h)[1].volume>0);assert.ok(beds(h)[1].volume<=0.1+0.000001);
+ }finally{await h.close();}
+});
+
+test('Cue keeps a bed across paragraphs until a stop entry, stop() or cancellation, and a failed bed never blocks speech',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);const bridge=globalThis.__CHOIR_API__;
+  assert.equal((await bridge.playParagraph({text:'Rain drummed on the roof.',chatId:'chat-a'})).played,1);await until(()=>beds(h).length===1 && !beds(h)[0].paused);const rain=beds(h)[0];
+  assert.equal((await bridge.playParagraph({text:'"Hello."',chatId:'chat-a'})).played,1);assert.equal(rain.paused,false);assert.equal(beds(h).length,1);assert.equal(h.$('stop').disabled,false);
+  await bridge.playParagraph({text:'Silence fell over the hall.',chatId:'chat-a'});assert.equal(rain.paused,false);await until(()=>rain.paused);
+  await bridge.playParagraph({text:'Rain drummed again.'});await until(()=>beds(h).length===2 && !beds(h)[1].paused);bridge.stop();assert.ok(beds(h).every(audio=>audio.paused));
+  h.state.blockAudio=true;const ctrl=new AbortController(),pending=bridge.playParagraph({text:'Rain drummed once more.',signal:ctrl.signal});
+  await until(()=>beds(h).length===3 && !beds(h)[2].paused);ctrl.abort();await assert.rejects(pending,{name:'AbortError'});assert.ok(h.audios.every(audio=>audio.paused));
+  h.state.blockAudio=false;h.state.noFoleyResults=true;assert.equal((await bridge.playParagraph({text:'The tavern was full.'})).played,1);
+  await until(()=>/SFX skipped: No Freesound result for "tavern crowd"/.test(h.$('sfxStatus').textContent));assert.equal(beds(h).length,3);
+  assert.deepEqual(h.requests.filter(request=>request.action==='freesound').map(request=>request.input.query).slice(-2),['tavern crowd','tavern']);
+ }finally{await h.close();}
+});
+
+test('one sound request serves both toggles and none is made with both off',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);await toggle(h,'enableSfx',false);h.message.content='Rain drummed. The page snapped under her thumb.';
+  await h.plan();assert.equal(h.requests.filter(request=>request.action==='sfx').length,1);await h.play();assert.equal(beds(h).length,1);assert.equal(await playedFoley(h),0);
+  await toggle(h,'enableSfx',true);await toggle(h,'enableAmbience',false);await h.play();assert.equal(beds(h).length,1);assert.equal(await playedFoley(h),1);
+  await toggle(h,'enableSfx',false);await h.plan();await h.play();assert.equal(h.requests.filter(request=>request.action==='sfx').length,1);assert.equal(h.$('sfxStatus').hidden,true);
+ }finally{await h.close();}
+});
+
+test('Freesound searches drop trailing words until a sound matches',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);h.state.foleyWords=1;h.message.content='The page snapped under her thumb.';await h.plan();await h.play();
+  assert.equal(await playedFoley(h),1);assert.deepEqual(h.requests.filter(request=>request.action==='freesound').map(request=>request.input.query),['page turn','page']);
  }finally{await h.close();}
 });
 

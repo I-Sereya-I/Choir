@@ -491,7 +491,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     }
     if (message.action === 'sfx') {
       const segments=Array.isArray(input.segments)?input.segments.filter(segment=>typeof segment?.text==='string' && segment.text.trim()):[];
-      if(!segments.length){send({result:{cues:[]}});return;}
+      if(!segments.length){send({result:{cues:[],ambience:[]}});return;}
       progress({stage:'Resolving saved LLM connection'});
       const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
       if(controller.signal.aborted)return;
@@ -500,7 +500,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       const result=await spindle.generate.raw({type:'raw',userId,model:connection.model,connection_id:connection.id,messages:soundCuePrompt(segments),
         parameters:{max_tokens:2048,...jsonResponseParameters(connection)},reasoning:{source:'off'},signal:controller.signal});
       if(controller.signal.aborted)return;
-      send({result:{cues:parseSoundCues(result.content,segments)}});return;
+      send({result:parseSoundCues(result.content,segments)});return;
     }
     if (message.action === 'designVoice') {
       if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Gemini API key for this session.');

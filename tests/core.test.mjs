@@ -36,6 +36,12 @@ test('consecutive Foley cues keep separate audio parts when narration is muted',
   assert.deepEqual(batches.map(batch=>batch.text),cues.map(cue=>cue.text));
 });
 
+test('speech around an ambience marker never merges into it',()=>{
+  const narration=text=>({speaker:'Narrator',voice:'n',style:'',text});
+  const batches=speechBatches([narration('Night fell.'),{kind:'ambience',speaker:'Ambience',voice:'',route:'ambience',text:'[Ambience: rain]',ambience:{query:'rain'}},narration('Rain hammered the roof.')],1800,'native:a',false);
+  assert.deepEqual(batches.map(batch=>batch.text),['Night fell.','[Ambience: rain]','Rain hammered the roof.']);
+});
+
 test('Gemini batches preserve turn metadata and split on third speaker or provider change',()=>{
   const turns=['Narrator','Alice','Narrator','Bob','Alice'].map((speaker,i)=>({speaker,voice:speaker==='Narrator'?'Charon':speaker==='Alice'?'Kore':'Puck',text:'Turn '+i,style:'Soft',route:'gemini'}));
   const batches=speechBatches(turns,1800,'gemini');
@@ -416,28 +422,41 @@ The countertop had never seen this much purposeful flurry.`;
   assert.equal(clean, 'The countertop had never seen this much purposeful flurry.');
 });
 
-test('LLM sound cues are validated against the segments, keep the story language and survive saved attribution',()=>{
+test('LLM sound cues and ambience beds are validated against the segments, keep the story language and survive saved attribution',()=>{
   const segments=[{speaker:'Narrator',text:'La puerta se cerró de golpe. Afuera llovía.'},{speaker:'Mira',text:'"¿Quién anda ahí?"'}];
   const prompt=soundCuePrompt(segments);
-  assert.match(prompt[0].content,/English Freesound search/);assert.equal(JSON.parse(prompt[1].content).segments[1].index,1);
-  const cues=parseSoundCues('```json\n'+JSON.stringify({cues:[
+  assert.match(prompt[0].content,/English Freesound search of 1 to 3 words/);assert.match(prompt[0].content,/"stop":true/);assert.equal(JSON.parse(prompt[1].content).segments[1].index,1);
+  const {cues,ambience}=parseSoundCues('```json\n'+JSON.stringify({cues:[
     {segment:5,trigger:'x',query:'thunder'},
-    {segment:0,trigger:'La puerta se cerró',query:'wooden   door slam '},
+    {segment:0,trigger:'La puerta se cerró',query:'door   slam '},
     {segment:1,trigger:'not in the text',query:'footsteps'},
-    {segment:0,trigger:'Afuera llovía',query:'rain on window'},
+    {segment:0,trigger:'Afuera llovía',query:'rain'},
     {segment:0,trigger:'Afuera',query:''}
+  ],ambience:[
+    {segment:0,trigger:'Afuera llovía',query:' rain '},
+    {segment:1,trigger:'¿Quién',stop:'yes'},
+    {segment:1,trigger:'¿Quién',stop:true,query:'ignored'},
+    {segment:1,trigger:'anda',query:'wind'},
+    {segment:0,query:'tavern crowd'}
   ]})+'\n```',segments);
-  // Short replies allow two effects; invalid segments and empty searches never count.
+  // Short replies allow two effects and three bed entries; invalid segments, empty searches and non-boolean stops never count.
   assert.deepEqual(cues,[
-    {segment:0,query:'wooden door slam',trigger:'La puerta se cerró'},
+    {segment:0,query:'door slam',trigger:'La puerta se cerró'},
     {segment:1,query:'footsteps',trigger:''}
   ]);
+  assert.deepEqual(ambience,[
+    {segment:0,query:'rain',trigger:'Afuera llovía'},
+    {segment:1,stop:true,trigger:'¿Quién'},
+    {segment:1,query:'wind',trigger:'anda'}
+  ]);
+  assert.deepEqual(parseSoundCues('{"cues":[]}',segments),{cues:[],ambience:[]});
   assert.throws(()=>parseSoundCues('no json here',segments),/not valid JSON/);
   assert.throws(()=>parseSoundCues('{"effects":[]}',segments),/no cues list/);
   const config={voices:[{id:'n'},{id:'m'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Mira',voice:'m',style:''}],npcs:[]};
   const transcript=segments.map(segment=>segment.text).join(' ');
-  const plan=validatePlan({segments:applySoundCues(segments.map(segment=>({...segment,voice:segment.speaker==='Mira'?'m':'n'})),[...cues,{segment:0,trigger:'Afuera llovía',query:'rain on window'}])},transcript,config);
-  assert.deepEqual(plan.segments[0].sfx,[{query:'wooden door slam',trigger:'La puerta se cerró'},{query:'rain on window',trigger:'Afuera llovía'}]);
+  const plan=validatePlan({segments:applySoundCues(segments.map(segment=>({...segment,voice:segment.speaker==='Mira'?'m':'n'})),{cues:[...cues,{segment:0,trigger:'Afuera llovía',query:'rain'}],ambience})},transcript,config);
+  assert.deepEqual(plan.segments[0].sfx,[{query:'door slam',trigger:'La puerta se cerró'},{query:'rain',trigger:'Afuera llovía'}]);
+  assert.deepEqual(plan.segments.map(segment=>segment.ambience),[[{query:'rain',trigger:'Afuera llovía'}],[{stop:true,trigger:'¿Quién'},{query:'wind',trigger:'anda'}]]);
   const restored=restoreAttribution(structuredClone(attributionPlan(plan,config)),transcript,config);
-  assert.deepEqual(restored.segments.map(segment=>segment.sfx),plan.segments.map(segment=>segment.sfx));
+  assert.deepEqual(restored.segments.map(({sfx,ambience})=>({sfx,ambience})),plan.segments.map(({sfx,ambience})=>({sfx,ambience})));
 });
