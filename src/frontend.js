@@ -1434,7 +1434,7 @@ export async function setup(ctx) {
     let context=ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
       .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content).slice(0,1000)}`).join('\n').slice(-4000);
     const ctrl=new AbortController();controller=ctrl;setBusy(true);status('Checking Choir backend…');
-    planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;
+    planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=autoPlay?messageId:null;
     let streaming=false, player=null;
     try {
       if(/\{\{\s*user\s*\}\}/i.test(transcript+context)) {
@@ -1839,12 +1839,12 @@ export async function setup(ctx) {
   }
   async function play(options={}) {
     if(!plan || !planSource)throw new Error('Plan a message first.');
-    if(chatId!==planSource.chatId || ctx.messages.getContent(planSource.messageId)!==planSource.content) {
-      clearPlan();throw new Error('Message or swipe changed. Generate a fresh plan.');
+    if(chatId!==planSource.chatId || ctx.messages.getContent(planSource.messageId)==null) {
+      clearPlan();throw new Error(ctx.messages.getContent(planSource.messageId)==null?'Message is no longer available.':'Message changed chats.');
     }
     config=capture();
     if(planAttribution){const restored=restoreAttribution(planAttribution,planSource.transcript,casting(config));rememberPlanCast(restored);plan={...restored,warning:plan.warning};renderPreview();}
-    stop(false);const token=revision;const ctrl=new AbortController();controller=ctrl;
+    stop(false);const token=revision;const ctrl=new AbortController();controller=ctrl;messagePlaybackId=planSource.messageId;
     const snapshot=structuredClone(capture());
     const resume=options.resume?await ctx.settings.get(`position:${chatId}`):null;
     if(token!==revision || ctrl.signal.aborted)throw abortError();
@@ -1881,7 +1881,7 @@ export async function setup(ctx) {
   }
   async function replayRecording(messageId) {
     stop(false);const token=revision,targetChat=chatId;
-    const ctrl=new AbortController();controller=ctrl;setBusy(true);
+    const ctrl=new AbortController();controller=ctrl;messagePlaybackId=messageId;setBusy(true);
     status('Loading saved audio…');
     try {
       const recording=await recordingStore('get',recordingKey(targetChat,messageId));
@@ -2212,7 +2212,12 @@ export async function setup(ctx) {
       const id=payload?.messageId || payload?.message?.id || payload?.id;
       if(payload?.chatId && payload.chatId!==chatId)return;
       const affected=planSource || planningSource;
-      if(affected && (!id || id===affected.messageId)){stop(false);clearPlan();status('Message changed. Generate a fresh plan.');}
+      if(affected && (!id || id===affected.messageId)){
+        const isEdit=event==='MESSAGE_EDITED' || event==='SWIPE_EDITED';
+        const isPlaying=Boolean(activePlayback || (currentAudio && !currentAudio.paused) || (controller && messagePlaybackId));
+        if(isEdit && isPlaying){renderMessages();return;}
+        stop(false);clearPlan();status('Message changed. Generate a fresh plan.');
+      }
       renderMessages();
     }));
   }
