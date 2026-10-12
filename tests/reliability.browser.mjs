@@ -8,8 +8,9 @@ import {validatePlan,speechSourceUnits,planningSections,transcriptFromMessage} f
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 const until=async(predicate)=>{for(let i=0;i<250;i++){if(predicate())return;await tick();}throw Error('Timed out waiting for regression state');};
 
-async function harness(mixerPreferences){
+async function harness(mixerPreferences,mobile=false){
   const dom=new JSDOM('<body><nav><button>Another extension</button><div data-choir-toolbar></div></nav><main></main><footer></footer></body>',{url:'https://lumiverse.test'});
+  const layoutListeners=new Set(),channelLayout={matches:mobile,addEventListener:(_,fn)=>layoutListeners.add(fn),removeEventListener:(_,fn)=>layoutListeners.delete(fn)};dom.window.matchMedia=()=>channelLayout;
   const original={document:globalThis.document,Audio:globalThis.Audio,fetch:globalThis.fetch,indexedDB:globalThis.indexedDB};
   globalThis.document=dom.window.document;globalThis.indexedDB=new IDBFactory();
   const root=document.querySelector('main'),footer=document.querySelector('footer'),toolbar=document.querySelector('[data-choir-toolbar]');
@@ -98,6 +99,7 @@ async function harness(mixerPreferences){
   const play=async()=>{footer.querySelector('button').click();await tick();await until(()=>$('status').textContent.includes('Playback finished'));};
   const reload=async()=>{cleanup();cleanup=await setup(ctx);};
   return {dom,state,store,requests,synthesis,audios,audioBlobs,message,events,subscriptions,toolbarActions,connections,root,footer,toolbar,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
+    setMobile(matches){channelLayout.matches=matches;for(const listener of layoutListeners)listener();},
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
     async close(){cleanup();await tick();URL.createObjectURL=createObjectURL;Object.assign(globalThis,original);dom.window.close();}};
 }
@@ -395,6 +397,34 @@ test('compact mute and skip icons remain distinct, accessible and reversible wit
   get('no voice').click();await until(()=>get('no voice').getAttribute('aria-pressed')==='true');assert.notEqual(get('no voice').innerHTML,enabled);
   get('silent').click();get('no voice').click();await until(()=>get('no voice').getAttribute('aria-pressed')==='false');assert.equal(get('silent').innerHTML,unmuted);assert.equal(get('no voice').innerHTML,enabled);
   assert.equal(document.querySelector('[aria-label="Mira volume percent"]').value,'100');
+ }finally{await h.close();}
+});
+
+test('mobile channel tabs show one panel, keep selection through playback and reload, and retain independent levels',async()=>{
+ const h=await harness(undefined,true);try{
+  h.$('showMixer').click();await h.plan();document.querySelector('[aria-label="Channel levels"]').click();
+  const tabs=()=>[...document.querySelectorAll('.cm-channel-tab')],tab=name=>tabs().find(item=>item.textContent===name),visible=()=>[...document.querySelectorAll('.cm-channel')].filter(row=>!row.hidden);
+  assert.deepEqual(tabs().map(item=>item.textContent),['Narrator','Mira','Guard','SFX','Ambience']);assert.deepEqual(visible().map(row=>row.dataset.speaker),['Narrator']);
+  tab('Mira').click();assert.equal(tab('Mira').getAttribute('aria-selected'),'true');assert.equal(visible().length,1);assert.equal(visible()[0].id,tab('Mira').getAttribute('aria-controls'));assert.equal(visible()[0].getAttribute('aria-labelledby'),tab('Mira').id);
+  const percent=document.querySelector('[aria-label="Mira volume percent"]');percent.value='42';percent.dispatchEvent(new h.dom.window.Event('input'));document.querySelector('[aria-label="Mira silent"]').click();
+  assert.deepEqual(visible().map(row=>row.dataset.speaker),['Mira']);assert.equal(document.querySelector('[aria-label="Mira volume percent"]').value,'42');
+  h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios[0]?.paused===false);assert.deepEqual(visible().map(row=>row.dataset.speaker),['Mira']);assert.equal(h.audios[0].volume,1);h.$('stop').click();
+  await until(()=>h.store.get('ui:mixer')?.channelTab==='voice:Mira');await h.reload();assert.deepEqual(visible().map(row=>row.dataset.speaker),['Mira']);assert.equal(document.querySelector('[aria-label="Mira silent"]').getAttribute('aria-pressed'),'true');
+  tab('SFX').click();const effects=document.querySelector('[aria-label="SFX volume percent"]');effects.value='31';effects.dispatchEvent(new h.dom.window.Event('input'));
+  tab('Mira').click();assert.equal(document.querySelector('[aria-label="Mira volume percent"]').value,'42');assert.equal(document.querySelector('[aria-label="SFX volume percent"]').value,'31');
+ }finally{await h.close();}
+});
+
+test('mobile tabs support arrow keys and safe fallback when a selected sound or voice disappears, and resize back to a list',async()=>{
+ const h=await harness(undefined,true);try{
+  await h.plan();const tabs=()=>[...document.querySelectorAll('.cm-channel-tab')],selected=()=>tabs().find(tab=>tab.getAttribute('aria-selected')==='true'),visible=()=>[...document.querySelectorAll('.cm-channel')].filter(row=>!row.hidden);
+  selected().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));assert.equal(selected().textContent,'Mira');assert.equal(document.activeElement,selected());
+  selected().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'End',bubbles:true}));assert.equal(selected().textContent,'Ambience');assert.equal(tabs().filter(tab=>tab.tabIndex===0).length,1);
+  h.$('ambience').click();assert.ok(!tabs().some(tab=>tab.textContent==='Ambience'));assert.equal(selected().textContent,'Narrator');assert.equal(visible().length,1);
+  tabs().find(tab=>tab.textContent==='SFX').click();h.$('sfx').click();assert.ok(!tabs().some(tab=>tab.textContent==='SFX'));assert.equal(selected().textContent,'Narrator');
+  tabs().find(tab=>tab.textContent==='Mira').click();h.message.content='Only narration remains.';await h.plan();assert.equal(selected().textContent,'Narrator');assert.equal(visible().length,1);
+  h.setMobile(false);assert.equal(document.querySelector('.cm-channel-tabs').hidden,true);assert.equal(document.querySelector('[role="tabpanel"]'),null);assert.equal(visible().length,1);
+  h.message.content='At dawn. "Hello." "Wait."';await h.plan();assert.equal(visible().length,3);h.setMobile(true);assert.equal(document.querySelector('.cm-channel-tabs').hidden,false);assert.equal(visible().length,1);
  }finally{await h.close();}
 });
 
