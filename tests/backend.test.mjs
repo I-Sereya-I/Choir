@@ -26,7 +26,7 @@ test('Jev proxy options are clone-safe and cancellation discards a late response
   });
   h.send('planJev',{transcript:'"Hello."',apiKey:'jev-secret',config:{...config,useStyle:false}});
   await new Promise(resolve=>setTimeout(resolve,0));assert.ok(options);
-  h.send('cancel',{});release({status:200,body:JSON.stringify({choices:['Narrator']})});
+  h.send('cancel',{});release({status:200,body:JSON.stringify({answers:{q0:{choice:'Narrator'}}})});
   await new Promise(resolve=>setTimeout(resolve,10));
   assert.equal(h.sent.filter(item=>item.message.result || item.message.error).length,0);
 });
@@ -52,6 +52,49 @@ test('Freesound uses the current search endpoint, authenticates in a header and 
  });
  h.send('freesound',{apiKey:'test-freesound-key',query:'page turn'});assert.equal((await h.result()).message.result.results[0].previewUrl,'https://freesound.test/high.mp3');
  const denied=await harness(null,async()=>({status:401,body:'Unauthorized'}));denied.send('freesound',{apiKey:'invalid-key',query:'page turn'});assert.match((await denied.result()).message.error,/Freesound HTTP 401/);
+});
+
+const sounds=[
+  {id:1,name:'Glass Smash, Bottle',duration:1.24,tags:['glass','smash','bottle','break','shatter','impact','debris','crash','extra'],previews:{'preview-hq-mp3':'https://freesound.test/smash.mp3'}},
+  {id:2,name:'Bottle pick up',duration:0.8,tags:['bottle','glass','pickup'],previews:{'preview-hq-mp3':'https://freesound.test/pickup.mp3'}},
+  {id:3,name:'Bottle clink',duration:0.5,tags:['bottle'],previews:{'preview-hq-mp3':'https://freesound.test/clink.mp3'}}];
+const moment='She reached for the glass bottle on the shelf and lifted it.';
+const search=async url=>{assert.equal(new URL(url).searchParams.get('page_size'),'8');return {status:200,body:JSON.stringify({results:sounds})};};
+const soundOrder=async h=>JSON.parse(JSON.stringify((await h.result()).message.result.results)).map(sound=>sound.id);
+
+test('a Lumiverse Decision connection picks the Freesound clip heard in the story moment',async()=>{
+  let evaluated;
+  const h=await harness(null,search,null,null,null,{evaluate:async input=>{evaluated=JSON.parse(JSON.stringify(input));return {answers:{q0:{type:'choice',choice:'s1',confidence:0.95}}};}});
+  h.send('freesound',{apiKey:'test-freesound-key',query:'glass bottle',moment,kind:'sfx',decisionConnection:'decision-a',jevApiKey:'unused-jev-key'});
+  assert.deepEqual(await soundOrder(h),[2,1,3]);
+  assert.equal(evaluated.userId,'user-a');assert.equal(evaluated.connection_id,'decision-a');assert.deepEqual(evaluated.state,{sound:'glass bottle',moment});
+  assert.equal(evaluated.questions.q0.type,'choice');
+  assert.equal(evaluated.questions.q0.instructions,`The story needs a short sound effect for this moment. Wanted sound: "glass bottle". Story moment: "${moment}". Which sound file best matches what is actually heard in the story moment? Reject files whose name or tags describe a different action, setting, or sound source.`);
+  assert.deepEqual(evaluated.questions.q0.criteria,{s0:'Glass Smash, Bottle — tags: glass, smash, bottle, break, shatter, impact, debris, crash (1.2s)',s1:'Bottle pick up — tags: bottle, glass, pickup (0.8s)',s2:'Bottle clink — tags: bottle (0.5s)'});
+});
+
+test('without Lumiverse decisions a Jev key picks the Freesound clip through the TypeSafe Decision API',async()=>{
+  const calls=[];
+  const h=await harness(null,async(url,options)=>{calls.push({url,options});return url.includes('freesound.org')?search(url):{status:200,body:JSON.stringify({model:'jev-1.13.0',answers:{q0:{type:'choice',choice:'s2'}}})};});
+  h.send('freesound',{apiKey:'test-freesound-key',query:'night wind',moment,kind:'ambience',jevApiKey:'jev-key',jevEndpoint:'https://api.typesafe.ai/v1/classify'});
+  assert.deepEqual(await soundOrder(h),[3,1,2]);
+  assert.equal(calls[1].url,'https://api.typesafe.ai/v1/systemone');assert.equal(calls[1].options.headers.Authorization,'Bearer jev-key');structuredClone(calls[1].options);
+  const body=JSON.parse(calls[1].options.body);
+  assert.equal(body.model,'jev-latest');assert.deepEqual(body.state,{sound:'night wind',moment});assert.deepEqual(Object.keys(body.questions.q0.criteria),['s0','s1','s2']);
+  assert.match(body.questions.q0.instructions,/^The story needs a looping background ambience for this moment\. Wanted sound: "night wind"\./);
+});
+
+test('Freesound keeps its top result without a story moment or Decision model and when the choice fails or is slow',async()=>{
+  const topFirst=async(input,decisions,cors=search,deadline)=>{
+    const h=await harness(null,cors,null,deadline,null,decisions);
+    h.send('freesound',{apiKey:'test-freesound-key',query:'glass bottle',moment,...input});assert.deepEqual(await soundOrder(h),[1,2,3]);
+  };
+  const urls=[];await topFirst({},undefined,url=>{urls.push(url);return search(url);});assert.equal(urls.length,1);
+  let evaluations=0;await topFirst({moment:' '},{evaluate:async()=>{evaluations++;return {answers:{q0:{choice:'s1'}}};}});assert.equal(evaluations,0);
+  await topFirst({},{evaluate:async()=>{throw Error('No Decision connection');}});
+  await topFirst({},{evaluate:async()=>({answers:{q0:{choice:'unknown'}}})});
+  await topFirst({},{evaluate:()=>new Promise(()=>{})},search,(fn,ms)=>{if(ms===5000)fn();});
+  await topFirst({jevApiKey:'jev-key'},undefined,url=>url.includes('freesound.org')?search(url):{status:500,body:'Upstream error'});
 });
 
 test('Jev errors stop by default and never bill the LLM',async()=>{
@@ -376,7 +419,7 @@ test('searchVoices handles empty query or network failure', async () => {
 
 import { classifyWithJev, planWithJev } from '../src/backend.js';
 
-test('classifyWithJev calls API with proper payload, auth header and choices, returning candidate strings', async () => {
+test('classifyWithJev asks the TypeSafe Decision API one choice question per item and returns candidate strings', async () => {
   const originalFetch = globalThis.fetch;
   let request;
   try {
@@ -385,7 +428,7 @@ test('classifyWithJev calls API with proper payload, auth header and choices, re
       return {
         ok: true,
         status: 200,
-        json: async () => ({ choices: ['Alice', 'Bob'] })
+        json: async () => ({ model: 'jev-1.13.0', answers: { q0: { type: 'choice', choice: 'Alice', confidence: 0.9 }, q1: { type: 'choice', choice: 'Bob' } } })
       };
     };
     const items = [
@@ -396,44 +439,45 @@ test('classifyWithJev calls API with proper payload, auth header and choices, re
     const result = await classifyWithJev({
       items,
       candidates,
-      apiKey: 'test-jev-key'
+      apiKey: 'test-jev-key',
+      question: 'Which character speaks this dialogue'
     });
     assert.deepEqual(result, ['Alice', 'Bob']);
-    assert.equal(request.url, 'https://api.typesafe.ai/v1/classify');
+    assert.equal(request.url, 'https://api.typesafe.ai/v1/systemone');
     assert.equal(request.options.headers.Authorization, 'Bearer test-jev-key');
+    const criteria = { Alice: 'Alice', Bob: 'Bob', Charlie: 'Charlie' };
     assert.deepEqual(request.body, {
-      inputs: [
-        { text: '"Hello"', context: 'Alice said' },
-        { text: '"Hi there"', context: 'Bob replied' }
-      ],
-      choices: ['Alice', 'Bob', 'Charlie']
+      model: 'jev-latest',
+      state: items,
+      questions: {
+        q0: { type: 'choice', instructions: 'Which character speaks this dialogue: ""Hello""?', criteria },
+        q1: { type: 'choice', instructions: 'Which character speaks this dialogue: ""Hi there""?', criteria }
+      }
     });
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('classifyWithJev supports custom endpoint and handles various API response formats', async () => {
+test('classifyWithJev resolves a saved /classify endpoint to its base and rejects unknown answers', async () => {
   const originalFetch = globalThis.fetch;
-  let request;
+  const urls = [];
+  let answer = 'Guard';
   try {
     globalThis.fetch = async (url, options) => {
-      request = { url, options };
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ classifications: [{ choice: 'Guard' }] })
-      };
+      urls.push(url);
+      assert.equal(options.headers.Authorization, 'Bearer existing-token');
+      return { ok: true, status: 200, json: async () => ({ answers: { q0: { choice: answer } } }) };
     };
-    const result = await classifyWithJev({
-      items: [{ text: '"Halt!"' }],
-      candidates: ['Guard'],
-      apiKey: 'Bearer existing-token',
-      endpoint: 'https://custom.api.endpoint/v1/classify'
-    });
-    assert.deepEqual(result, ['Guard']);
-    assert.equal(request.url, 'https://custom.api.endpoint/v1/classify');
-    assert.equal(request.options.headers.Authorization, 'Bearer existing-token');
+    for (const endpoint of ['https://custom.api.endpoint/v1/classify', 'https://custom.api.endpoint/v1']) {
+      assert.deepEqual(await classifyWithJev({ items: [{ text: '"Halt!"' }], candidates: ['Guard'], apiKey: 'Bearer existing-token', endpoint }), ['Guard']);
+    }
+    assert.deepEqual(urls, ['https://custom.api.endpoint/v1/systemone', 'https://custom.api.endpoint/v1/systemone']);
+    answer = 'Nobody';
+    await assert.rejects(
+      () => classifyWithJev({ items: [{ text: '"Halt!"' }], candidates: ['Guard'], apiKey: 'Bearer existing-token' }),
+      /incomplete or unknown classification choices/
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -474,17 +518,11 @@ test('planWithJev classifies dialogue speakers and emotion tags into valid speec
     globalThis.fetch = async (url, options) => {
       const body = JSON.parse(options.body);
       calls.push({ url, body });
-      if (calls.length === 1) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ choices: ['Alice', 'Bob'] })
-        };
-      }
+      const [first, second] = calls.length === 1 ? ['Alice', 'Bob'] : ['cheerful', 'whispering'];
       return {
         ok: true,
         status: 200,
-        json: async () => ({ choices: ['cheerful', 'whispering'] })
+        json: async () => ({ answers: { q0: { choice: first }, q1: { choice: second } } })
       };
     };
 
@@ -507,9 +545,11 @@ test('planWithJev classifies dialogue speakers and emotion tags into valid speec
 
     assert.ok(plan.segments);
     assert.equal(calls.length, 2);
+    assert.ok(calls.every(call => call.url === 'https://api.typesafe.ai/v1/systemone' && call.body.model === 'jev-latest'));
     // Persona must be excluded from candidate choices
-    assert.deepEqual(calls[0].body.choices, ['Alice', 'Bob']);
-    assert.deepEqual(calls[1].body.choices, ['neutral', 'cheerful', 'whispering', 'angry', 'sad', 'sigh']);
+    assert.deepEqual(Object.keys(calls[0].body.questions.q0.criteria), ['Alice', 'Bob']);
+    assert.equal(calls[0].body.questions.q0.instructions, 'Which character speaks this dialogue: ""Good morning!""?');
+    assert.deepEqual(Object.keys(calls[1].body.questions.q1.criteria), ['neutral', 'cheerful', 'whispering', 'angry', 'sad', 'sigh']);
 
     // Check segments attribution and emotion styles
     const aliceSeg = plan.segments.find(s => s.text === '"Good morning!"');
@@ -563,7 +603,7 @@ test('backend RPC handler supports action planJev and planWithJev', async () => 
     calls.push({ url, options, body: JSON.parse(options.body) });
     return {
       status: 200,
-      body: JSON.stringify({ choices: calls.length % 2 === 1 ? ['Hero'] : ['sigh'] })
+      body: JSON.stringify({ answers: { q0: { choice: calls.length % 2 === 1 ? 'Hero' : 'sigh' } } })
     };
   };
 
@@ -609,7 +649,7 @@ test('action plan attempts Jev when useJev and jevApiKey are configured, succeed
   const corsHandler = async (url, options) => {
     return {
       status: 200,
-      body: JSON.stringify({ choices: ['Hero'] })
+      body: JSON.stringify({ answers: { q0: { choice: 'Hero' } } })
     };
   };
   const jevConfig = {
@@ -670,14 +710,16 @@ test('testPlanner tests Jev when plannerMode is jev', async () => {
   let request;
   const h = await harness(null, async (url, options) => {
     request = { url, options };
-    return { status: 200, body: JSON.stringify({ choices: ['Alice'] }) };
+    return { status: 200, body: JSON.stringify({ answers: { q0: { choice: 'Alice' } } }) };
   });
-  h.send('testPlanner', { plannerMode: 'jev', jevApiKey: 'test-jev-key' });
+  h.send('testPlanner', { plannerMode: 'jev', jevApiKey: 'test-jev-key', jevEndpoint: 'https://api.typesafe.ai/v1/classify' });
   const result = await h.result();
   assert.equal(result.message.result.provider, 'TypeSafe AI');
   assert.equal(result.message.result.model, 'Jev System 1');
   assert.match(result.message.result.response, /READY/);
+  assert.equal(request.url, 'https://api.typesafe.ai/v1/systemone');
   assert.equal(request.options.headers.Authorization, 'Bearer test-jev-key');
+  assert.match(result.message.result.response, /choice: Alice/);
 });
 
 
