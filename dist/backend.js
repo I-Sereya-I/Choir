@@ -231,10 +231,10 @@ function validatePlan(raw, transcript, config) {
     // Assigned voices always win; blank fixed voices are cast once by the planner.
     const delivery = typeof segment.style === 'string' ? segment.style.trim() : '';
     if (delivery.length > 600) throw new Error('Turn styles must be at most 600 characters.');
-    const cue = detectFoleyCue(text);
+    const sfx = segmentSoundCues(segment.sfx, text);
     return {speaker:actor.speaker, voice:actor.voice,...((actor.route || config.defaultRoute)?{route:actor.route || config.defaultRoute}:{}), gender:actor.gender || 'auto', text,
       style: config.useStyle === false ? '' : [actor.style, delivery].filter(Boolean).join('. '),
-      ...(cue ? { sfx: { query: cue.query, filter: cue.filter, trigger: cue.matchedText } } : (segment.sfx ? { sfx: segment.sfx } : {}))};
+      ...(sfx ? {sfx} : {})};
   });
   if (transcript.slice(cursor).trim()) throw new Error('The plan omits the end of the original message.');
   const fixed = new Set(config.fixed.map(v => normalizeName(v.speaker)));
@@ -246,7 +246,7 @@ function attributionPlan(plan, config) {
   return {segments:plan.segments.map(segment=>{
     const actor=[...config.fixed,...config.npcs].find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker));
     const prefix=actor?.style?`${actor.style}. `:'';
-    return {speaker:segment.speaker,text:segment.text,style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style};
+    return {speaker:segment.speaker,text:segment.text,style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style,...(segment.sfx?{sfx:segment.sfx}:{})};
   })};
 }
 
@@ -642,90 +642,57 @@ function fastClassifyPlan(transcript, config) {
   }
 }
 
-const DEFAULT_FREESOUND_KEY = '';
-
-const FOLEY_RULES = [
-  // Page / paper turn
-  {
-    pattern: /\b(?:page\s+(?:turned|snapped|flipped)|turn(?:ed|ing)?\s+(?:the\s+)?page|flipp(?:ed|ing)?\s+(?:the\s+)?page|rustl(?:ed|ing)?\s+(?:the\s+)?paper)\b/i,
-    query: 'page turn',
-    filter: 'duration:[0.1 TO 2.5]'
-  },
-  // Thump / bump / impacts
-  {
-    pattern: /\b(?:(?:knee|elbow|shoulder|head|foot|body)\s+bumped\b|bumped\s+against\b|thump(?:ed|s)?\b|dull\s+thud\b|heavy\s+thud\b|thudded\b)\b/i,
-    query: 'thump',
-    filter: 'duration:[0.1 TO 2.0]'
-  },
-  // Breath / breathing / sigh / gasp
-  {
-    pattern: /\b(?:breath\s+smelled\b|heavy\s+breath(?:ing)?\b|sharp\s+intake\s+of\s+breath\b|caught\s+(?:her|his|their|my)\s+breath\b|gasped?\s*(?:in\s+surprise|softly|for\s+air)?\b|sighed?\s*(?:softly|heavily|deeply|in\s+relief)?\b)\b/i,
-    query: 'breath',
-    filter: 'duration:[0.2 TO 2.5]'
-  },
-  // Hiss
-  {
-    pattern: /\b(?:hissed\b|hissing\s+sound\b|steam\s+hissed\b)\b/i,
-    query: 'hiss',
-    filter: 'duration:[0.2 TO 2.5]'
-  },
-  // Door creak / slam / knock
-  {
-    pattern: /\b(?:door\s+(?:creaked|creaks|swung\s+open)\b|creak(?:ed|ing)?\s+(?:door|floorboard|floor|hinge)\b|knock(?:ed|ing)?\s+(?:on|at)\s+the\s+door\b|slam(?:med)?\s+the\s+door\b)\b/i,
-    query: 'door creak',
-    filter: 'duration:[0.3 TO 2.5]'
-  },
-  // Footsteps / walking
-  {
-    pattern: /\b(?:footsteps?\s+(?:approached|echoed|slowed|receded)\b|shuffl(?:ed|ing)?\s+(?:her|his|their|the)\s+feet\b|pacing\s+(?:the\s+floor|back\s+and\s+forth)\b)\b/i,
-    query: 'footsteps',
-    filter: 'duration:[0.3 TO 2.5]'
-  },
-  // Glass / dishes
-  {
-    pattern: /\b(?:glass\s+(?:shattered|clinked|broke)\b|cup\s+clatter(?:ed)?\b|dishes\s+clatter(?:ed)?\b)\b/i,
-    query: 'glass clink',
-    filter: 'duration:[0.1 TO 2.0]'
-  },
-  // Heartbeat
-  {
-    pattern: /\b(?:heart\s+(?:pounded|thumped|raced|beat\s+wildly)\b)\b/i,
-    query: 'heartbeat',
-    filter: 'duration:[0.5 TO 2.5]'
-  },
-  // Clock ticking
-  {
-    pattern: /\b(?:clock\s+tick(?:ed|ing)?\b|ticking\s+clock\b)\b/i,
-    query: 'clock tick',
-    filter: 'duration:[0.5 TO 2.5]'
-  }
-];
-
-function detectFoleyCue(text) {
-  if (!text || typeof text !== 'string') return null;
-  for (const rule of FOLEY_RULES) {
-    const match = rule.pattern.exec(text);
-    if (match) {
-      return {
-        query: rule.query,
-        filter: rule.filter,
-        matchedText: match[0],
-        matchIndex: match.index
-      };
-    }
-  }
-  return null;
+function cueOffset(text, trigger) {
+  if (!trigger) return 0;
+  const exact = text.indexOf(trigger);
+  return exact >= 0 ? exact : text.toLowerCase().indexOf(trigger.toLowerCase());
 }
 
-function attachFoleyCues(segments) {
-  if (!Array.isArray(segments)) return segments;
-  return segments.map(seg => {
-    if (!seg || typeof seg.text !== 'string') return seg;
-    const cue = detectFoleyCue(seg.text);
-    if (cue) {
-      return { ...seg, sfx: { query: cue.query, filter: cue.filter, trigger: cue.matchedText } };
-    }
-    return seg;
+function segmentSoundCues(value, text) {
+  const cues = (Array.isArray(value) ? value : value ? [value] : []).flatMap(cue => {
+    const query = typeof cue?.query === 'string' ? cue.query.trim().replace(/\s+/g, ' ') : '';
+    if (!query) return [];
+    const trigger = typeof cue.trigger === 'string' ? cue.trigger.trim() : '';
+    return [{query, trigger: trigger && cueOffset(text, trigger) >= 0 ? trigger : ''}];
+  });
+  return cues.length ? cues : null;
+}
+
+function soundCueLimit(segments) {
+  const characters = segments.reduce((total, segment) => total + String(segment.text || '').length, 0);
+  return Math.min(12, Math.max(2, Math.ceil(characters / 400)));
+}
+
+function soundCuePrompt(segments) {
+  return [
+    {role:'system',content:`You are the Foley editor for an audiobook. Choose short sound effects that make the scene audible. Return ONLY JSON {"cues":[{"segment":0,"trigger":"exact words","query":"freesound search"}]}.
+Choose only concrete physical sounds that happen in the scene as it is told: objects, movement, impacts, doors, footsteps, weather, fire, water, animals, vehicles, machines, weapons, crowds. Skip sounds that are remembered, imagined, hypothetical, negated or metaphorical. Skip voices and vocal sounds such as speech, laughter, sighs, gasps, screams and singing, because the voice actors perform those. Skip music.
+segment is the index of the numbered segment where the sound happens. trigger copies 2 to 6 consecutive words exactly as written in that segment, in the original language, from the start of the sentence or clause where the sound happens; the effect plays right before those words. query is a short English Freesound search of 2 to 5 words describing the sound itself, such as "wooden door slam", "rain on window" or "sword clash metal", whatever language the story uses.
+Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments. Return {"cues":[]} when nothing fits.`},
+    {role:'user',content:JSON.stringify({segments:segments.map((segment, index) => ({index, speaker:segment.speaker, text:segment.text}))})}
+  ];
+}
+
+function parseSoundCues(content, segments) {
+  const text = String(content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch {
+    try { parsed = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)); }
+    catch { throw new Error('the sound effect response was not valid JSON'); }
+  }
+  if (!Array.isArray(parsed?.cues)) throw new Error('the sound effect response has no cues list');
+  return parsed.cues.flatMap(cue => {
+    if (!Number.isInteger(cue?.segment) || !segments[cue.segment]) return [];
+    const valid = segmentSoundCues(cue, segments[cue.segment].text);
+    return valid ? [{segment:cue.segment, ...valid[0]}] : [];
+  }).slice(0, soundCueLimit(segments));
+}
+
+function applySoundCues(segments, cues) {
+  return segments.map((segment, index) => {
+    const own = cues.filter(cue => cue.segment === index).map(({query, trigger}) => ({query, trigger}));
+    return own.length ? {...segment, sfx: own} : segment;
   });
 }
 
@@ -1024,6 +991,11 @@ if (typeof globalThis !== 'undefined') {
   globalThis.planWithJev = planWithJev;
 }
 
+const jsonResponseParameters = connection =>
+  ['google','aistudio','vertex','google-ai-studio','vertex-ai','google_tts','google_vertex_tts'].includes(String(connection.provider || '').toLowerCase())
+    ? {responseMimeType:'application/json'}
+    : connection.provider==='openai' ? {response_format:{type:'json_object'}} : {};
+
 // Spindle supplies this global before importing the backend bundle.
 const running = new Map();
 const identity = (user,session,id) => JSON.stringify([user,session || '',id]);
@@ -1181,9 +1153,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         // Raw calls use the saved connection credentials without inheriting a chat preset's
         // short output limit, stop strings, response format or reasoning budget.
         const request = {type:'raw',userId,model:connection.model,
-          connection_id:connection.id,messages,parameters:{max_tokens:maxTokens,
-            ...((['google','aistudio','vertex','google-ai-studio','vertex-ai','google_tts','google_vertex_tts'].includes(String(connection.provider || '').toLowerCase()))?{responseMimeType:'application/json'}:
-              connection.provider==='openai'?{response_format:{type:'json_object'}}:{})},
+          connection_id:connection.id,messages,parameters:{max_tokens:maxTokens,...jsonResponseParameters(connection)},
           reasoning:{source:'off'},signal:controller.signal};
         let result;
         if(typeof spindle.generate.rawStream==='function') {
@@ -1216,6 +1186,19 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         }
       }
       throw new Error(`Planner failed twice: ${failure.message}`);
+    }
+    if (message.action === 'sfx') {
+      const segments=Array.isArray(input.segments)?input.segments.filter(segment=>typeof segment?.text==='string' && segment.text.trim()):[];
+      if(!segments.length){send({result:{cues:[]}});return;}
+      progress({stage:'Resolving saved LLM connection'});
+      const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
+      if(controller.signal.aborted)return;
+      if(!connection?.model)throw new Error('Select a Planner LLM connection with a text-generation model to choose sound effects.');
+      progress({stage:'Waiting for sound effect choices',provider:connection.provider,model:connection.model});
+      const result=await spindle.generate.raw({type:'raw',userId,model:connection.model,connection_id:connection.id,messages:soundCuePrompt(segments),
+        parameters:{max_tokens:2048,...jsonResponseParameters(connection)},reasoning:{source:'off'},signal:controller.signal});
+      if(controller.signal.aborted)return;
+      send({result:{cues:parseSoundCues(result.content,segments)}});return;
     }
     if (message.action === 'designVoice') {
       if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Gemini API key for this session.');

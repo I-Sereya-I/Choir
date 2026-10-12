@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, attributionPlan, restoreAttribution} from '../src/core.js';
 
 test('larger speech chunks respect provider limits while retaining a conservative unknown-provider limit',()=>{
   assert.equal(speechRequestLimits('openai_tts').maxChars,4096);
@@ -414,4 +414,30 @@ The countertop had never seen this much purposeful flurry.`;
 
   const clean = transcriptFromMessage(message);
   assert.equal(clean, 'The countertop had never seen this much purposeful flurry.');
+});
+
+test('LLM sound cues are validated against the segments, keep the story language and survive saved attribution',()=>{
+  const segments=[{speaker:'Narrator',text:'La puerta se cerró de golpe. Afuera llovía.'},{speaker:'Mira',text:'"¿Quién anda ahí?"'}];
+  const prompt=soundCuePrompt(segments);
+  assert.match(prompt[0].content,/English Freesound search/);assert.equal(JSON.parse(prompt[1].content).segments[1].index,1);
+  const cues=parseSoundCues('```json\n'+JSON.stringify({cues:[
+    {segment:5,trigger:'x',query:'thunder'},
+    {segment:0,trigger:'La puerta se cerró',query:'wooden   door slam '},
+    {segment:1,trigger:'not in the text',query:'footsteps'},
+    {segment:0,trigger:'Afuera llovía',query:'rain on window'},
+    {segment:0,trigger:'Afuera',query:''}
+  ]})+'\n```',segments);
+  // Short replies allow two effects; invalid segments and empty searches never count.
+  assert.deepEqual(cues,[
+    {segment:0,query:'wooden door slam',trigger:'La puerta se cerró'},
+    {segment:1,query:'footsteps',trigger:''}
+  ]);
+  assert.throws(()=>parseSoundCues('no json here',segments),/not valid JSON/);
+  assert.throws(()=>parseSoundCues('{"effects":[]}',segments),/no cues list/);
+  const config={voices:[{id:'n'},{id:'m'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Mira',voice:'m',style:''}],npcs:[]};
+  const transcript=segments.map(segment=>segment.text).join(' ');
+  const plan=validatePlan({segments:applySoundCues(segments.map(segment=>({...segment,voice:segment.speaker==='Mira'?'m':'n'})),[...cues,{segment:0,trigger:'Afuera llovía',query:'rain on window'}])},transcript,config);
+  assert.deepEqual(plan.segments[0].sfx,[{query:'wooden door slam',trigger:'La puerta se cerró'},{query:'rain on window',trigger:'Afuera llovía'}]);
+  const restored=restoreAttribution(structuredClone(attributionPlan(plan,config)),transcript,config);
+  assert.deepEqual(restored.segments.map(segment=>segment.sfx),plan.segments.map(segment=>segment.sfx));
 });

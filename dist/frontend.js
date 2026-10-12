@@ -231,10 +231,10 @@ function validatePlan(raw, transcript, config) {
     // Assigned voices always win; blank fixed voices are cast once by the planner.
     const delivery = typeof segment.style === 'string' ? segment.style.trim() : '';
     if (delivery.length > 600) throw new Error('Turn styles must be at most 600 characters.');
-    const cue = detectFoleyCue(text);
+    const sfx = segmentSoundCues(segment.sfx, text);
     return {speaker:actor.speaker, voice:actor.voice,...((actor.route || config.defaultRoute)?{route:actor.route || config.defaultRoute}:{}), gender:actor.gender || 'auto', text,
       style: config.useStyle === false ? '' : [actor.style, delivery].filter(Boolean).join('. '),
-      ...(cue ? { sfx: { query: cue.query, filter: cue.filter, trigger: cue.matchedText } } : (segment.sfx ? { sfx: segment.sfx } : {}))};
+      ...(sfx ? {sfx} : {})};
   });
   if (transcript.slice(cursor).trim()) throw new Error('The plan omits the end of the original message.');
   const fixed = new Set(config.fixed.map(v => normalizeName(v.speaker)));
@@ -246,7 +246,7 @@ function attributionPlan(plan, config) {
   return {segments:plan.segments.map(segment=>{
     const actor=[...config.fixed,...config.npcs].find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker));
     const prefix=actor?.style?`${actor.style}. `:'';
-    return {speaker:segment.speaker,text:segment.text,style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style};
+    return {speaker:segment.speaker,text:segment.text,style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style,...(segment.sfx?{sfx:segment.sfx}:{})};
   })};
 }
 
@@ -642,90 +642,57 @@ function fastClassifyPlan(transcript, config) {
   }
 }
 
-const DEFAULT_FREESOUND_KEY = '';
-
-const FOLEY_RULES = [
-  // Page / paper turn
-  {
-    pattern: /\b(?:page\s+(?:turned|snapped|flipped)|turn(?:ed|ing)?\s+(?:the\s+)?page|flipp(?:ed|ing)?\s+(?:the\s+)?page|rustl(?:ed|ing)?\s+(?:the\s+)?paper)\b/i,
-    query: 'page turn',
-    filter: 'duration:[0.1 TO 2.5]'
-  },
-  // Thump / bump / impacts
-  {
-    pattern: /\b(?:(?:knee|elbow|shoulder|head|foot|body)\s+bumped\b|bumped\s+against\b|thump(?:ed|s)?\b|dull\s+thud\b|heavy\s+thud\b|thudded\b)\b/i,
-    query: 'thump',
-    filter: 'duration:[0.1 TO 2.0]'
-  },
-  // Breath / breathing / sigh / gasp
-  {
-    pattern: /\b(?:breath\s+smelled\b|heavy\s+breath(?:ing)?\b|sharp\s+intake\s+of\s+breath\b|caught\s+(?:her|his|their|my)\s+breath\b|gasped?\s*(?:in\s+surprise|softly|for\s+air)?\b|sighed?\s*(?:softly|heavily|deeply|in\s+relief)?\b)\b/i,
-    query: 'breath',
-    filter: 'duration:[0.2 TO 2.5]'
-  },
-  // Hiss
-  {
-    pattern: /\b(?:hissed\b|hissing\s+sound\b|steam\s+hissed\b)\b/i,
-    query: 'hiss',
-    filter: 'duration:[0.2 TO 2.5]'
-  },
-  // Door creak / slam / knock
-  {
-    pattern: /\b(?:door\s+(?:creaked|creaks|swung\s+open)\b|creak(?:ed|ing)?\s+(?:door|floorboard|floor|hinge)\b|knock(?:ed|ing)?\s+(?:on|at)\s+the\s+door\b|slam(?:med)?\s+the\s+door\b)\b/i,
-    query: 'door creak',
-    filter: 'duration:[0.3 TO 2.5]'
-  },
-  // Footsteps / walking
-  {
-    pattern: /\b(?:footsteps?\s+(?:approached|echoed|slowed|receded)\b|shuffl(?:ed|ing)?\s+(?:her|his|their|the)\s+feet\b|pacing\s+(?:the\s+floor|back\s+and\s+forth)\b)\b/i,
-    query: 'footsteps',
-    filter: 'duration:[0.3 TO 2.5]'
-  },
-  // Glass / dishes
-  {
-    pattern: /\b(?:glass\s+(?:shattered|clinked|broke)\b|cup\s+clatter(?:ed)?\b|dishes\s+clatter(?:ed)?\b)\b/i,
-    query: 'glass clink',
-    filter: 'duration:[0.1 TO 2.0]'
-  },
-  // Heartbeat
-  {
-    pattern: /\b(?:heart\s+(?:pounded|thumped|raced|beat\s+wildly)\b)\b/i,
-    query: 'heartbeat',
-    filter: 'duration:[0.5 TO 2.5]'
-  },
-  // Clock ticking
-  {
-    pattern: /\b(?:clock\s+tick(?:ed|ing)?\b|ticking\s+clock\b)\b/i,
-    query: 'clock tick',
-    filter: 'duration:[0.5 TO 2.5]'
-  }
-];
-
-function detectFoleyCue(text) {
-  if (!text || typeof text !== 'string') return null;
-  for (const rule of FOLEY_RULES) {
-    const match = rule.pattern.exec(text);
-    if (match) {
-      return {
-        query: rule.query,
-        filter: rule.filter,
-        matchedText: match[0],
-        matchIndex: match.index
-      };
-    }
-  }
-  return null;
+function cueOffset(text, trigger) {
+  if (!trigger) return 0;
+  const exact = text.indexOf(trigger);
+  return exact >= 0 ? exact : text.toLowerCase().indexOf(trigger.toLowerCase());
 }
 
-function attachFoleyCues(segments) {
-  if (!Array.isArray(segments)) return segments;
-  return segments.map(seg => {
-    if (!seg || typeof seg.text !== 'string') return seg;
-    const cue = detectFoleyCue(seg.text);
-    if (cue) {
-      return { ...seg, sfx: { query: cue.query, filter: cue.filter, trigger: cue.matchedText } };
-    }
-    return seg;
+function segmentSoundCues(value, text) {
+  const cues = (Array.isArray(value) ? value : value ? [value] : []).flatMap(cue => {
+    const query = typeof cue?.query === 'string' ? cue.query.trim().replace(/\s+/g, ' ') : '';
+    if (!query) return [];
+    const trigger = typeof cue.trigger === 'string' ? cue.trigger.trim() : '';
+    return [{query, trigger: trigger && cueOffset(text, trigger) >= 0 ? trigger : ''}];
+  });
+  return cues.length ? cues : null;
+}
+
+function soundCueLimit(segments) {
+  const characters = segments.reduce((total, segment) => total + String(segment.text || '').length, 0);
+  return Math.min(12, Math.max(2, Math.ceil(characters / 400)));
+}
+
+function soundCuePrompt(segments) {
+  return [
+    {role:'system',content:`You are the Foley editor for an audiobook. Choose short sound effects that make the scene audible. Return ONLY JSON {"cues":[{"segment":0,"trigger":"exact words","query":"freesound search"}]}.
+Choose only concrete physical sounds that happen in the scene as it is told: objects, movement, impacts, doors, footsteps, weather, fire, water, animals, vehicles, machines, weapons, crowds. Skip sounds that are remembered, imagined, hypothetical, negated or metaphorical. Skip voices and vocal sounds such as speech, laughter, sighs, gasps, screams and singing, because the voice actors perform those. Skip music.
+segment is the index of the numbered segment where the sound happens. trigger copies 2 to 6 consecutive words exactly as written in that segment, in the original language, from the start of the sentence or clause where the sound happens; the effect plays right before those words. query is a short English Freesound search of 2 to 5 words describing the sound itself, such as "wooden door slam", "rain on window" or "sword clash metal", whatever language the story uses.
+Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments. Return {"cues":[]} when nothing fits.`},
+    {role:'user',content:JSON.stringify({segments:segments.map((segment, index) => ({index, speaker:segment.speaker, text:segment.text}))})}
+  ];
+}
+
+function parseSoundCues(content, segments) {
+  const text = String(content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch {
+    try { parsed = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)); }
+    catch { throw new Error('the sound effect response was not valid JSON'); }
+  }
+  if (!Array.isArray(parsed?.cues)) throw new Error('the sound effect response has no cues list');
+  return parsed.cues.flatMap(cue => {
+    if (!Number.isInteger(cue?.segment) || !segments[cue.segment]) return [];
+    const valid = segmentSoundCues(cue, segments[cue.segment].text);
+    return valid ? [{segment:cue.segment, ...valid[0]}] : [];
+  }).slice(0, soundCueLimit(segments));
+}
+
+function applySoundCues(segments, cues) {
+  return segments.map((segment, index) => {
+    const own = cues.filter(cue => cue.segment === index).map(({query, trigger}) => ({query, trigger}));
+    return own.length ? {...segment, sfx: own} : segment;
   });
 }
 
@@ -1427,7 +1394,7 @@ export async function setup(ctx) {
         try{ctx.sendToBackend({namespace:'choir',id,action:'cancel'});}catch{}
         done(new Error(action==='ping'
           ? 'Choir backend did not respond. Update and restart Choir in Extensions, then reload the page. Both backend and frontend must be running.'
-          : `${action==='plan' || action==='testPlanner'?'Planner':'TTS'} request timed out waiting for the backend. ${lastProgress?`Last reported stage: ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}.`:'The backend did not acknowledge this request; restart Choir and reload the page.'}`));
+          : `${action==='plan' || action==='testPlanner'?'Planner':action==='sfx'?'Sound effect':'TTS'} request timed out waiting for the backend. ${lastProgress?`Last reported stage: ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}.`:'The backend did not acknowledge this request; restart Choir and reload the page.'}`));
       },timeoutMs);
       const done=(error,result)=>{clearTimeout(timer);signal?.removeEventListener('abort',cancel);pending.delete(id);error?reject(error):resolve(result);};
       done.progress=progress=>{lastProgress=progress;onProgress?.(progress);};
@@ -2272,7 +2239,7 @@ export async function setup(ctx) {
     const restored=restoreAttribution(saved.attribution,saved.transcript,cast);
     planAttribution=saved.attribution;
     const chosen=rememberPlanCast(restored);
-    plan={...restored,warning:saved.warning || ''};planSource={messageId,content:saved.content,transcript:saved.transcript,chatId:targetChat,sections:saved.sections};
+    plan={...restored,warning:saved.warning || ''};planSource={messageId,content:saved.content,transcript:saved.transcript,chatId:targetChat,sections:saved.sections,soundCues:Boolean(saved.soundCues)};
     if(renderRows)renderCast();renderPreview();
     if(chosen)await persistConfig(targetChat,config);
     return !disposed && targetChat===chatId && version===loadVersion && token===revision;
@@ -2362,7 +2329,7 @@ export async function setup(ctx) {
   }
   async function prepare(messageId,autoPlay=false,contentOverride,forceReplan=false) {
     if(!chatId)throw new Error('Open a chat first.');
-    stop(false);clearPlan();config=capture();validateSettings(config);
+    stop(false);clearPlan();config=capture();validateSettings(config);showFoleyStatus(missingFoleyKey(config),false);
     const token=revision, targetChat=chatId;
     const content=contentOverride ?? ctx.messages.getContent(messageId);
     if(content==null)throw new Error('Message is no longer available.');
@@ -2374,7 +2341,7 @@ export async function setup(ctx) {
     const ctrl=new AbortController();controller=ctrl;
     planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;
     setBusy(true);status('Checking Choir backend…');
-    let streaming=false, player=null;
+    let streaming=false, player=null, soundsChosen=false;
     try {
       if(/\{\{\s*user\s*\}\}/i.test(transcript+context)) {
         const name=await personaName();
@@ -2448,6 +2415,7 @@ export async function setup(ctx) {
         const completedSections=savedProgress?.content===content && savedProgress.transcript===transcript && Array.isArray(savedProgress.sections)?savedProgress.sections.filter(saved=>saved && typeof saved.text==='string'):[];
         let timeoutSplits=0;
         streaming = autoPlay && sections.length > 1 && !config.autoDesignNPCs;
+        soundsChosen=streaming && soundCuesWanted(config);
         if (streaming) {
           const apiKey = $('key').value.trim();
           const cached=await recordingStore('get',recordingKey(targetChat,messageId)).catch(()=>null);
@@ -2497,11 +2465,17 @@ export async function setup(ctx) {
           for (const actor of snapshot.fixed) {
             if (!actor.voice) actor.voice = checked.segments.find(s => normalizeName(s.speaker) === normalizeName(actor.speaker))?.voice || '';
           }
-          playbackSections.push(checked.segments.map((_,index)=>combined.length+index));
-          combined.push(...stripBase(checked.segments)); previous = section;
+          let sectionSegments=checked.segments;
           if (streaming) {
-            const offset=combined.length-checked.segments.length;
-            const sectionBatches = checked.segments.flatMap((segment,index)=>playbackBatches([segment],config).map((batch,chunkIndex)=>({...batch,passageIndex:offset+index,chunkIndex})));
+            const cued=await cuePlannedSegments(sectionSegments,ctrl,token);
+            if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
+            sectionSegments=cued.segments;soundsChosen&&=cued.checked;
+          }
+          playbackSections.push(sectionSegments.map((_,index)=>combined.length+index));
+          combined.push(...stripBase(sectionSegments)); previous = section;
+          if (streaming) {
+            const offset=combined.length-sectionSegments.length;
+            const sectionBatches = sectionSegments.flatMap((segment,index)=>playbackBatches([segment],config).map((batch,chunkIndex)=>({...batch,passageIndex:offset+index,chunkIndex})));
             player.push(sectionBatches);
           }
         }
@@ -2509,7 +2483,12 @@ export async function setup(ctx) {
       }
       // Validate the complete original reply before audio or cast persistence.
       const validated=validatePlan({segments:combined},transcript,snapshot);
-      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat,sections:playbackSections};
+      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat,sections:playbackSections,soundCues:soundsChosen};
+      if(!streaming){
+        const cued=await cuePlannedSegments(plan.segments,ctrl,token);
+        if(token!==revision || ctrl.signal.aborted)return;
+        plan.segments=cued.segments;planSource.soundCues=cued.checked;
+      }
       rememberPlanCast(validated);
       if(config.autoDesignNPCs && detectProvider(config)==='gemini' && $('key').value) {
         const apiKey=$('key').value.trim();
@@ -2544,7 +2523,7 @@ export async function setup(ctx) {
       await persistConfig(targetChat,config);
       if(token!==revision || disposed)return;
       await persistPlan();
-      if(!streaming)status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.map(s=>s.speaker)).size} speakers.${plannerMode==='heuristic'?' Local heuristic attribution; no LLM request.':plannerMode==='jev' && !jevFailure?' Jev attribution; no LLM request.':''}${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''}`);
+      if(!streaming)status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.map(s=>s.speaker)).size} speakers.${plannerMode==='heuristic' || plannerMode==='jev' && !jevFailure?` ${plannerMode==='heuristic'?'Local heuristic':'Jev'} attribution; ${planSource.soundCues?'one LLM request for sound effects':'no LLM request'}.`:''}${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''}`);
       if(streaming) {
         const {blobs,segments:playedBatches,warnings}=await player.playbackPromise;
         const key=recordingKey(targetChat,messageId);
@@ -2643,23 +2622,48 @@ export async function setup(ctx) {
   function playbackBatches(segments,snapshot,{filterMuted=true,batchGemini=false}={}){
     const expanded=segments.flatMap(segment=>{
       const {sfx,...speech}=segment;
-      if(snapshot.enableSfx===false || !sfx?.query)return [speech];
-      const index=sfx.trigger?speech.text.toLowerCase().indexOf(sfx.trigger.toLowerCase()):0;
-      const head=index>0?speech.text.slice(0,index).trim():'';
-      const tail=index>0?speech.text.slice(index).trim():speech.text;
-      return [...(head?[{...speech,text:head}]:[]),{kind:'sfx',speaker:'SFX',voice:'',text:`[SFX: ${sfx.query}]`,route:'sfx',sfx},...(tail?[{...speech,text:tail}]:[])];
+      if(snapshot.enableSfx===false || !sfx?.length)return [speech];
+      // Each effect plays right before the words it was anchored to.
+      const points=sfx.map(cue=>({cue,at:Math.max(0,cueOffset(speech.text,cue.trigger))})).sort((a,b)=>a.at-b.at);
+      const parts=[];let start=0;
+      for(const {cue,at} of points){
+        const head=speech.text.slice(start,Math.max(start,at)).trim();
+        if(head)parts.push({...speech,text:head});
+        parts.push({kind:'sfx',speaker:'SFX',voice:'',text:`[SFX: ${cue.query}]`,route:'sfx',sfx:cue});
+        start=Math.max(start,at);
+      }
+      const tail=speech.text.slice(start).trim();
+      return tail?[...parts,{...speech,text:tail}]:parts;
     }).filter(segment=>!(filterMuted && snapshot.muteNarrator && normalizeName(segment.speaker)==='narrator'));
     return ttsBatches(expanded,snapshot,batchGemini);
   }
-  const foleyKey=sfx=>JSON.stringify([sfx?.query || 'thump',sfx?.filter || 'duration:[0.1 TO 2.5]']);
+  const foleyKey=sfx=>JSON.stringify([sfx?.query || 'thump',sfx?.filter || 'duration:[0.2 TO 4]']);
+  const freesoundKey=snapshot=>(snapshot.freesoundApiKey || $('freesoundApiKey')?.value || '').trim();
+  const soundCuesWanted=snapshot=>snapshot.enableSfx!==false && Boolean(freesoundKey(snapshot));
+  const missingFoleyKey=snapshot=>snapshot.enableSfx!==false && !freesoundKey(snapshot)?'Sound effects need a Freesound API key in Advanced settings. Speech continues.':'';
+  async function chooseSoundCues(segments,signal,onStage=status){
+    onStage('Choosing sound effects…');
+    const result=await rpc('sfx',{segments:segments.map(({speaker,text})=>({speaker,text})),connectionId:config.planner},signal,60000,
+      progress=>onStage(`Choosing sound effects: ${progress.stage}${progress.model?` · ${progress.model}`:''}`));
+    return Array.isArray(result?.cues)?result.cues:[];
+  }
+  // Sound effects are optional: a failed choice never blocks speech.
+  async function cuePlannedSegments(segments,ctrl,token){
+    if(!soundCuesWanted(config))return {segments,checked:false};
+    try{return {segments:applySoundCues(segments,await chooseSoundCues(segments,ctrl.signal)),checked:true};}
+    catch(error){
+      if(ctrl.signal.aborted || token!==revision)throw error;
+      showFoleyStatus(`SFX skipped: ${error.message}. Speech continues.`);return {segments,checked:false};
+    }
+  }
   const foleyWarning=warnings=>warnings?.length?` SFX skipped: ${warnings.join('; ')}.`:'';
-  function showFoleyStatus(message=''){
+  function showFoleyStatus(message='',error=true){
     if(disposed)return;
-    $('sfxStatus').hidden=!message;$('sfxStatus').textContent=message;$('sfxStatus').classList.toggle('et-error',Boolean(message));
+    $('sfxStatus').hidden=!message;$('sfxStatus').textContent=message;$('sfxStatus').classList.toggle('et-error',Boolean(message) && error);
   }
   function createStreamingPlayer(snapshot,source,cached,apiKey,ctrl,token) {
     const segments=[];
-    const warnings=new Set();showFoleyStatus();
+    const warnings=new Set();
     const warnFoley=error=>{warnings.add(error.message);if(token===revision)showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
     const ready=new Map();
     const resolvers=new Map();
@@ -2842,6 +2846,17 @@ export async function setup(ctx) {
     }
     stop(false);const token=revision;const ctrl=new AbortController();controller=ctrl;
     const snapshot=structuredClone(capture());
+    showFoleyStatus(missingFoleyKey(snapshot),false);
+    if(!planSource.soundCues && soundCuesWanted(snapshot)){
+      // Plans made before SFX were enabled get their effects chosen once, then saved.
+      const source=planSource,cued=await cuePlannedSegments(plan.segments,ctrl,token);
+      if(token!==revision || ctrl.signal.aborted || source!==planSource)throw abortError();
+      if(cued.checked){
+        plan={...plan,segments:cued.segments};planSource.soundCues=true;
+        try{await persistPlan();}catch(error){status(`Sound effects chosen, but the plan could not be saved: ${error.message}`,true);}
+        if(token!==revision || ctrl.signal.aborted)throw abortError();
+      }
+    }
     const resume=options.resume?await ctx.settings.get(`position:${chatId}`):null;
     if(token!==revision || ctrl.signal.aborted)throw abortError();
     const validResume=resume?.messageId===planSource.messageId && resume.content===planSource.content && !resume.complete?resume:null;
@@ -3342,7 +3357,7 @@ export async function setup(ctx) {
   async function fetchFoleyAudio(sfx, snapshot, signal) {
     signal.throwIfAborted();
     const query = sfx.query || 'thump';
-    const filter = sfx.filter || 'duration:[0.1 TO 2.5]';
+    const filter = sfx.filter || 'duration:[0.2 TO 4]';
     const key=foleyKey(sfx);
     if(foleyCache.has(key))return foleyCache.get(key);
     const apiKey = snapshot.freesoundApiKey || $('freesoundApiKey')?.value?.trim() || '';
@@ -3418,9 +3433,10 @@ const paragraphAudioCache = new Map();
     return prom;
   }
 
-  function planAndBatchParagraph(rawText, snap, filterMuted = false, preferredSpeaker = '') {
+  const paragraphCues = new Map();
+  function paragraphSegments(rawText, snap, preferredSpeaker = '') {
     const cleanPara = (transcriptFromMessage(rawText) || rawText).trim();
-    if (!cleanPara) return [];
+    if (!cleanPara) return {segments: [], cleanPara, fromPlan: false};
 
     let segments = null;
 
@@ -3430,9 +3446,7 @@ const paragraphAudioCache = new Map();
         const segText = s.text.trim();
         return cleanPara.includes(segText) || segText.includes(cleanPara);
       });
-      if (matched.length) {
-        segments = matched;
-      }
+      if (matched.length) return {segments: matched, cleanPara, fromPlan: true};
     }
 
     // 2. Otherwise plan the paragraph directly in 0ms without blocking on LLM RPC
@@ -3465,7 +3479,20 @@ const paragraphAudioCache = new Map();
       segments = planResult?.segments || [];
     }
 
-    return playbackBatches(attachFoleyCues(segments),snap,{filterMuted,batchGemini:snap.batchGemini});
+    return {segments: applySoundCues(segments, paragraphCues.get(cleanPara) || []), cleanPara, fromPlan: false};
+  }
+
+  function planAndBatchParagraph(rawText, snap, filterMuted = false, preferredSpeaker = '') {
+    return playbackBatches(paragraphSegments(rawText, snap, preferredSpeaker).segments, snap, {filterMuted, batchGemini: snap.batchGemini});
+  }
+
+  // Paragraphs outside the current message plan get their effects chosen once per text.
+  async function loadParagraphCues(rawText, snap, preferredSpeaker, signal) {
+    const {segments, cleanPara, fromPlan} = paragraphSegments(rawText, snap, preferredSpeaker);
+    if (fromPlan || !segments.length || paragraphCues.has(cleanPara) || !soundCuesWanted(snap)) return;
+    const cues = await chooseSoundCues(segments, signal, () => {});
+    paragraphCues.set(cleanPara, cues);
+    if (paragraphCues.size > 80) paragraphCues.delete(paragraphCues.keys().next().value);
   }
 
   const bridge = {
@@ -3499,6 +3526,10 @@ const paragraphAudioCache = new Map();
       const castInfo = casting(cap);
       const snapshot = { ...structuredClone(cap), fixed: castInfo.fixed, voices: castInfo.voices, npcs: castInfo.npcs, defaultRoute: castInfo.defaultRoute };
 
+      let cueWarning='';
+      try{await loadParagraphCues(text,snapshot,speaker,signal);}
+      catch(error){if(signal?.aborted)throw error;cueWarning=error.message;}
+      if(disposed)return { played: 0 };
       mixerPlaybackSegments=planAndBatchParagraph(text,snapshot,false,speaker);renderMixer();
       const batches = planAndBatchParagraph(text,snapshot,true,speaker).filter(batch=>!playbackExcluded(batch));
       if (!batches.length) {
@@ -3512,16 +3543,16 @@ const paragraphAudioCache = new Map();
       const onAbort = () => ctrl.abort();
       signal?.addEventListener('abort', onAbort, { once: true });
       const apiKey = $('key')?.value?.trim() || '';
-      let played=0;const warnings=new Set();showFoleyStatus();
+      let played=0;const warnings=new Set(cueWarning?[cueWarning]:[]);showFoleyStatus(cueWarning?`SFX skipped: ${cueWarning}. Speech continues.`:missingFoleyKey(snapshot),Boolean(cueWarning));
 
       // Prefetch upcoming paragraph in background for 0ms transition latency
       if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
-        try {
+        void loadParagraphCues(nextText, snapshot, '', ctrl.signal).catch(() => {}).then(() => {
           const nextBatches = planAndBatchParagraph(nextText, snapshot, true);
-          if (nextBatches[0] && !playbackExcluded(nextBatches[0])) {
+          if (!ctrl.signal.aborted && nextBatches[0] && !playbackExcluded(nextBatches[0])) {
             getCachedOrSynthesize(nextBatches[0], snapshot, apiKey, ctrl.signal).catch(() => {});
           }
-        } catch {}
+        }).catch(() => {});
       }
 
       try {

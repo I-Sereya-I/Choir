@@ -1,4 +1,4 @@
-import { MAX_SPEECH_CHARS, validateCastConfig, validatePlan, parsePlanJson, resolvePlanReferences, plannerPrompt, geminiRequest, extractGeminiAudio, speechSourceUnits, normalizeName, fastClassifyPlan, resolvePlannerMode } from './core.js';
+import { MAX_SPEECH_CHARS, validateCastConfig, validatePlan, parsePlanJson, resolvePlanReferences, plannerPrompt, geminiRequest, extractGeminiAudio, speechSourceUnits, normalizeName, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -293,6 +293,11 @@ if (typeof globalThis !== 'undefined') {
   globalThis.planWithJev = planWithJev;
 }
 
+const jsonResponseParameters = connection =>
+  ['google','aistudio','vertex','google-ai-studio','vertex-ai','google_tts','google_vertex_tts'].includes(String(connection.provider || '').toLowerCase())
+    ? {responseMimeType:'application/json'}
+    : connection.provider==='openai' ? {response_format:{type:'json_object'}} : {};
+
 // Spindle supplies this global before importing the backend bundle.
 const running = new Map();
 const identity = (user,session,id) => JSON.stringify([user,session || '',id]);
@@ -450,9 +455,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         // Raw calls use the saved connection credentials without inheriting a chat preset's
         // short output limit, stop strings, response format or reasoning budget.
         const request = {type:'raw',userId,model:connection.model,
-          connection_id:connection.id,messages,parameters:{max_tokens:maxTokens,
-            ...((['google','aistudio','vertex','google-ai-studio','vertex-ai','google_tts','google_vertex_tts'].includes(String(connection.provider || '').toLowerCase()))?{responseMimeType:'application/json'}:
-              connection.provider==='openai'?{response_format:{type:'json_object'}}:{})},
+          connection_id:connection.id,messages,parameters:{max_tokens:maxTokens,...jsonResponseParameters(connection)},
           reasoning:{source:'off'},signal:controller.signal};
         let result;
         if(typeof spindle.generate.rawStream==='function') {
@@ -485,6 +488,19 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         }
       }
       throw new Error(`Planner failed twice: ${failure.message}`);
+    }
+    if (message.action === 'sfx') {
+      const segments=Array.isArray(input.segments)?input.segments.filter(segment=>typeof segment?.text==='string' && segment.text.trim()):[];
+      if(!segments.length){send({result:{cues:[]}});return;}
+      progress({stage:'Resolving saved LLM connection'});
+      const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
+      if(controller.signal.aborted)return;
+      if(!connection?.model)throw new Error('Select a Planner LLM connection with a text-generation model to choose sound effects.');
+      progress({stage:'Waiting for sound effect choices',provider:connection.provider,model:connection.model});
+      const result=await spindle.generate.raw({type:'raw',userId,model:connection.model,connection_id:connection.id,messages:soundCuePrompt(segments),
+        parameters:{max_tokens:2048,...jsonResponseParameters(connection)},reasoning:{source:'off'},signal:controller.signal});
+      if(controller.signal.aborted)return;
+      send({result:{cues:parseSoundCues(result.content,segments)}});return;
     }
     if (message.action === 'designVoice') {
       if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Gemini API key for this session.');

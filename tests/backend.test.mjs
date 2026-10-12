@@ -723,3 +723,18 @@ test('testPlanner with Jev and spindle.decisions passes userId to evaluate',asyn
   assert.equal(evalInput.userId,'user-a');
   assert.match(result.message.result.response,/READY/);
 });
+
+test('sound effect choices use the planner connection and return only cues that match the segments',async()=>{
+  let request;
+  const h=await harness(async input=>{request=input;return {content:JSON.stringify({cues:[
+    {segment:0,trigger:'Die Tür',query:'heavy door slam'},{segment:3,trigger:'x',query:'thunder'}
+  ]})};},null,'openai');
+  h.send('sfx',{segments:[{speaker:'Narrator',text:'Die Tür fiel ins Schloss.'}],connectionId:'llm-a'});
+  const result=await h.result();
+  assert.deepEqual(JSON.parse(JSON.stringify(result.message.result.cues)),[{segment:0,query:'heavy door slam',trigger:'Die Tür'}]);
+  assert.equal(request.userId,'user-a');assert.equal(request.connection_id,'llm-a');assert.equal(request.reasoning.source,'off');
+  assert.equal(request.parameters.response_format.type,'json_object');
+  assert.match(request.messages[0].content,/English Freesound search/);
+  const empty=await harness(()=>{throw Error('Should not call the LLM');});
+  empty.send('sfx',{segments:[]});assert.equal((await empty.result()).message.result.cues.length,0);
+});
