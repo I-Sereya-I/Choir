@@ -44,14 +44,17 @@ export async function setup(ctx) {
   }
     const removeStyle = ctx.dom.addStyle(`
     .ensemble-tts{padding:16px;max-width:820px;margin:auto;font:inherit;line-height:1.5;color:inherit}
-    .ensemble-tts .et-header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid rgba(128,128,128,0.2)}
+    .ensemble-tts .et-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid rgba(128,128,128,0.2)}
     .ensemble-tts .et-title-group{display:flex;align-items:center;gap:10px}
     .ensemble-tts h2{font-size:1.25em;font-weight:600;margin:0;letter-spacing:-0.01em}
     .ensemble-tts .et-badge{font-size:0.75em;opacity:0.7;text-transform:uppercase;letter-spacing:0.05em;border:1px solid rgba(128,128,128,0.3);padding:2px 6px;border-radius:4px}
-    .ensemble-tts .et-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
-    .ensemble-tts .et-header-actions{display:grid;gap:6px;min-width:0;max-width:100%}
+    .ensemble-tts .et-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;grid-column:1/-1;min-width:0}
     .ensemble-tts .et-save-state{font-size:11px;opacity:.75;text-align:right;overflow-wrap:anywhere}
     .ensemble-tts .et-toolbar button{white-space:nowrap}
+    .choir-auto-plan-action{display:inline-flex;align-items:center;justify-content:center;gap:5px;white-space:nowrap;cursor:pointer;font:inherit;font-size:12px;color:inherit;background:transparent;border:1px solid #8884;border-radius:6px;padding:4px 8px}
+    .choir-auto-plan-action[aria-pressed="true"]{background:#c4b5fd20;border-color:#c4b5fd80}
+    .choir-auto-plan-action:disabled{opacity:.45;cursor:default}
+    .choir-auto-plan-action:focus-visible{outline:2px solid currentColor;outline-offset:2px}
     .ensemble-tts h3{font-size:0.95em;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;opacity:0.85;margin:20px 0 8px}
     .ensemble-tts .et-section-header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:20px 0 8px}
     .ensemble-tts .et-section-header h3{margin:0}
@@ -168,14 +171,12 @@ export async function setup(ctx) {
         <h2>Choir</h2>
         <span class="et-badge">Staging</span>
       </div>
-      <div class="et-header-actions">
-        <span class="et-save-state" data-et="saveState" role="status" aria-live="polite">Settings saved per chat</span>
-        <div class="et-toolbar">
-          <button data-et="latest">Plan latest</button>
-          <button data-et="stop" disabled title="Stop planning, speech generation, and playback">${ICON_STOP} Stop</button>
-          <button data-et="save" class="et-btn-primary" hidden>Retry save</button>
-          <button data-et="showMixer">Open mixer</button>
-        </div>
+      <span class="et-save-state" data-et="saveState" role="status" aria-live="polite">Settings saved per chat</span>
+      <div class="et-toolbar">
+        <button data-et="latest">Plan latest</button>
+        <button data-et="stop" disabled title="Stop planning, speech generation, and playback">${ICON_STOP} Stop</button>
+        <button data-et="save" class="et-btn-primary" hidden>Retry save</button>
+        <button data-et="showMixer">Open mixer</button>
       </div>
     </div>
     <p data-et="latestNotice" role="status" hidden>latest already planned, click on plan latest to redo it</p>
@@ -359,6 +360,9 @@ export async function setup(ctx) {
   const recordingKey=(chat,message)=>JSON.stringify([audioNamespace,chat,message]);
   const unsubs = [];
   let autoPlanAction=null,autoPlanActionKey='';
+  let autoPlanMount=null;
+  const toolbarAutoPlan=document.createElement('button');toolbarAutoPlan.type='button';toolbarAutoPlan.className='choir-auto-plan-action';toolbarAutoPlan.dataset.choirAction='auto-plan-toolbar';
+  toolbarAutoPlan.innerHTML=`${ICON_SPARKLE}<span></span>`;toolbarAutoPlan.onclick=()=>run(toggleAutoPlan);
   const messageStatuses=new Map(),messageSections=new Set(),seekControls=new Set();let messagePlaybackId=null,messageOperation=null;
   let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, planAttribution=null, planningSource=null, busy=false;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[];
@@ -408,12 +412,20 @@ export async function setup(ctx) {
   const mixerAutoPlan=document.createElement('button');mixerAutoPlan.type='button';mixerAutoPlan.dataset.choirAction='auto-plan';mixerAutoPlan.setAttribute('aria-label','Auto-plan new replies');mixerAutoPlan.onclick=()=>run(toggleAutoPlan);
   const autoPlanNote=document.createElement('small');autoPlanNote.textContent='Plan without playback';autoPlanRow.append(mixerAutoPlan,autoPlanNote);
   player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,autoPlanRow,channelsTitle,channelsRoot,legend);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
-  unsubs.push(()=>{autoPlanAction?.destroy();autoPlanAction=null;});
+  unsubs.push(()=>{autoPlanAction?.destroy();autoPlanAction=null;toolbarAutoPlan.remove();});
   function refreshAutoPlanControls(){
     mixerAutoPlan.textContent=`Auto-plan ${config?.autoPlan?'On':'Off'}`;
     mixerAutoPlan.setAttribute('aria-pressed',String(Boolean(config?.autoPlan)));mixerAutoPlan.disabled=!chatId;
     mixerAutoPlan.title='Plan new assistant replies with the selected engine. Jev and LLM planning can incur costs. Auto-play is controlled separately.';
     autoPlanNote.textContent=config?.auto?'Auto-play is also on':'Plan without playback';
+    toolbarAutoPlan.querySelector('span').textContent=mixerAutoPlan.textContent;toolbarAutoPlan.title=mixerAutoPlan.title;
+    toolbarAutoPlan.setAttribute('aria-label',mixerAutoPlan.textContent);toolbarAutoPlan.setAttribute('aria-pressed',String(Boolean(config?.autoPlan)));toolbarAutoPlan.disabled=!chatId;
+    if(config?.showAutoPlanAction){
+      // Input bar actions populate Extras and the customizable action catalog;
+      // mount the opt-in shortcut in the chat's visible action row as well.
+      autoPlanMount??=ctx.ui.mount?.('chat_actions');
+      if(autoPlanMount && toolbarAutoPlan.parentElement!==autoPlanMount)autoPlanMount.append(toolbarAutoPlan);
+    }else toolbarAutoPlan.remove();
     const key=config?.showAutoPlanAction?`${Boolean(chatId)}:${Boolean(config.autoPlan)}`:'';
     if(key===autoPlanActionKey)return;
     autoPlanAction?.destroy();autoPlanAction=null;autoPlanActionKey=key;

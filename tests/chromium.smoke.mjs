@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 const require=createRequire(process.env.CHOIR_BROWSER_MODULES?path.join(process.env.CHOIR_BROWSER_MODULES,'package.json'):import.meta.url);
 const {chromium}=require('playwright');
 const errors=[];
-const html=`<!doctype html><html><head><meta charset="utf-8"><title>Choir integration fixture</title></head><body style="margin:0;background:#141923;color:#e5e9f0;font:16px system-ui;color-scheme:dark"><div style="display:grid;grid-template-columns:1fr 680px;gap:24px;padding:32px"><article><h1>Lumiverse · Choir</h1><p>The hall fell silent.</p><p>“Welcome.”</p><p>A new story begins.</p><footer></footer></article><main style="border:1px solid #ffffff30;border-radius:16px"></main></div><script type="module">
+const html=`<!doctype html><html><head><meta charset="utf-8"><title>Choir integration fixture</title></head><body style="margin:0;background:#141923;color:#e5e9f0;font:16px system-ui;color-scheme:dark"><div style="display:grid;grid-template-columns:1fr 680px;gap:24px;padding:32px"><article><h1>Lumiverse · Choir</h1><p>The hall fell silent.</p><p>“Welcome.”</p><p>A new story begins.</p><nav aria-label="Chat toolbar"><span id="chat-actions"></span></nav><footer></footer></article><main style="border:1px solid #ffffff30;border-radius:16px"></main></div><script type="module">
 import {setup} from '/dist/frontend.js';import {validatePlan,speechSourceUnits} from '/src/core.js';
 const store=new Map(),root=document.querySelector('main'),footer=document.querySelector('footer');let backend;window.calls=[];window.gains=[];window.audios=[];const RealAudio=window.Audio;window.Audio=function(url){const audio=new RealAudio(url);window.audios.push(audio);return audio;};
 const createGain=AudioContext.prototype.createGain;AudioContext.prototype.createGain=function(){const gain=createGain.call(this);window.gains.push(gain);return gain;};
@@ -22,7 +22,7 @@ const realFetch=window.fetch;window.fetch=async(url,options={})=>{
  if(url.includes('/connections?'))return Response.json({data:[{id:'planner',name:'Planner',provider:'test',model:'text-model'}]});
  return Response.json({data:[{id:'a',name:'Narration',provider:'openai_tts',model:'model-a'},{id:'b',name:'Characters',provider:'openai_tts',model:'model-b'}]});
 };
-const ctx={settings:{get:async key=>structuredClone(store.get(key)??null),set:async(key,value)=>store.set(key,structuredClone(value))},messages:{getRecent:()=>[message],getContent:()=>message.content},state:{subscribe:()=>()=>{}},events:{on:()=>()=>{}},getActiveChat:()=>({chatId:'fixture'}),characters:{get:async()=>({name:'Mira'})},dom:{addStyle:css=>{const style=document.createElement('style');style.textContent=css;document.head.append(style);return()=>style.remove();}},ui:{registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:()=>({onClick(){},destroy(){}}),registerDomDecorator:options=>options.render(footer,{messageId:'reply'})},onBackendMessage:fn=>{backend=fn;return()=>backend=null;},sendToBackend:request=>{if(request.action==='cancel')return;setTimeout(()=>{let result;if(request.action==='ping')result={ready:true};else if(request.action==='plan')result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({speaker:unit.kind==='dialogue'?'Mira':'Narrator',text:unit.text,voice:unit.kind==='dialogue'?'m':'n',style:''}))},request.input.transcript,request.input.config);backend({namespace:'choir',id:request.id,result});},10);}};
+const ctx={settings:{get:async key=>structuredClone(store.get(key)??null),set:async(key,value)=>store.set(key,structuredClone(value))},messages:{getRecent:()=>[message],getContent:()=>message.content},state:{subscribe:()=>()=>{}},events:{on:()=>()=>{}},getActiveChat:()=>({chatId:'fixture'}),characters:{get:async()=>({name:'Mira'})},dom:{addStyle:css=>{const style=document.createElement('style');style.textContent=css;document.head.append(style);return()=>style.remove();}},ui:{mount:point=>point==='chat_actions'?document.getElementById('chat-actions'):undefined,registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:()=>({onClick(){},destroy(){}}),registerDomDecorator:options=>options.render(footer,{messageId:'reply'})},onBackendMessage:fn=>{backend=fn;return()=>backend=null;},sendToBackend:request=>{if(request.action==='cancel')return;setTimeout(()=>{let result;if(request.action==='ping')result={ready:true};else if(request.action==='plan')result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({speaker:unit.kind==='dialogue'?'Mira':'Narrator',text:unit.text,voice:unit.kind==='dialogue'?'m':'n',style:''}))},request.input.transcript,request.input.config);backend({namespace:'choir',id:request.id,result});},10);}};
 window.fixtureStore=store;window.mountChoir=()=>setup(ctx);window.cleanup=await window.mountChoir();window.ready=true;
 </script></body></html>`;
 const server=createServer(async(request,response)=>{
@@ -37,6 +37,8 @@ try{
   const page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',error=>errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);await page.waitForFunction(()=>window.ready);
   const saveStatus=await page.locator('[data-et="saveState"]').boundingBox();
+  const titleBounds=await page.getByRole('heading',{name:'Choir',exact:true}).boundingBox();
+  assert.ok(Math.abs(saveStatus.y+saveStatus.height/2-titleBounds.y-titleBounds.height/2)<1);
   const toolbarButtons=await page.locator('.et-toolbar button:visible').all();
   assert.equal(await page.getByRole('button',{name:'Retry save',exact:true}).count(),0);
   const toolbarBounds=await Promise.all(toolbarButtons.map(button=>button.boundingBox()));
@@ -66,8 +68,26 @@ try{
   const autoPlanSwitch=page.getByRole('button',{name:'Auto-plan new replies',exact:true});
   assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'true');
   await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').autoPlan===true);await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');
+  const chatShortcut=page.getByRole('navigation',{name:'Chat toolbar'}).getByRole('button');
+  assert.equal(await chatShortcut.count(),0);
   await page.locator('[data-et="showAutoPlanAction"]').check();await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').showAutoPlanAction===true);
-  await page.locator('[data-et="showAutoPlanAction"]').uncheck();
+  assert.equal(await chatShortcut.isVisible(),true);assert.equal(await chatShortcut.getAttribute('aria-pressed'),'false');
+  await chatShortcut.focus();await chatShortcut.press('Space');assert.equal(await chatShortcut.getAttribute('aria-pressed'),'true');assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'true');
+  await autoPlanSwitch.click();assert.equal(await chatShortcut.getAttribute('aria-pressed'),'false');
+  await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically');
+  await page.getByRole('button',{name:'Collapse Choir voice mixer',exact:true}).click();
+  await page.locator('main').evaluate(node=>node.style.width='380px');
+  const narrowTitle=await page.getByRole('heading',{name:'Choir',exact:true}).boundingBox(),narrowStatus=await page.locator('[data-et="saveState"]').boundingBox();
+  assert.ok(Math.abs(narrowTitle.y+narrowTitle.height/2-narrowStatus.y-narrowStatus.height/2)<1);
+  assert.ok(narrowStatus.x>=narrowTitle.x+narrowTitle.width);
+  assert.equal(await page.locator('.et-header').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
+  if(process.env.CHOIR_HEADER_SCREENSHOT)await page.locator('.et-header').screenshot({path:process.env.CHOIR_HEADER_SCREENSHOT});
+  if(process.env.CHOIR_TOOLBAR_SCREENSHOT)await page.getByRole('navigation',{name:'Chat toolbar'}).screenshot({path:process.env.CHOIR_TOOLBAR_SCREENSHOT});
+  await chatShortcut.click();assert.equal(await chatShortcut.getAttribute('aria-pressed'),'true');
+  await chatShortcut.click();assert.equal(await chatShortcut.getAttribute('aria-pressed'),'false');assert.equal(await page.evaluate(()=>window.calls.length),0);
+  await page.locator('main').evaluate(node=>node.style.removeProperty('width'));
+  await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
+  await page.locator('[data-et="showAutoPlanAction"]').uncheck();assert.equal(await chatShortcut.count(),0);
   const master=page.getByRole('slider',{name:'Master volume',exact:true});await master.press('Home');await master.press('ArrowRight');
   assert.equal(await master.getAttribute('aria-valuetext'),'1 percent');assert.equal(await page.locator('.cm-master .cm-percent').innerText(),'1%');await master.press('End');
   await page.locator('[data-et="latest"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
@@ -128,5 +148,5 @@ try{
   if(process.env.CHOIR_MOBILE_SCREENSHOT)await mixer.screenshot({path:process.env.CHOIR_MOBILE_SCREENSHOT});
   await page.emulateMedia({reducedMotion:'reduce'});assert.equal(await mixer.locator('.cm-activity i').first().evaluate(node=>getComputedStyle(node).animationName),'none');
   await page.evaluate(()=>window.cleanup());assert.equal(await page.locator('[data-choir-mixer]').count(),0);
-  assert.deepEqual(errors,[]);console.log('PASS: Chrome Web Audio loudness, compact mixer, keyboard volume feedback/focus, narrow-screen long-cast scrolling, reduced motion, autosave/restoration, Silent/No voice, One/Several TTS, transport, seeking, cache replay, teardown.');
+  assert.deepEqual(errors,[]);console.log('PASS: Chrome visible Auto-plan toolbar shortcut and keyboard toggle, inline save status at narrow drawer widths, Web Audio loudness, compact mixer, keyboard volume feedback/focus, narrow-screen long-cast scrolling, reduced motion, autosave/restoration, Silent/No voice, One/Several TTS, transport, seeking, cache replay, teardown.');
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}

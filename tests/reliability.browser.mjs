@@ -9,10 +9,10 @@ const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 const until=async(predicate)=>{for(let i=0;i<250;i++){if(predicate())return;await tick();}throw Error('Timed out waiting for regression state');};
 
 async function harness(mixerPreferences){
-  const dom=new JSDOM('<body><main></main><footer></footer></body>',{url:'https://lumiverse.test'});
+  const dom=new JSDOM('<body><nav><button>Another extension</button><div data-choir-toolbar></div></nav><main></main><footer></footer></body>',{url:'https://lumiverse.test'});
   const original={document:globalThis.document,Audio:globalThis.Audio,fetch:globalThis.fetch,indexedDB:globalThis.indexedDB};
   globalThis.document=dom.window.document;globalThis.indexedDB=new IDBFactory();
-  const root=document.querySelector('main'),footer=document.querySelector('footer');
+  const root=document.querySelector('main'),footer=document.querySelector('footer'),toolbar=document.querySelector('[data-choir-toolbar]');
   const state={active:'chat-a',blockAudio:false,failVoice:null,delay:0,held:false,aborted:0},store=new Map(),requests=[],synthesis=[],audios=[],events=new Map(),subscriptions=new Map(),heldPlans=[],toolbarActions=new Map();
   if(mixerPreferences)store.set('ui:mixer',mixerPreferences);
   const message={id:'message-a',content:'At dawn. "Hello." "Wait." The gate closed.',name:'Mira',is_user:false};
@@ -49,7 +49,7 @@ async function harness(mixerPreferences){
     messages:{getRecent:()=>state.active==='chat-a'?[message]:[],getContent:id=>id===message.id && state.active==='chat-a'?message.content:null},
     state:{subscribe:(key,fn)=>{subscriptions.set(key,fn);return()=>subscriptions.delete(key);}},events:{on:(key,fn)=>{events.set(key,fn);return()=>events.delete(key);}},
     characters:{get:async()=>({name:'Mira'})},getActiveChat:()=>({chatId:state.active,characterId:'mira'}),dom:{addStyle:()=>()=>{}},
-    ui:{registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:options=>{const action={...options,onClick(handler){this.click=handler;},destroy(){if(toolbarActions.get(options.id)===action)toolbarActions.delete(options.id);}};toolbarActions.set(options.id,action);return action;},
+    ui:{mount:point=>point==='chat_actions'?toolbar:undefined,registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:options=>{const action={...options,onClick(handler){this.click=handler;},destroy(){if(toolbarActions.get(options.id)===action)toolbarActions.delete(options.id);}};toolbarActions.set(options.id,action);return action;},
       registerDomDecorator:options=>{decorationCleanup=options.render(footer,{messageId:message.id});return decorationCleanup;}},
     onBackendMessage:fn=>{backend=fn;return()=>backend=null;},sendToBackend:request=>{
       requests.push(request);if(request.action==='cancel')return;
@@ -74,7 +74,7 @@ async function harness(mixerPreferences){
   const plan=()=>click('latest',text=>text.startsWith('Ready:') || text.includes('Saved attribution'));
   const play=async()=>{footer.querySelector('button').click();await tick();await until(()=>$('status').textContent.includes('Playback finished'));};
   const reload=async()=>{cleanup();cleanup=await setup(ctx);};
-  return {dom,state,store,requests,synthesis,audios,message,events,subscriptions,toolbarActions,connections,root,footer,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
+  return {dom,state,store,requests,synthesis,audios,message,events,subscriptions,toolbarActions,connections,root,footer,toolbar,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
     async close(){cleanup();await tick();Object.assign(globalThis,original);dom.window.close();}};
 }
@@ -109,15 +109,28 @@ test('mixer Auto-plan is opt-in, persists, reuses cached plans, and never automa
 test('Auto-plan toolbar visibility and mixer state stay synchronized through reload and teardown',async()=>{
   const h=await harness();try{
     assert.equal(h.toolbarActions.has('choir_auto_plan'),false);
+    assert.equal(h.toolbar.childElementCount,0);
     h.$('showAutoPlanAction').checked=true;h.$('showAutoPlanAction').dispatchEvent(new h.dom.window.Event('change'));
     await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan Off');
-    await h.toolbarActions.get('choir_auto_plan').click();assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan On');
+    const shortcut=h.toolbar.querySelector('button');assert.ok(shortcut);assert.equal(shortcut.textContent,'Auto-plan Off');assert.equal(shortcut.getAttribute('aria-pressed'),'false');
+    shortcut.click();assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan On');assert.equal(shortcut.textContent,'Auto-plan On');assert.equal(shortcut.getAttribute('aria-pressed'),'true');
     await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();
     assert.equal(h.$('showAutoPlanAction').checked,true);assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan On');
+    assert.equal(h.toolbar.childElementCount,1);assert.equal(h.toolbar.querySelector('button').getAttribute('aria-pressed'),'true');
     h.$('auto-plan').click();assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan Off');
+    assert.equal(h.toolbar.querySelector('button').textContent,'Auto-plan Off');assert.equal(h.toolbar.querySelector('button').getAttribute('aria-pressed'),'false');
+    await h.toolbarActions.get('choir_auto_plan').click();assert.equal(h.toolbar.querySelector('button').getAttribute('aria-pressed'),'true');assert.equal(h.toolbar.childElementCount,1);
+    await until(()=>h.$('saveState').textContent==='Saved automatically');
+    h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Connection preferences restored');
+    assert.equal(h.toolbar.childElementCount,1);assert.equal(h.toolbar.querySelector('button').getAttribute('aria-pressed'),'true');
+    h.toolbar.querySelector('button').click();await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.store.get('chat:chat-b').autoPlan,false);
+    h.state.active='chat-a';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Saved settings restored');
+    assert.equal(h.toolbar.querySelector('button').getAttribute('aria-pressed'),'true');assert.equal(h.synthesis.length,0);
     h.$('showAutoPlanAction').checked=false;h.$('showAutoPlanAction').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.toolbarActions.has('choir_auto_plan'),false);
+    assert.equal(h.toolbar.childElementCount,0);assert.equal(h.dom.window.document.querySelector('nav > button').textContent,'Another extension');
     await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(h.toolbarActions.has('choir_auto_plan'),false);
-  }finally{await h.close();assert.equal(h.toolbarActions.size,0);}
+    assert.equal(h.toolbar.childElementCount,0);h.$('showAutoPlanAction').checked=true;h.$('showAutoPlanAction').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.toolbar.childElementCount,1);
+  }finally{await h.close();assert.equal(h.toolbarActions.size,0);assert.equal(h.toolbar.childElementCount,0);}
 });
 
 test('automatic planning ignores unsuitable events and duplicate events during a pending plan',async()=>{
