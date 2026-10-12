@@ -12,6 +12,7 @@ const ICON_SPARKLE = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height=
 const ICON_CLOSE = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`;
 const ICON_SOUND = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4z"/><path d="M15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"/></svg>`;
 const ICON_STOP = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`;
+const ICON_PLAN = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 6 1 1 2-2M10 6h11M3 12l1 1 2-2M10 12h11M3 18l1 1 2-2M10 18h11"/></svg>`;
 
 export async function setup(ctx) {
   // A host remount or extension update must not leave a second floating mixer behind.
@@ -128,16 +129,18 @@ export async function setup(ctx) {
     .choir-mixer .cm-transport button[data-choir-action="playback"]:hover:not(:disabled){background:#d8cbff}
     .choir-mixer .cm-transport button[data-choir-action="playback"] svg{width:24px;height:24px}
     .choir-mixer .cm-transport button[data-choir-action="stop"]{position:absolute;right:0;width:28px;height:28px;border-radius:8px;color:var(--cm-muted)}
+    .choir-mixer .cm-transport button[data-choir-action="plan-latest"]{position:absolute;left:0;width:28px;height:28px;border-radius:8px;color:var(--cm-muted)}
     .choir-mixer .cm-seek{display:flex;align-items:center;gap:9px;width:100%;font:10px/1.4 system-ui,sans-serif;color:var(--cm-muted);font-variant-numeric:tabular-nums}
     .choir-mixer .cm-seek input{flex:1}
     .choir-mixer .cm-seek span{white-space:nowrap}
     .choir-mixer .cm-master{display:grid;grid-template-columns:auto minmax(0,1fr) 34px;align-items:center;gap:10px;margin:0;padding:10px 14px;color:#cad2e1;font-size:11px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
-    .choir-mixer .cm-auto-plan{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 14px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
+    .choir-mixer .cm-auto-plan{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;padding:8px 14px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
     .choir-mixer .cm-auto-plan button{padding:5px 8px;border:1px solid #ffffff25;border-radius:7px;font-size:11px}
     .choir-mixer .cm-auto-plan button[aria-pressed="true"]{background:#c4b5fd20;color:var(--cm-accent)}
     .choir-mixer .cm-percent{font-size:10px;text-align:right;font-variant-numeric:tabular-nums;color:var(--cm-muted)}
     .choir-mixer .cm-channels-title{display:flex;justify-content:space-between;padding:10px 14px 3px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--cm-muted);flex-shrink:0}
     .choir-mixer .cm-channels{overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#ffffff25 transparent;padding:0 8px;min-height:0}
+    .choir-mixer .cm-empty{margin:0;padding:12px 6px;color:var(--cm-muted);font-size:11px}
     .choir-mixer .cm-channel{padding:6px;border-bottom:1px solid var(--cm-line);border-radius:8px;min-width:0}
     .choir-mixer .cm-channel:last-child{border-bottom:0}
     .choir-mixer .cm-channel[aria-current="true"]{background:#c4b5fd0c}
@@ -164,6 +167,7 @@ export async function setup(ctx) {
     .choir-mixer[data-collapsed="true"] button{width:44px;height:44px;display:grid;place-items:center;border-radius:50%;touch-action:none;color:inherit}
     @keyframes choir-level{to{transform:scaleY(.35)}}
     @media(prefers-reduced-motion:reduce){.choir-mixer .cm-activity i{animation:none!important}.choir-mixer button{transition:none}}
+    @media(pointer:coarse){.choir-mixer .cm-transport{height:44px;gap:6px;padding:0}.choir-mixer .cm-transport button,.choir-mixer .cm-transport button[data-choir-action]{position:static;min-width:44px;min-height:44px}.choir-mixer .cm-auto-plan button{min-height:44px}}
   `);
   root.innerHTML = `<div class="ensemble-tts">
     <div class="et-header">
@@ -381,11 +385,13 @@ export async function setup(ctx) {
     const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([chat,message])));
     return `plan:${Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join('')}`;
   };
-  let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged;
+  let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged,mixerPlaybackSegments=null;
   // Keep the launcher unobtrusive on every load, including existing expanded preferences.
   const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),...(savedMixer||{}),collapsed:true};
   // Solo is no longer exposed; old solo preferences must not silently mute other voices.
   for(const channel of Object.values(mixerState.channels))delete channel.solo;
+  // Effects now use the SFX switch and master level; hidden legacy mute levels must not override SFX On.
+  delete mixerState.channels.SFX;delete mixerState.channels.sfx;
   const mixer=document.createElement('section');mixer.className='choir-mixer';mixer.dataset.choirMixer='';mixer.setAttribute('aria-label','Choir voice mixer');
   const mixerHeader=document.createElement('div');mixerHeader.className='cm-header';mixerHeader.title='Drag to move';
   const mixerTitle=document.createElement('div');mixerTitle.className='cm-brand';mixerTitle.innerHTML=`<span class="cm-brand-icon" aria-hidden="true">${ICON_SOUND}</span><span><strong>Choir</strong><small>Voice mixer</small></span>`;
@@ -401,18 +407,20 @@ export async function setup(ctx) {
   const masterLabel=document.createElement('label');masterLabel.className='cm-master';masterLabel.textContent='Master';
   const masterReadout=document.createElement('span');masterReadout.className='cm-percent';masterReadout.setAttribute('aria-hidden','true');showVolume(master,masterReadout,mixerState.master);masterLabel.append(master,masterReadout);
   const mixerPlay=document.createElement('button');mixerPlay.type='button';mixerPlay.dataset.choirAction='playback';
-  mixerPlay.onclick=()=>{if(currentAudio){if(currentAudio.paused)currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));else{currentAudio.pause();updateTransport();}}else if(!busy){mixerPlay.disabled=true;status('Loading playback…');run(()=>play({resume:true}));}};
+  mixerPlay.onclick=()=>{if(currentAudio){if(currentAudio.paused)currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));else{currentAudio.pause();updateTransport();}}else if(!busy && !controller){mixerPlay.disabled=true;status('Loading playback…');run(async()=>{const latest=latestReply();if(!latest)throw new Error('No assistant reply in the active chat.');if(plan && planSource?.chatId===chatId && planSource.messageId===latest.id && planSource.content===ctx.messages.getContent(latest.id))await play({resume:true});else await playMessage(latest.id);});}};
+  const mixerPlanLatest=document.createElement('button');mixerPlanLatest.type='button';mixerPlanLatest.dataset.choirAction='plan-latest';mixerPlanLatest.innerHTML=ICON_PLAN;mixerPlanLatest.title='Plan latest reply without starting audio';mixerPlanLatest.setAttribute('aria-label','Plan latest reply');mixerPlanLatest.onclick=()=>run(planLatest);
   const mixerNext=document.createElement('button');mixerNext.type='button';mixerNext.innerHTML=ICON_NEXT;mixerNext.title='Next spoken block';mixerNext.setAttribute('aria-label','Next spoken block');mixerNext.disabled=true;mixerNext.onclick=()=>advancePlayback?.();
   const mixerPrevious=document.createElement('button');mixerPrevious.type='button';mixerPrevious.innerHTML=ICON_PREVIOUS;mixerPrevious.title='Previous spoken block';mixerPrevious.setAttribute('aria-label','Previous spoken block');mixerPrevious.disabled=true;mixerPrevious.onclick=()=>advancePlayback?.(-1);
   mixerNext.dataset.choirAction='next';mixerPrevious.dataset.choirAction='previous';
   const mixerStop=document.createElement('button');mixerStop.type='button';mixerStop.dataset.choirAction='stop';mixerStop.innerHTML=ICON_STOP;mixerStop.title='Stop playback';mixerStop.setAttribute('aria-label','Stop');mixerStop.onclick=()=>stop();
-  const transport=document.createElement('div');transport.className='cm-transport';transport.append(mixerPrevious,mixerPlay,mixerNext,mixerStop);
+  const transport=document.createElement('div');transport.className='cm-transport';transport.append(mixerPlanLatest,mixerPrevious,mixerPlay,mixerNext,mixerStop);
   const mixerSeek=makeSeekControl(),legend=document.createElement('small');legend.className='cm-legend';legend.textContent='Silent = mute · No voice = skip & don’t generate';
-  const channelsTitle=document.createElement('div');channelsTitle.className='cm-channels-title';channelsTitle.innerHTML='<span>Channel levels</span>';
+  const channelsTitle=document.createElement('div');channelsTitle.className='cm-channels-title';channelsTitle.innerHTML='<span>Voices in this reply</span>';
   const channelCount=document.createElement('span');channelCount.setAttribute('aria-hidden','true');channelsTitle.append(channelCount);
   const autoPlanRow=document.createElement('div');autoPlanRow.className='cm-auto-plan';
   const mixerAutoPlan=document.createElement('button');mixerAutoPlan.type='button';mixerAutoPlan.dataset.choirAction='auto-plan';mixerAutoPlan.setAttribute('aria-label','Auto-plan new replies');mixerAutoPlan.onclick=()=>run(toggleAutoPlan);
-  const mixerAutoPlay=document.createElement('button');mixerAutoPlay.type='button';mixerAutoPlay.dataset.choirAction='auto-play';mixerAutoPlay.setAttribute('aria-label','Auto-play new replies');mixerAutoPlay.title='Automatically plan and play new assistant replies with the selected engine and cast voices.';mixerAutoPlay.onclick=()=>run(toggleAutoPlay);autoPlanRow.append(mixerAutoPlan,mixerAutoPlay);
+  const mixerAutoPlay=document.createElement('button');mixerAutoPlay.type='button';mixerAutoPlay.dataset.choirAction='auto-play';mixerAutoPlay.setAttribute('aria-label','Auto-play new replies');mixerAutoPlay.title='Automatically plan and play new assistant replies with the selected engine and cast voices.';mixerAutoPlay.onclick=()=>run(toggleAutoPlay);
+  const mixerSfx=document.createElement('button');mixerSfx.type='button';mixerSfx.dataset.choirAction='sfx';mixerSfx.setAttribute('aria-label','Sound effects');mixerSfx.title='Enable or disable Freesound effects in Choir and Cue. Speech continues separately.';mixerSfx.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableSfx').checked=!$('enableSfx').checked;scheduleSettingsSave();syncSfxPlayback();});autoPlanRow.append(mixerAutoPlan,mixerAutoPlay,mixerSfx);
   player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,autoPlanRow,channelsTitle,channelsRoot,legend);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
   unsubs.push(()=>{autoPlanAction?.destroy();autoPlanAction=null;toolbarAutoPlan.remove();});
   function refreshAutoPlanControls(){
@@ -421,6 +429,7 @@ export async function setup(ctx) {
     mixerAutoPlan.title='Plan new assistant replies with the selected engine. Jev and LLM planning can incur costs. Auto-play is controlled separately.';
     mixerAutoPlay.textContent=`Auto-play ${config?.auto?'On':'Off'}`;
     mixerAutoPlay.setAttribute('aria-pressed',String(Boolean(config?.auto)));mixerAutoPlay.disabled=!chatId;
+    mixerSfx.textContent=`SFX ${config?.enableSfx!==false?'On':'Off'}`;mixerSfx.setAttribute('aria-pressed',String(config?.enableSfx!==false));mixerSfx.disabled=!chatId;
     toolbarAutoPlan.querySelector('span').textContent=mixerAutoPlan.textContent;toolbarAutoPlan.title=mixerAutoPlan.title;
     toolbarAutoPlan.setAttribute('aria-label',mixerAutoPlan.textContent);toolbarAutoPlan.setAttribute('aria-pressed',String(Boolean(config?.autoPlan)));toolbarAutoPlan.disabled=!chatId;
     if(config?.showAutoPlanAction){
@@ -445,8 +454,9 @@ export async function setup(ctx) {
   let mixerWriteQueue=null;
   const persistMixer=()=>{const snapshot=structuredClone(mixerState),write=()=>ctx.settings.set('ui:mixer',snapshot);const operation=mixerWriteQueue?mixerWriteQueue.catch(()=>{}).then(write):write();mixerWriteQueue=operation;return operation.then(()=>{if(mixerWriteQueue===operation)mixerWriteQueue=null;},error=>{if(mixerWriteQueue===operation)mixerWriteQueue=null;status(`Mixer preferences could not be saved: ${error.message}`,true);});};
   function applyVolume(){
-    const volume=mixerVolume(mixerState.master,currentSpeaker,mixerState.channels);
-    const sfxScale = (currentSpeaker === 'SFX' || currentSpeaker === 'sfx') ? 0.45 : 1.0;
+    const isEffect=currentSpeaker==='SFX' || currentSpeaker==='sfx';
+    const volume=isEffect?mixerVolume(mixerState.master,'',{}):mixerVolume(mixerState.master,currentSpeaker,mixerState.channels);
+    const sfxScale=isEffect?(config?.enableSfx===false?0:0.45):1;
     if(currentGain)currentGain.gain.value=volume*currentNormalize*sfxScale;
     else if(currentAudio)currentAudio.volume=Math.max(0, Math.min(1, volume*sfxScale));
   }
@@ -487,10 +497,11 @@ export async function setup(ctx) {
     updateNextControls();
     channelsRoot.replaceChildren();speakerLabel.replaceChildren();
     if(currentSpeaker){const prefix=doc.createElement('span');prefix.className='cm-sr-only';prefix.textContent='Speaking: ';speakerLabel.append(prefix,doc.createTextNode(currentSpeaker));}else speakerLabel.textContent='Ready to play';
-    const speakers=new Set(['SFX',...[...(config?.fixed || []),...(config?.casts?.[scope(config)] || []),...(plan?.segments || [])].map(s=>s.speaker)]);channelCount.textContent=String(speakers.size);
+    const speakers=new Set((mixerPlaybackSegments ?? plan?.segments ?? []).flatMap(segment=>segment.turns || [segment]).filter(segment=>segment.kind!=='sfx' && segment.speaker).map(segment=>segment.speaker));channelCount.textContent=String(speakers.size);
+    if(!speakers.size){const empty=doc.createElement('p');empty.className='cm-empty';empty.textContent='Plan the latest reply to see its voices.';channelsRoot.append(empty);}
     for(const speaker of speakers){
       const channel=Object.hasOwn(mixerState.channels,speaker)?mixerState.channels[speaker]:{volume:1,mute:false};Object.defineProperty(mixerState.channels,speaker,{value:channel,writable:true,enumerable:true,configurable:true});
-      const row=doc.createElement('div');row.className='cm-channel';row.dataset.speaker=speaker;row.dataset.kind=speaker==='SFX'?'sfx':'voice';row.dataset.noVoice=String(speakerExcluded(speaker));
+      const row=doc.createElement('div');row.className='cm-channel';row.dataset.speaker=speaker;row.dataset.kind='voice';row.dataset.noVoice=String(speakerExcluded(speaker));
       row.setAttribute('aria-current',String(currentSpeaker===speaker));const name=doc.createElement('span');name.className='cm-channel-name';name.textContent=speaker;name.title=speaker;
       const head=doc.createElement('div');head.className='cm-channel-head';
       const dot=doc.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
@@ -500,9 +511,7 @@ export async function setup(ctx) {
       showVolume(volume,readout,channel.volume);volume.oninput=()=>{channel.volume=Number(volume.value);showVolume(volume,readout,channel.volume);applyVolume();};volume.onchange=persistMixer;
       const silent=doc.createElement('button');silent.type='button';silent.className='cm-toggle';silent.dataset.kind='silent';silent.textContent=channel.mute?'✓ Silent':'Silent';silent.setAttribute('aria-label',`${speaker} silent`);silent.setAttribute('aria-pressed',String(Boolean(channel.mute)));silent.title='Mute playback. Audio can still be generated and cached.';silent.onclick=()=>{channel.mute=!channel.mute;applyVolume();renderMixer();persistMixer();};
       controls.append(volume,silent);
-      if(speaker!=='SFX'){
-        const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.textContent=speakerExcluded(speaker)?'✓ No voice':'No voice';noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='Skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));controls.append(noVoice);
-      }
+      const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.textContent=speakerExcluded(speaker)?'✓ No voice':'No voice';noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='Skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));controls.append(noVoice);
       row.append(head,controls);
       channelsRoot.append(row);
     }
@@ -515,13 +524,16 @@ export async function setup(ctx) {
     updateSeekControls();
   }
   function updateTransport(){
-    const paused=!currentAudio || currentAudio.paused,label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play Choir audio';
-    mixerPlay.innerHTML=(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,'');mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || !plan;
+    const latest=latestReply(),paused=!currentAudio || currentAudio.paused,label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play latest reply';
+    mixerPlay.innerHTML=(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,'');mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || Boolean(controller) || !chatId || !latest;
+    mixerPlanLatest.disabled=busy || Boolean(controller) || !chatId || !latest;
     mixerStop.disabled=!controller && !currentAudio && !autoReplyQueue.size;
     $('stop').disabled=mixerStop.disabled;
     mixer.dataset.playState=currentAudio?(paused?'paused':'playing'):busy?'loading':'idle';playbackCaption.textContent=currentAudio?(paused?'Paused':'Now playing'):busy?(planningSource?'Planning speech':'Preparing audio'):'Playback';
   }
   function speakerExcluded(speaker){return normalizeName(speaker)==='narrator' && Boolean(config?.muteNarrator) || [...(config?.fixed || []),...Object.values(config?.casts || {}).flat()].some(actor=>normalizeName(actor.speaker)===normalizeName(speaker) && actor.excluded);}
+  function playbackExcluded(segment){return speakerExcluded(segment.speaker) || segment.kind==='sfx' && config?.enableSfx===false;}
+  function syncSfxPlayback(){showFoleyStatus();generationPolicyChanged?.();if(config?.enableSfx===false && currentSpeaker==='SFX')skipAudio?.();applyVolume();}
   async function setSpeakerExcluded(speaker,excluded){
     if(!chatId)return;
     const legacyNarratorMute=normalizeName(speaker)==='narrator' && Boolean(config.muteNarrator);
@@ -1288,11 +1300,11 @@ export async function setup(ctx) {
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
   }
-  function clearPlan() {plan=null;planSource=null;planAttribution=null;$('preview').replaceChildren();$('planJson').value='';$('planSummary').textContent='Speech plan';$('latestNotice').hidden=true;renderMixer();refreshSectionControls();}
+  function clearPlan() {plan=null;planSource=null;planAttribution=null;mixerPlaybackSegments=null;$('preview').replaceChildren();$('planJson').value='';$('planSummary').textContent='Speech plan';$('latestNotice').hidden=true;renderMixer();refreshSectionControls();}
   function stop(show=true) {
     if(show)cancelAutoReplies();
     if(activePlayback && currentAudio)savePosition(currentAudio.currentTime || 0);
-    revision++;controller?.abort();controller=null;planningSource=null;advancePlayback=null;skipAudio=null;generationPolicyChanged=null;activePlayback=null;currentSpeaker='';
+    revision++;controller?.abort();controller=null;planningSource=null;advancePlayback=null;skipAudio=null;generationPolicyChanged=null;activePlayback=null;currentSpeaker='';mixerPlaybackSegments=null;
     currentAudio?.pause();finishAudio?.();currentAudio=null;finishAudio=null;
     if(objectUrl){URL.revokeObjectURL(objectUrl);objectUrl=null;}
     audioReady=false;
@@ -1762,7 +1774,7 @@ export async function setup(ctx) {
         skipAudio=()=>{audio.pause();done();};updateNextControls();
         audio.onended=()=>done();audio.onerror=()=>done(new Error('Browser could not decode this provider’s audio. Use WAV or MP3.'));
         signal.addEventListener('abort',cancel,{once:true});
-        if(speakerExcluded(speaker)){done();return;}
+        if(speakerExcluded(speaker) || speaker==='SFX' && config?.enableSfx===false){done();return;}
         if(paused){audioReady=true;updateTransport();}
         else audio.play().then(()=>{if(!settled && currentAudio===audio){audioReady=true;updateTransport();}}).catch(error=>done(new Error(error.name==='NotAllowedError'?'Browser blocked audio. Click Play in the mixer to enable playback.':error.message)));
       });
@@ -1854,7 +1866,7 @@ export async function setup(ctx) {
       if(direction<0){const start=blockStart(playIdx);next=start>0?blockStart(start-1):0;while(next>0 && speakerExcluded(segments[next].speaker))next=blockStart(next-1);if(speakerExcluded(segments[next]?.speaker))next=blockStart(playIdx);for(let index=next;index<segments.length && (segments[index].passageIndex ?? index)===(segments[next].passageIndex ?? next);index++)skipped.delete(index);}
       failed=[...failures].some(index=>!skipped.has(index) && !speakerExcluded(segments[index].speaker));jumpTo=next;pauseNext=Boolean(currentAudio?.paused);skipAudio();
     };
-    generationPolicyChanged=()=>{failed=[...failures].some(index=>!skipped.has(index) && !speakerExcluded(segments[index].speaker));wakePolicy?.({policy:true});pump();};
+    generationPolicyChanged=()=>{failed=[...failures].some(index=>!skipped.has(index) && !playbackExcluded(segments[index]));if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=Boolean(currentAudio?.paused);skipAudio?.();}nextToSynthesize=Math.min(nextToSynthesize,playIdx);wakePolicy?.({policy:true});pump();};
     const passages={...(cached?.passages || {})};
     const inflight=new Map();
     // Upgrade old complete recordings without discarding their audio.
@@ -1880,7 +1892,7 @@ export async function setup(ctx) {
       const concurrency=Math.max(1,Number(snapshot.concurrency)||1);
       while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=playIdx+Number(snapshot.prefetch ?? 1)) {
         const idx=nextToSynthesize++;
-        if(speakerExcluded(segments[idx].speaker))continue;
+        if(playbackExcluded(segments[idx]))continue;
         if(scheduled.has(idx))continue;scheduled.add(idx);
         ensureSlot(idx);
         activeWorkers++;
@@ -1960,7 +1972,7 @@ export async function setup(ctx) {
           wakePlayback=null;
           continue;
         }
-        if(speakerExcluded(segments[playIdx].speaker)){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
+        if(playbackExcluded(segments[playIdx])){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
         ensureSlot(playIdx);pump();
         const outcome=await Promise.race([ready.get(playIdx),new Promise(resolve=>{wakePolicy=resolve;})]);wakePolicy=null;
         if(outcome.policy)continue;
@@ -2058,7 +2070,9 @@ export async function setup(ctx) {
       if(!recording)throw new Error('No saved audio for this message on this device. Plan and play it first.');
       if(ctx.messages.getContent(messageId)!==recording.content)throw new Error('The message changed since recording. Plan and play the current reply.');
       if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to remove trackers or update the persona name.');
+      mixerPlaybackSegments=recording.segments;renderMixer();
       let pauseNext=false;
+      generationPolicyChanged=()=>{if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=Boolean(currentAudio?.paused);skipAudio?.();}};
       for(let index=0;index<recording.blobs.length;) {
         const blob=recording.blobs[index];
         if(!blob || speakerExcluded(recording.segments[index].speaker) || recording.segments[index].kind==='sfx' && config.enableSfx===false){index++;continue;}
@@ -2225,15 +2239,17 @@ export async function setup(ctx) {
       if(token===revision)status(`Planner test passed: ${result.provider} · ${result.model}. Response: ${result.response}`);
     } finally {if(token===revision){controller=null;setBusy(false);}}
   });
-  $('latest').onclick=()=>run(async()=>{
-    const latest=ctx.messages.getRecent(200).filter(v=>!v.is_user && !v.extra?.is_system).at(-1);
+  function latestReply(){return ctx.messages.getRecent(200).filter(v=>!v.is_user && !v.extra?.is_system).at(-1);}
+  async function planLatest(){
+    const latest=latestReply();
     if(!latest)throw new Error('No assistant reply in the active chat.');
     const targetChat=chatId,content=ctx.messages.getContent(latest.id);
     const alreadyShown=plan && planSource?.messageId===latest.id && planSource.content===ctx.messages.getContent(latest.id);
     const alreadyPlanned=alreadyShown || await restoreSavedPlan(latest.id);
     if(disposed || targetChat!==chatId || ctx.messages.getContent(latest.id)!==content)return;
     await prepare(latest.id,false,undefined,Boolean(alreadyPlanned));
-  });
+  }
+  $('latest').onclick=()=>run(planLatest);
   $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:'',style:''},$('fixed'),false,true));scheduleSettingsSave();renderMixer();};
   $('reset').onclick=()=>{config=capture();config.casts[scope(config)]=[];renderCast();clearPlan();scheduleSettingsSave();status('NPC cast cleared. Changes save automatically.');};
   $('designVoice').onclick=()=>run(async()=>{
@@ -2421,7 +2437,7 @@ export async function setup(ctx) {
     autoReplyQueue.set(payload.messageId,{chatId:payload.chatId,messageId:payload.messageId,content:payload.content,queuedAt:existing?.queuedAt ?? Date.now()});
     scheduleAutoReplies();updateTransport();
   }
-  unsubs.push(ctx.state.subscribe('chat.messageCount',()=>{renderMessages();scheduleAutoReplies();}));
+  unsubs.push(ctx.state.subscribe('chat.messageCount',()=>{renderMessages();scheduleAutoReplies();updateTransport();}));
   unsubs.push(ctx.events.on('GENERATION_ENDED',queueAutoReply));
   for(const event of ['MESSAGE_EDITED','MESSAGE_SWIPED','SWIPE_EDITED','MESSAGE_DELETED']) {
     unsubs.push(ctx.events.on(event,payload=>{
@@ -2437,7 +2453,7 @@ export async function setup(ctx) {
   action.onClick(()=>tab.activate());
   unsubs.push(()=>action.destroy());
 
-  $('enableSfx').addEventListener('change',()=>showFoleyStatus());
+  $('enableSfx').addEventListener('change',syncSfxPlayback);
   $('freesoundApiKey').addEventListener('input',()=>showFoleyStatus());
 
   const foleyCache = new Map();
@@ -2601,7 +2617,8 @@ const paragraphAudioCache = new Map();
       const castInfo = casting(cap);
       const snapshot = { ...structuredClone(cap), fixed: castInfo.fixed, voices: castInfo.voices, npcs: castInfo.npcs, defaultRoute: castInfo.defaultRoute };
 
-      const batches = planAndBatchParagraph(text,snapshot,true,speaker).filter(batch=>!speakerExcluded(batch.speaker,snapshot));
+      mixerPlaybackSegments=planAndBatchParagraph(text,snapshot,false,speaker);renderMixer();
+      const batches = planAndBatchParagraph(text,snapshot,true,speaker).filter(batch=>!playbackExcluded(batch));
       if (!batches.length) {
         onStatus?.({ kind: 'idle', message: snapshot.muteNarrator ? 'Narrator muted' : 'No speech' });
         return { played: 0 };
@@ -2609,6 +2626,7 @@ const paragraphAudioCache = new Map();
 
       const ctrl = new AbortController();
       controller = ctrl;
+      updateTransport();
       const onAbort = () => ctrl.abort();
       signal?.addEventListener('abort', onAbort, { once: true });
       const apiKey = $('key')?.value?.trim() || '';
@@ -2618,7 +2636,7 @@ const paragraphAudioCache = new Map();
       if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
         try {
           const nextBatches = planAndBatchParagraph(nextText, snapshot, true);
-          if (nextBatches[0] && !speakerExcluded(nextBatches[0].speaker,snapshot)) {
+          if (nextBatches[0] && !playbackExcluded(nextBatches[0])) {
             getCachedOrSynthesize(nextBatches[0], snapshot, apiKey, ctrl.signal).catch(() => {});
           }
         } catch {}
@@ -2628,10 +2646,10 @@ const paragraphAudioCache = new Map();
         for (let i = 0; i < batches.length; i++) {
           if (ctrl.signal.aborted || signal?.aborted) throw abortError();
           const batch = batches[i];
-          if(speakerExcluded(batch.speaker,snapshot))continue;
+          if(playbackExcluded(batch))continue;
 
           // Pipeline next batch synthesis concurrently with current batch playback
-          if (snapshot.prefetch>0 && i + 1 < batches.length && !speakerExcluded(batches[i+1].speaker,snapshot)) {
+          if (snapshot.prefetch>0 && i + 1 < batches.length && !playbackExcluded(batches[i+1])) {
             getCachedOrSynthesize(batches[i + 1], snapshot, apiKey, ctrl.signal).catch(() => {});
           }
 
@@ -2639,6 +2657,7 @@ const paragraphAudioCache = new Map();
           try{
             const blob = await getCachedOrSynthesize(batch, snapshot, apiKey, ctrl.signal);
             if (ctrl.signal.aborted || signal?.aborted) throw abortError();
+            if(playbackExcluded(batch))continue;
             onStatus?.({ kind: 'playing', speaker: batch.speaker });
             await playBlob(blob,ctrl.signal,batch.speaker,0,snapshot.normalizeLoudness);
             played++;
@@ -2656,6 +2675,7 @@ const paragraphAudioCache = new Map();
       } finally {
         signal?.removeEventListener('abort', onAbort);
         if (controller === ctrl) controller = null;
+        updateTransport();
       }
     }
   };

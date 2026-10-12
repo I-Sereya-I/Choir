@@ -199,7 +199,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.ok(requests.filter(request=>request.action==='plan').at(-1).input.transcript.includes('Hello, Sona.'));
     assert.ok(!requests.filter(request=>request.action==='plan').at(-1).input.transcript.includes('{{user}}'));
     message.content='Edited reply.';events.get('MESSAGE_EDITED')({messageId:'message-a'});
-    assert.ok($('play').disabled);
+    assert.equal($('play').disabled,false);assert.equal($('play').getAttribute('aria-label'),'Play latest reply');
     [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
     await until(()=>$('status').textContent.includes('message changed'));
     [...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Delete audio').click();
@@ -1006,8 +1006,8 @@ test('muteNarrator skips narrator synthesis and badges preview cards', async () 
         ? 'The storm raged outside. "Hold on tight!" warned Jack.'
         : 'The sun set slowly behind the crimson horizon.',
       getRecent: () => [
-        { id: 'm-mixed', content: 'The storm raged outside. "Hold on tight!" warned Jack.' },
-        { id: 'm-pure', content: 'The sun set slowly behind the crimson horizon.' }
+        { id: 'm-pure', content: 'The sun set slowly behind the crimson horizon.' },
+        { id: 'm-mixed', content: 'The storm raged outside. "Hold on tight!" warned Jack.' }
       ]
     },
     settings: {
@@ -1062,7 +1062,7 @@ test('muteNarrator skips narrator synthesis and badges preview cards', async () 
 
     // Plan the mixed message
     const planBtns = [...$('messages').querySelectorAll('button')].filter(b => b.textContent === 'Plan');
-    planBtns[0].click(); // m-mixed
+    planBtns[1].click(); // m-mixed, the latest assistant reply
     await until(() => $('preview').querySelectorAll('.et-card').length === 3);
 
     let previewCards = $('preview').querySelectorAll('.et-card');
@@ -1191,7 +1191,7 @@ test('__CHOIR_API__ companion bridge exposes controls and handles paragraph play
     globalThis.__CHOIR_API__.setNarratorMuted(true);
     assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(), true);
     assert.equal($('muteNarrator'), null);
-    assert.equal(dom.window.document.querySelector('[aria-label="Narrator no voice"]').getAttribute('aria-pressed'), 'true');
+    assert.equal(dom.window.document.querySelector('[aria-label="Narrator no voice"]'), null, 'No channels appear before a plan or playback');
 
     // Plan mixed paragraph text
     const mixedText = 'The storm raged outside. "Hold on tight!" warned Jack.';
@@ -1206,6 +1206,7 @@ test('__CHOIR_API__ companion bridge exposes controls and handles paragraph play
       paragraphIndex: 0
     });
     assert.equal(playResult.played, 1);
+    assert.equal(dom.window.document.querySelector('[aria-label="Narrator no voice"]').getAttribute('aria-pressed'), 'true');
     assert.equal(nativeRequests.length, 1);
     assert.equal(nativeRequests[0].text, '"Hold on tight!"');
 

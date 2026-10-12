@@ -132,22 +132,58 @@ test('Freesound failures stay visible, continue speech, and retry without regene
  }
 });
 
-test('SFX mixer channel changes live effects independently, applies to Cue and cached replay, and persists after reload',async()=>{
- const h=await harness();try{
+test('SFX mixer switch replaces the legacy channel, stops live effects, applies to Cue and persists after reload',async()=>{
+ const h=await harness({master:0.5,channels:{SFX:{volume:0.1,mute:true}}});try{
   const level=(actual,expected)=>assert.ok(Math.abs(actual-expected)<0.000001,`Expected volume ${expected}, got ${actual}`);
-  h.$('showMixer').click();const mixer=document.querySelector('[data-choir-mixer]'),sfxRow=()=>mixer.querySelector('[data-speaker="SFX"]');
-  assert.equal(mixer.querySelector('.cm-channel'),sfxRow());assert.equal(sfxRow().querySelector('[aria-label="SFX no voice"]'),null);
+  h.$('showMixer').click();const mixer=document.querySelector('[data-choir-mixer]'),sfx=()=>document.querySelector('[data-choir-mixer] [data-choir-action="sfx"]');
+  assert.equal(mixer.querySelector('[data-speaker="SFX"]'),null);assert.equal(sfx().parentElement.className,'cm-auto-plan');assert.equal(sfx().textContent,'SFX On');
   await configureFoley(h);h.message.content='The page snapped under her thumb.';await h.plan();h.state.blockAudio=true;h.$('play').click();
-  await until(()=>h.audios.length===1 && !h.audios[0].paused);const narrator=h.audios[0];assert.equal(narrator.volume,1);narrator.onended();
-  await until(()=>sfxRow().getAttribute('aria-current')==='true' && h.audios.length===2 && !h.audios[1].paused);const effect=h.audios[1];assert.equal(effect.volume,0.45);
-  const volume=sfxRow().querySelector('[aria-label="SFX volume"]');volume.value='0.4';volume.dispatchEvent(new h.dom.window.Event('input'));volume.dispatchEvent(new h.dom.window.Event('change'));level(effect.volume,0.18);assert.equal(sfxRow().querySelector('.cm-percent').textContent,'40%');
-  const master=mixer.querySelector('[aria-label="Master volume"]');master.value='0.5';master.dispatchEvent(new h.dom.window.Event('input'));master.dispatchEvent(new h.dom.window.Event('change'));level(effect.volume,0.09);
-  sfxRow().querySelector('[aria-label="SFX silent"]').click();assert.equal(effect.volume,0);sfxRow().querySelector('[aria-label="SFX silent"]').click();level(effect.volume,0.09);
-  assert.equal(mixer.querySelector('[aria-label="Narrator volume"]').value,'1');h.state.blockAudio=false;effect.onended();await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.audios.at(-1).volume,0.5);
-  const cueStart=h.audios.length;await globalThis.__CHOIR_API__.playParagraph({text:h.message.content});level(h.audios[cueStart+1].volume,0.09);assert.equal(h.audios[cueStart].volume,0.5);
-  sfxRow().querySelector('[aria-label="SFX silent"]').click();await until(()=>h.store.get('ui:mixer')?.channels.SFX.mute===true);await h.reload();
-  assert.equal(document.querySelector('[aria-label="SFX volume"]').value,'0.4');assert.equal(document.querySelector('[aria-label="SFX silent"]').getAttribute('aria-pressed'),'true');
-  const replayStart=h.audios.length,generated=h.synthesis.length;await h.play();assert.equal(h.audios[replayStart+1].volume,0);assert.equal(h.audios[replayStart].volume,0.5);assert.equal(h.synthesis.length,generated);assert.equal(h.requests.filter(request=>request.action==='freesound').length,1);
+  await until(()=>h.audios.length===1 && !h.audios[0].paused);const narrator=h.audios[0];assert.equal(narrator.volume,0.5);narrator.onended();
+  await until(()=>h.audios.length===2 && !h.audios[1].paused);const effect=h.audios[1];level(effect.volume,0.225);
+  h.state.blockAudio=false;sfx().click();assert.equal(sfx().textContent,'SFX Off');assert.equal(sfx().getAttribute('aria-pressed'),'false');assert.equal(h.$('enableSfx').checked,false);
+  await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(effect.paused,true);assert.equal(h.audios.at(-1).volume,0.5);
+  assert.equal(mixer.querySelector('[aria-label="Narrator volume"]').value,'1');await until(()=>h.store.get('chat:chat-a').enableSfx===false);await h.reload();assert.equal(sfx().textContent,'SFX Off');
+  const off=await globalThis.__CHOIR_API__.playParagraph({text:h.message.content});assert.equal(off.played,1);assert.equal(await playedFoley(h),1);
+  h.$('enableSfx').checked=true;h.$('enableSfx').dispatchEvent(new h.dom.window.Event('change'));assert.equal(sfx().textContent,'SFX On');
+  const cueStart=h.audios.length;const on=await globalThis.__CHOIR_API__.playParagraph({text:h.message.content});assert.equal(on.played,3);level(h.audios[cueStart+1].volume,0.225);assert.equal(h.audios[cueStart].volume,0.5);
+  const generated=h.synthesis.length,searched=h.requests.filter(request=>request.action==='freesound').length;await h.play();assert.equal(h.synthesis.length,generated);assert.equal(h.requests.filter(request=>request.action==='freesound').length,searched);
+ }finally{await h.close();}
+});
+
+test('mixer plans silently, plays the latest reply, filters voices by plan and retains hidden preferences',async()=>{
+ const h=await harness();try{
+  const mixer=document.querySelector('[data-choir-mixer]'),names=()=>[...document.querySelectorAll('[data-choir-mixer] .cm-channel')].map(row=>row.dataset.speaker);
+  assert.deepEqual(names(),[]);assert.match(mixer.textContent,/Plan the latest reply to see its voices/);assert.equal(h.$('play').getAttribute('aria-label'),'Play latest reply');assert.equal(h.$('play').disabled,false);
+  h.$('plan-latest').click();await until(()=>h.requests.filter(r=>r.action==='plan').length===1 && !h.$('latest').disabled && names().length===3);
+  assert.equal(h.audios.length,0);assert.equal(h.synthesis.length,0);assert.deepEqual(names(),['Narrator','Mira','Guard']);
+  const volume=mixer.querySelector('[aria-label="Mira volume"]');volume.value='0.42';volume.dispatchEvent(new h.dom.window.Event('input'));volume.dispatchEvent(new h.dom.window.Event('change'));mixer.querySelector('[aria-label="Mira silent"]').click();
+  await until(()=>h.store.get('ui:mixer')?.channels.Mira.mute===true);
+  h.state.messages=[h.message,{id:'latest-b',content:'Only the narrator speaks in the latest reply.',is_user:false}];h.subscriptions.get('chat.messageCount')();h.$('play').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.deepEqual(names(),['Narrator']);assert.equal(h.requests.filter(r=>r.action==='plan').at(-1).input.transcript,'Only the narrator speaks in the latest reply.');assert.equal(h.synthesis.at(-1).text,'Only the narrator speaks in the latest reply.');
+  h.state.messages=[h.message];await h.plan();assert.deepEqual(names(),['Narrator','Mira','Guard']);assert.equal(mixer.querySelector('[aria-label="Mira volume"]').value,'0.42');assert.equal(mixer.querySelector('[aria-label="Mira silent"]').getAttribute('aria-pressed'),'true');
+  mixer.querySelector('[aria-label="Mira no voice"]').click();await tick();assert.ok(names().includes('Mira'));assert.equal(mixer.querySelector('[aria-label="Mira no voice"]').getAttribute('aria-pressed'),'true');
+  await h.reload();assert.equal(document.querySelector('[aria-label="Mira volume"]').value,'0.42');assert.equal(document.querySelector('[aria-label="Mira no voice"]').getAttribute('aria-pressed'),'true');
+  h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent.includes('Ready.'));assert.deepEqual(names(),[]);assert.equal(h.$('plan-latest').disabled,true);assert.equal(h.$('play').disabled,true);
+ }finally{await h.close();}
+});
+
+test('SFX can be reenabled before its cue after prefetch skipped it, and disabling cached effects preserves pause',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);h.message.content='The page snapped under her thumb.';h.$('prefetch').value='1';await h.plan();h.state.delay=50;h.state.blockAudio=true;h.$('play').click();
+  await until(()=>h.synthesis.length===1);h.$('sfx').click();await until(()=>h.audios[0]?.paused===false);assert.equal(h.requests.filter(request=>request.action==='freesound').length,0);h.$('sfx').click();
+  h.state.blockAudio=false;h.audios[0].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(await playedFoley(h),1);
+  const start=h.audios.length;h.state.blockAudio=true;const replay=[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay');replay.click();await until(()=>h.audios.length===start+1 && !h.audios.at(-1).paused);h.audios.at(-1).onended();
+  await until(()=>h.audios.length===start+2 && !h.audios.at(-1).paused);h.$('pause').click();assert.equal(h.audios.at(-1).paused,true);h.$('sfx').click();
+  await until(()=>h.audios.length===start+3 && h.$('play').getAttribute('aria-label')==='Resume Choir audio');assert.equal(h.audios.at(-1).paused,true);h.state.blockAudio=false;h.$('play').click();await until(()=>h.$('status').textContent==='Replay finished.');
+ }finally{await h.close();}
+});
+
+test('Cue and cached recordings show their own speakers rather than the previously planned reply',async()=>{
+ const h=await harness();try{
+  const names=()=>[...document.querySelectorAll('.cm-channel')].map(row=>row.dataset.speaker);
+  await h.plan();await h.play();const savedPlan=[...h.store.keys()].find(key=>key.startsWith('plan:'));h.store.delete(savedPlan);
+  const cue=await globalThis.__CHOIR_API__.playParagraph({text:'A separate narrated paragraph.'});assert.equal(cue.played,1);assert.deepEqual(names(),['Narrator']);
+  const replay=[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay');replay.click();await until(()=>h.$('status').textContent==='Replay finished.');assert.deepEqual(names(),['Narrator','Mira','Guard']);
  }finally{await h.close();}
 });
 
@@ -294,6 +330,7 @@ test('new reply automation queues behind active planning, playback or Cue instea
 test('removed drawer narrator mute remains visible and reversible through mixer No voice and the Cue bridge',async()=>{
  const h=await harness();try{
   const saved=h.store.get('chat:chat-a');saved.muteNarrator=true;await h.reload();
+  await h.plan();
   assert.equal(h.$('muteNarrator'),null);assert.ok(!h.root.textContent.includes('Mute narrator (dialogue only)'));
   const button=()=>h.dom.window.document.querySelector('[aria-label="Narrator no voice"]');assert.equal(button().getAttribute('aria-pressed'),'true');assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(),true);
   button().click();await until(()=>h.store.get('chat:chat-a').muteNarrator===false);assert.equal(button().getAttribute('aria-pressed'),'false');assert.equal(h.store.get('settings:global').muteNarrator,false);
@@ -592,7 +629,7 @@ test('edits and swipes cancel planning and in-flight synthesis before stale repl
     h.state.held=false;await h.plan();h.state.delay=200;h.$('play').click();await until(()=>h.synthesis.length>0);
     h.message.content='A different swipe.';h.events.get('MESSAGE_SWIPED')({messageId:'message-a',chatId:'chat-a'});
     await tick();assert.equal(h.state.aborted,1);assert.equal(h.audios.length,0);assert.equal(h.$('preview').children.length,0);
-    assert.ok(h.$('play').disabled);
+    assert.equal(h.$('play').disabled,false);assert.equal(h.$('play').getAttribute('aria-label'),'Play latest reply');
   }finally{await h.close();}
 });
 
@@ -734,7 +771,7 @@ test('No voice skips an in-flight failed speaker, persists per chat and reenable
     document.querySelector('[aria-label="Narrator no voice"]').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
     assert.deepEqual(h.synthesis.map(v=>v.voice),['n','m','g']);assert.equal(h.audios.length,2);assert.equal(h.$('preview').querySelectorAll('.et-card').length,4);
     await h.reload();assert.equal(document.querySelector('[aria-label="Narrator no voice"]').getAttribute('aria-pressed'),'true');
-    h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent.includes('Ready.'));assert.equal(document.querySelector('[aria-label="Narrator no voice"]').getAttribute('aria-pressed'),'false');
+    h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent.includes('Ready.'));assert.equal(document.querySelector('[aria-label="Narrator no voice"]'),null);assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(),false);
     h.state.active='chat-a';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent.includes('restored'));assert.equal(document.querySelector('[aria-label="Narrator no voice"]').getAttribute('aria-pressed'),'true');
     h.state.failVoice=null;h.state.delay=0;document.querySelector('[aria-label="Narrator no voice"]').click();await tick();await h.play();
     assert.deepEqual(h.synthesis.slice(3).map(v=>v.voice),['n','n']);assert.equal(h.requests.filter(v=>v.action==='plan').length,1);
