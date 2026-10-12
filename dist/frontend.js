@@ -23,6 +23,17 @@ function additionalVoices(value) {
   });
 }
 
+function apiErrorMessage(raw,status) {
+  let detail='';
+  try {
+    const body=JSON.parse(raw);
+    detail=[body?.error?.message,body?.error?.detail,body?.error,body?.message,body?.detail,body?.error_description,typeof body==='string'?body:''].find(value=>typeof value==='string' && value.trim()) || '';
+  } catch {detail=String(raw || '');}
+  detail=detail.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>|<style\b[^>]*>[\s\S]*?<\/style\s*>/gi,' ')
+    .replace(/<[^>]*>/g,' ').replace(/&nbsp;|&#160;/gi,' ').replace(/&amp;/gi,'&').replace(/\s+/g,' ').trim().slice(0,500);
+  return `Lumiverse API HTTP ${status}${detail?`: ${detail}`:': The server or gateway returned no error details.'}`;
+}
+
 function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -1567,10 +1578,32 @@ export async function setup(ctx) {
     if (!base || (!base.startsWith('/') && !/^https?:\/\//i.test(base))) throw new Error('Enter a valid Lumiverse API base.');
     const response=await fetch(`${base}${path}`,{credentials:'include',...options});
     if(!response.ok) {
-      const body=await response.json().catch(()=>({}));
-      throw new Error(body.error || `Lumiverse API HTTP ${response.status}`);
+      // Proxy errors may be HTML or plain text. Read a bounded body, including JSON details.
+      let raw='';
+      const reader=response.body?.getReader();
+      if(reader){
+        const decoder=new TextDecoder();let remaining=16384;
+        try{
+          while(remaining>0){const {value,done}=await reader.read();if(done)break;raw+=decoder.decode(value.subarray(0,remaining),{stream:true});remaining-=value.byteLength;}
+          raw+=decoder.decode();
+        }catch(error){if(error.name==='AbortError')throw error;}
+        finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
+      }else raw=await response.text().catch(()=>'');
+      throw new Error(apiErrorMessage(raw.slice(0,16384),response.status));
     }
     return response;
+  }
+  async function nativeSpeech(connection,{voice,text,parameters},signal,speaker='Voice'){
+    try{
+      const response=await api('/tts/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({connectionId:connection.id,model:connection.model,voice,text,parameters}),signal});
+      return await response.blob();
+    }catch(error){
+      if(error.name==='AbortError' || signal?.aborted)throw error;
+      const provider=nativeProviders.find(item=>item.id===connection.provider);
+      const label=provider?.displayName || (connection.provider==='fish_audio'?'Fish Audio':connection.provider==='openai_tts'?'GPT TTS':connection.provider || 'TTS');
+      throw new Error(`${label} speech failed for ${speaker} (${connection.name || connection.id}; model ${connection.model || 'default'}; voice ${voice || 'default'}): ${error.message}`);
+    }
   }
   function option(select,value,label) {const node=document.createElement('option');node.value=value;node.textContent=label;select.append(node);}
   let previewAudio = null;
@@ -1998,12 +2031,7 @@ export async function setup(ctx) {
           if(!conn)throw new Error('TTS connection not available for audition.');
           const isFish=cardProvider==='fish_audio';
           const textToSend=isFish ? `[cheerful] ${sampleText}` : sampleText;
-          const resp=await api('/tts/synthesize',{
-            method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({connectionId:conn.id,model:conn.model,voice:selectedVoice,text:textToSend,parameters:previewRequest.parameters}),
-            signal:ctrl.signal
-          });
-          blob=await resp.blob();
+          blob=await nativeSpeech(conn,{voice:selectedVoice,text:textToSend,parameters:previewRequest.parameters},ctrl.signal,name.value || 'Voice');
         }
         if(token!==revision || ctrl.signal.aborted)return;
         await playBlob(blob,ctrl.signal,name.value || 'Voice',0,$('normalizeLoudness').checked);
@@ -2387,7 +2415,7 @@ export async function setup(ctx) {
     const restored=restoreAttribution(saved.attribution,saved.transcript,cast);
     planAttribution=saved.attribution;
     const chosen=rememberPlanCast(restored);
-    plan={...restored,warning:saved.warning || ''};planSource={messageId,content:saved.content,transcript:saved.transcript,chatId:targetChat,sections:saved.sections,soundCues:Boolean(saved.soundCues)};
+    plan={...restored,warning:saved.warning || ''};planSource={messageId,content:saved.content,transcript:saved.transcript,chatId:targetChat,sections:saved.sections,soundCues:Boolean(saved.soundCues),soundCueWarning:saved.soundCueWarning || ''};
     if(renderRows)renderCast();renderPreview();
     if(chosen)await persistConfig(targetChat,config);
     return !disposed && targetChat===chatId && version===loadVersion && token===revision;
@@ -2493,6 +2521,7 @@ export async function setup(ctx) {
     planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;
     setBusy(true);status('Checking Choir backend…');
     let streaming=false, player=null, soundsChosen=false;
+    const soundCueWarnings=new Set();
     try {
       if(/\{\{\s*user\s*\}\}/i.test(transcript+context)) {
         const name=await personaName();
@@ -2620,7 +2649,7 @@ export async function setup(ctx) {
           if (streaming) {
             const cued=await cuePlannedSegments(sectionSegments,ctrl,token);
             if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
-            sectionSegments=cued.segments;soundsChosen&&=cued.checked;
+            sectionSegments=cued.segments;soundsChosen&&=cued.checked;if(cued.warning)soundCueWarnings.add(cued.warning);
           }
           playbackSections.push(sectionSegments.map((_,index)=>combined.length+index));
           combined.push(...stripBase(sectionSegments)); previous = section;
@@ -2634,11 +2663,11 @@ export async function setup(ctx) {
       }
       // Validate the complete original reply before audio or cast persistence.
       const validated=validatePlan({segments:combined},transcript,snapshot);
-      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat,sections:playbackSections,soundCues:soundsChosen};
+      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat,sections:playbackSections,soundCues:soundsChosen,soundCueWarning:[...soundCueWarnings].join('; ')};
       if(!streaming){
         const cued=await cuePlannedSegments(plan.segments,ctrl,token);
         if(token!==revision || ctrl.signal.aborted)return;
-        plan.segments=cued.segments;planSource.soundCues=cued.checked;
+        plan.segments=cued.segments;planSource.soundCues=cued.checked;planSource.soundCueWarning=cued.warning || '';
       }
       rememberPlanCast(validated);
       if(config.autoDesignNPCs && detectProvider(config)==='gemini' && $('key').value) {
@@ -2810,7 +2839,8 @@ export async function setup(ctx) {
     try{return {segments:applySoundCues(segments,await chooseSoundCues(segments,ctrl.signal)),checked:true};}
     catch(error){
       if(ctrl.signal.aborted || token!==revision)throw error;
-      showFoleyStatus(`SFX skipped: ${error.message}. Speech continues.`);return {segments,checked:false};
+      const warning=`SFX skipped: ${error.message}. Speech continues. Use Plan latest to retry sound-effect choices.`;
+      showFoleyStatus(warning);return {segments,checked:false,warning};
     }
   }
   const foleyWarning=warnings=>warnings?.length?` SFX skipped: ${warnings.join('; ')}.`:'';
@@ -2910,13 +2940,7 @@ export async function setup(ctx) {
               const textToSend=isFish && snapshot.useStyle && seg.style && !seg.text.startsWith('[')
                 ? (seg.style.trim().startsWith('[') ? `${seg.style.trim()} ${seg.text}` : `[${seg.style.trim()}] ${seg.text}`)
                 : seg.text;
-              const response=await api('/tts/synthesize',{
-                method:'POST',
-                headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({connectionId:connection.id,model:connection.model,voice:seg.voice,text:textToSend,parameters}),
-                signal:ctrl.signal
-              });
-              blob=await response.blob();
+              blob=await nativeSpeech(connection,{voice:seg.voice,text:textToSend,parameters},ctrl.signal,seg.speaker);
             }
             if(token!==revision || ctrl.signal.aborted)throw abortError();
             resolveFlight?.(blob);
@@ -3015,17 +3039,9 @@ export async function setup(ctx) {
     }
     stop(false);const token=revision;const ctrl=new AbortController();controller=ctrl;
     const snapshot=structuredClone(capture());
-    showFoleyStatus(missingFoleyKey(snapshot),false);
-    if(!planSource.soundCues && soundCuesWanted(snapshot)){
-      // Plans made before SFX were enabled get their effects chosen once, then saved.
-      const source=planSource,cued=await cuePlannedSegments(plan.segments,ctrl,token);
-      if(token!==revision || ctrl.signal.aborted || source!==planSource)throw abortError();
-      if(cued.checked){
-        plan={...plan,segments:cued.segments};planSource.soundCues=true;
-        try{await persistPlan();}catch(error){status(`Sound effects chosen, but the plan could not be saved: ${error.message}`,true);}
-        if(token!==revision || ctrl.signal.aborted)throw abortError();
-      }
-    }
+    // Playback uses saved choices. Optional LLM work belongs to an explicit plan,
+    // so old recordings and failed effect choices cannot hold up replay.
+    showFoleyStatus(soundsEnabled(snapshot)?planSource.soundCueWarning || missingFoleyKey(snapshot):'',Boolean(planSource.soundCueWarning));
     const resume=options.resume?await ctx.settings.get(`position:${chatId}`):null;
     if(token!==revision || ctrl.signal.aborted)throw abortError();
     const validResume=resume?.messageId===planSource.messageId && sameSpeech(resume.content,planSource.content) && !resume.complete?resume:null;
@@ -3185,7 +3201,7 @@ export async function setup(ctx) {
       const name=document.createElement('span');name.style.cssText='overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:8px;font-size:0.9em';
       name.textContent=`${message.name || (message.is_user?'You':'Character')} · ${transcriptFromMessage(message.content).slice(0,70)}`;
       const actions=document.createElement('div');actions.className='et-btn-group';
-      const button=document.createElement('button');button.type='button';button.className='et-btn-subtle';button.textContent='Plan';button.onclick=()=>run(()=>prepare(message.id));actions.append(button);
+      const button=document.createElement('button');button.type='button';button.className='et-btn-subtle';button.textContent='Plan';button.onclick=()=>run(()=>prepare(message.id,false,undefined,true));actions.append(button);
       const replay=document.createElement('button');replay.type='button';replay.className='et-btn-subtle';replay.textContent='Replay';replay.onclick=()=>run(()=>replayRecording(message.id));actions.append(replay);
       const removeAudio=document.createElement('button');removeAudio.type='button';removeAudio.className='et-btn-danger';removeAudio.textContent='Delete audio';removeAudio.onclick=()=>run(async()=>{
         const targetChat=chatId,key=recordingKey(targetChat,message.id);
@@ -3365,13 +3381,7 @@ export async function setup(ctx) {
         if(!connection)throw new Error('TTS connection is not available for audition.');
         const isFish=detectProvider(config)==='fish_audio';
         const textToSend=isFish ? `[cheerful] ${sampleText}` : sampleText;
-        const response=await api('/tts/synthesize',{
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({connectionId:connection.id,model:connection.model,voice:voiceId,text:textToSend,parameters:{}}),
-          signal:ctrl.signal
-        });
-        blob=await response.blob();
+        blob=await nativeSpeech(connection,{voice:voiceId,text:textToSend,parameters:{}},ctrl.signal,'Audition');
       }
       if(token!==revision || ctrl.signal.aborted)return;
       status(`Auditioning voice: ${voiceId}`);
@@ -3583,13 +3593,7 @@ export async function setup(ctx) {
       const textToSend=isFish && snapshot.useStyle && seg.style && !seg.text.startsWith('[')
         ? (seg.style.trim().startsWith('[') ? `${seg.style.trim()} ${seg.text}` : `[${seg.style.trim()}] ${seg.text}`)
         : seg.text;
-      const response=await api('/tts/synthesize',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({connectionId:connection.id,model:connection.model,voice:seg.voice,text:textToSend,parameters}),
-        signal
-      });
-      return await response.blob();
+      return await nativeSpeech(connection,{voice:seg.voice,text:textToSend,parameters},signal,seg.speaker);
     }
   }
 

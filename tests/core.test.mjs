@@ -1,6 +1,16 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, attributionPlan, restoreAttribution} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
+
+test('API errors preserve provider details across Lumiverse and gateway response formats',()=>{
+  for(const body of [{error:'Fish quota exhausted'},{error:{message:'Fish quota exhausted'}},{detail:'Fish quota exhausted'},{message:'Fish quota exhausted'},'Fish quota exhausted']){
+    assert.match(apiErrorMessage(JSON.stringify(body),502),/HTTP 502: Fish quota exhausted/);
+  }
+  assert.match(apiErrorMessage('<style>private styles</style><script>private script</script><h1>Bad Gateway</h1><p>Upstream&nbsp;timed out</p>',502),/HTTP 502: Bad Gateway Upstream timed out$/);
+  assert.match(apiErrorMessage('',502),/returned no error details/);
+  assert.ok(!apiErrorMessage('{"error":{}}',502).includes('[object Object]'));
+  assert.ok(apiErrorMessage('x'.repeat(10000),502).length<600);
+});
 
 test('larger speech chunks respect provider limits while retaining a conservative unknown-provider limit',()=>{
   assert.equal(speechRequestLimits('openai_tts').maxChars,4096);
