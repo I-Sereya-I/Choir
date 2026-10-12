@@ -1276,25 +1276,37 @@ export async function setup(ctx) {
     clearInterval(layer.timer);const from=layer.level,start=Date.now();
     layer.timer=setInterval(()=>{const progress=Math.min(1,(Date.now()-start)/AMBIENCE_FADE_MS);layer.level=progress<1?from+(to-from)*progress:to;bedVolume(layer);if(progress===1){clearInterval(layer.timer);done?.();}},50);
   }
-  function dropBed(layer){clearInterval(layer.timer);layer.loading.abort();layer.audio?.pause();if(layer.url)URL.revokeObjectURL(layer.url);fadingBeds.delete(layer);}
+  function dropBed(layer){clearInterval(layer.timer);layer.loading.abort();if(layer.audio){layer.audio.onerror=null;layer.audio.pause();}if(layer.url)URL.revokeObjectURL(layer.url);fadingBeds.delete(layer);}
+  function failBed(layer,error){
+    if(bed!==layer || layer.loading.signal.aborted)return;
+    bed=null;dropBed(layer);updateTransport();
+    const detail=error?.name==='NotAllowedError'?'Browser blocked background audio. Click Play to retry.':error?.message || 'Background audio could not play.';
+    const warning=`Ambience skipped (${layer.query}): ${detail} Speech continues.`;
+    const previous=$('sfxStatus').hidden?'':$('sfxStatus').textContent;
+    showFoleyStatus(previous && !previous.includes(warning)?`${previous}\n${warning}`:warning);
+  }
+  function playBed(layer){
+    try{layer.audio.play().catch(error=>failBed(layer,error));}catch(error){failBed(layer,error);}
+  }
   function followBed(entry,load){
     if(config?.enableAmbience===false){stopBeds();updateTransport();return;}
     const key=entry?.query?foleyKey(entry):'';
     if(key===(bed?.key || ''))return;
     if(bed){const old=bed;fadingBeds.add(old);fadeBed(old,0,()=>dropBed(old));}
     // A carried bed keeps loading after the paragraph that started it is cancelled.
-    const layer=bed=key?{key,level:0,loading:new AbortController()}:null;updateTransport();
+    const layer=bed=key?{key,query:entry.query,level:0,loading:new AbortController()}:null;updateTransport();
     if(layer)load(layer.loading.signal).then(blob=>{
       if(bed!==layer)return;
       layer.url=URL.createObjectURL(blob);layer.audio=new Audio(layer.url);layer.audio.loop=true;bedVolume(layer);
-      if(!bedsPaused)layer.audio.play().catch(()=>{});
-      fadeBed(layer,1);
-    },()=>{});
+      layer.audio.onerror=()=>failBed(layer,new Error('Browser could not decode the Freesound ambience preview.'));
+      if(!bedsPaused)playBed(layer);
+      if(bed===layer)fadeBed(layer,1);
+    }).catch(error=>failBed(layer,error));
   }
   // The bed in effect at a batch comes from the closest ambience marker before it.
   const bedIndex=(batches,index)=>{while(index>=0 && batches[index].kind!=='ambience')index--;return index;};
   function stopBeds(){for(const layer of [bed,...fadingBeds])if(layer)dropBed(layer);bed=null;bedsPaused=false;}
-  function pauseBeds(paused){bedsPaused=paused;for(const layer of [bed,...fadingBeds])if(layer?.audio){if(paused)layer.audio.pause();else layer.audio.play().catch(()=>{});}}
+  function pauseBeds(paused){bedsPaused=paused;for(const layer of [bed,...fadingBeds])if(layer?.audio){if(paused)layer.audio.pause();else playBed(layer);}}
   function positionMixer(){
     const collapsed=Boolean(mixerState.collapsed);
     mixer.dataset.collapsed=String(collapsed);mixerBody.hidden=collapsed;mixerTitle.hidden=collapsed;
