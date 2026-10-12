@@ -1056,8 +1056,9 @@ test('muteNarrator skips narrator synthesis and badges preview cards', async () 
     const voiceSelects = $('fixed').querySelectorAll('[data-choir-voice]');
     if (voiceSelects[0]) voiceSelects[0].value = 'voice-narrator';
 
-    // Check muteNarrator option is available and unchecked by default
-    assert.equal($('muteNarrator').checked, false);
+    // Narrator controls live in the mixer; the companion API remains available.
+    assert.equal($('muteNarrator'), null);
+    assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(), false);
 
     // Plan the mixed message
     const planBtns = [...$('messages').querySelectorAll('button')].filter(b => b.textContent === 'Plan');
@@ -1067,9 +1068,8 @@ test('muteNarrator skips narrator synthesis and badges preview cards', async () 
     let previewCards = $('preview').querySelectorAll('.et-card');
     assert.ok(!previewCards[0].textContent.includes('Muted'));
 
-    // Toggle muteNarrator on
-    $('muteNarrator').checked = true;
-    $('muteNarrator').dispatchEvent(new dom.window.Event('change'));
+    // Cue can still mute narration through the companion bridge.
+    globalThis.__CHOIR_API__.setNarratorMuted(true);
     await tick();
 
     // Preview cards should now show Narrator muted
@@ -1190,7 +1190,8 @@ test('__CHOIR_API__ companion bridge exposes controls and handles paragraph play
     // Toggle mute narrator via bridge
     globalThis.__CHOIR_API__.setNarratorMuted(true);
     assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(), true);
-    assert.equal($('muteNarrator').checked, true);
+    assert.equal($('muteNarrator'), null);
+    assert.equal(dom.window.document.querySelector('[aria-label="Narrator no voice"]').getAttribute('aria-pressed'), 'true');
 
     // Plan mixed paragraph text
     const mixedText = 'The storm raged outside. "Hold on tight!" warned Jack.';
@@ -1396,12 +1397,12 @@ test('Settings changes (checkboxes and dropdowns) auto-persist globally and acro
     const $ = name => root.querySelector(`[data-et="${name}"]`);
 
     // Initially defaults
-    assert.equal($('muteNarrator').checked, false);
+    assert.equal($('muteNarrator'), null);
+    assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(), false);
     assert.equal($('useFastClassifier').checked, false);
 
-    // User toggles checkboxes without clicking "Save settings" button
-    $('muteNarrator').checked = true;
-    $('muteNarrator').dispatchEvent(new dom.window.Event('change'));
+    // Companion and drawer changes save without a manual Save settings button.
+    globalThis.__CHOIR_API__.setNarratorMuted(true);
     $('plannerMode').value = 'heuristic';
     $('plannerMode').dispatchEvent(new dom.window.Event('change'));
     await tick();
@@ -1435,7 +1436,8 @@ test('Settings changes (checkboxes and dropdowns) auto-persist globally and acro
     await tick();
 
     // User's choices must be preserved!
-    assert.equal($2('muteNarrator').checked, true, 'muteNarrator should be preserved in new chat / reload');
+    assert.equal($2('muteNarrator'), null);
+    assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(), true, 'companion narrator preference should survive a new chat / reload');
     assert.equal($2('useFastClassifier').checked, true, 'useFastClassifier should be preserved in new chat / reload');
     assert.equal($2('plannerMode').value, 'heuristic');
 

@@ -53,7 +53,7 @@ async function harness(mixerPreferences){
   };
   let backend,decorationCleanup;
   const ctx={settings:{get:async key=>structuredClone(store.get(key) ?? null),set:async(key,value)=>{const snapshot=structuredClone(value);if(state.failPlanSave && /^(plan:|activeplan:)/.test(key) || state.failConfigSave && /^(chat:|settings:)/.test(key))throw Error('Settings storage failed');if(state.configDelay && /^(chat:|settings:)/.test(key))await new Promise(resolve=>setTimeout(resolve,state.configDelay));store.set(key,snapshot);}},
-    messages:{getRecent:()=>state.active==='chat-a'?[message]:[],getContent:id=>id===message.id && state.active==='chat-a'?message.content:null},
+    messages:{getRecent:()=>state.active==='chat-a'?(state.messages || [message]):[],getContent:id=>state.active==='chat-a'?(state.messages || [message]).find(item=>item.id===id)?.content ?? null:null},
     state:{get:key=>key==='persona.activeId'?state.persona?.id:undefined,subscribe:(key,fn)=>{subscriptions.set(key,fn);return()=>subscriptions.delete(key);}},events:{on:(key,fn)=>{events.set(key,fn);return()=>events.delete(key);}},
     characters:{get:async()=>{if(state.failProfile)throw Error('Character unavailable');return state.character || {name:'Mira'};}},getActiveChat:()=>({chatId:state.active,characterId:'mira'}),dom:{addStyle:()=>()=>{}},
     ui:{mount:point=>point==='chat_actions'?toolbar:undefined,registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:options=>{const action={...options,onClick(handler){this.click=handler;},destroy(){if(toolbarActions.get(options.id)===action)toolbarActions.delete(options.id);}};toolbarActions.set(options.id,action);return action;},
@@ -166,7 +166,7 @@ test('Stop cancels Freesound search and preview downloads and late results canno
 test('automatic streamed Choir playback and Cue share SFX while muted narration stays silent',async()=>{
  const h=await harness();try{
   await configureFoley(h);h.message.content='The page snapped under her thumb. "Hello." A quiet room. '.repeat(4);
-  h.$('muteNarrator').checked=true;h.$('muteNarrator').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));h.$('auto').checked=true;h.$('auto').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  globalThis.__CHOIR_API__.setNarratorMuted(true);h.$('auto').checked=true;h.$('auto').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
   h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content});await until(()=>h.$('status').textContent.includes('Playback finished') && !h.$('latest').disabled);
   assert.equal(await playedFoley(h),4);assert.equal(h.requests.filter(request=>request.action==='freesound').length,1);assert.ok(h.synthesis.every(request=>request.text.includes('Hello')));
   const bridge=globalThis.__CHOIR_API__,before=h.requests.filter(request=>request.action==='freesound').length,played=await playedFoley(h);
@@ -260,6 +260,57 @@ test('mixer Auto-play toggle syncs with settings, persists, and plays even when 
     h.$('auto-plan').click();h.$('auto-play').click();assert.equal(h.$('auto').checked,false);assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');
     await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(h.$('auto-play').textContent,'Auto-play Off');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');
   }finally{await h.close();}
+});
+
+test('Auto-plan and Auto-play wait for message publication after the host completion event, including same-ID regeneration',async()=>{
+ for(const mode of ['auto-plan','auto-play'])for(const existing of [false,true]){
+  const h=await harness();try{
+   h.$(mode).click();const finalContent='A completed assistant reply.';h.state.messages=existing?[{...h.message,content:'Previous swipe.'}]:[];
+   const event={generationId:`generated-${mode}-${existing}`,chatId:'chat-a',messageId:h.message.id,content:finalContent};h.events.get('GENERATION_ENDED')(event);
+   await new Promise(resolve=>setTimeout(resolve,150));assert.equal(h.requests.length,0,'Do not plan an unpublished reply');assert.equal(h.audios.length,0);
+   h.message.content=finalContent;h.state.messages=[h.message];h.subscriptions.get('chat.messageCount')();
+   await until(()=>h.$('status').textContent.includes(mode==='auto-play'?'Playback finished':'Ready:') && !h.$('latest').disabled);
+   assert.equal(h.requests.filter(request=>request.action==='plan').length,1);assert.equal(h.requests.find(request=>request.action==='plan').input.transcript,finalContent);
+   assert.equal(h.audios.length>0,mode==='auto-play');const audioCount=h.audios.length;h.events.get('GENERATION_ENDED')(event);await new Promise(resolve=>setTimeout(resolve,150));assert.equal(h.audios.length,audioCount);assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+  }finally{await h.close();}
+ }
+});
+
+test('new reply automation queues behind active planning, playback or Cue instead of dropping the completion event',async()=>{
+ for(const activity of ['planning','playback','Cue']){
+  const h=await harness();try{
+   const playing=activity!=='planning';let companion;
+   h.message.content='First reply.';h.$(playing?'auto-play':'auto-plan').click();
+   if(playing){h.state.blockAudio=true;if(activity==='Cue')companion=globalThis.__CHOIR_API__.playParagraph({text:h.message.content});else{await h.plan();h.$('play').click();}await until(()=>h.audios.length===1 && !h.audios[0].paused);}
+   else{h.state.held=true;h.$('latest').click();await until(()=>h.requests.some(request=>request.action==='plan'));}
+   const initialPlans=activity==='Cue'?0:1,next={id:'message-next',name:'Mira',is_user:false,content:'Second reply.'};h.state.messages=[h.message,next];h.events.get('GENERATION_ENDED')({generationId:'next-generation',chatId:'chat-a',messageId:next.id,content:next.content});await new Promise(resolve=>setTimeout(resolve,150));assert.equal(h.requests.filter(request=>request.action==='plan').length,initialPlans);
+   if(playing){h.state.blockAudio=false;h.audios[0].onended();await companion;}else{h.state.held=false;h.releaseHeld();}
+   await until(()=>h.requests.filter(request=>request.action==='plan').length===initialPlans+1 && h.$('preview').textContent.includes(next.content) && !h.$('latest').disabled && (!playing || h.$('status').textContent.includes('Playback finished')));
+   assert.equal(h.audios.length,playing?2:0);assert.equal(h.requests.filter(request=>request.action==='plan').at(-1).input.transcript,next.content);
+  }finally{await h.close();}
+ }
+});
+
+test('removed drawer narrator mute remains visible and reversible through mixer No voice and the Cue bridge',async()=>{
+ const h=await harness();try{
+  const saved=h.store.get('chat:chat-a');saved.muteNarrator=true;await h.reload();
+  assert.equal(h.$('muteNarrator'),null);assert.ok(!h.root.textContent.includes('Mute narrator (dialogue only)'));
+  const button=()=>h.dom.window.document.querySelector('[aria-label="Narrator no voice"]');assert.equal(button().getAttribute('aria-pressed'),'true');assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(),true);
+  button().click();await until(()=>h.store.get('chat:chat-a').muteNarrator===false);assert.equal(button().getAttribute('aria-pressed'),'false');assert.equal(h.store.get('settings:global').muteNarrator,false);
+  await h.reload();assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(),false);button().click();await until(()=>h.store.get('chat:chat-a').fixed[0].excluded===true);assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(),true);
+  globalThis.__CHOIR_API__.setNarratorMuted(false);await until(()=>h.store.get('chat:chat-a').fixed[0].excluded===false);assert.equal(button().getAttribute('aria-pressed'),'false');
+  const result=await globalThis.__CHOIR_API__.playParagraph({text:'Narration is audible again.'});assert.equal(result.played,1);assert.ok(h.synthesis.some(request=>request.voice==='n'));
+ }finally{await h.close();}
+});
+
+test('Stop, disabling automation, navigation and teardown discard waiting automatic replies',async()=>{
+ for(const cancellation of ['stop','off','navigate','teardown']){
+  const h=await harness();try{
+   h.$('auto-play').click();h.state.messages=[];h.events.get('GENERATION_ENDED')({generationId:'late-generation',chatId:'chat-a',messageId:h.message.id,content:h.message.content});await tick();
+   if(cancellation==='stop')h.$('stop').click();else if(cancellation==='off')h.$('auto-play').click();else if(cancellation==='navigate'){h.state.active='chat-b';h.subscriptions.get('chat.active')();}else await h.reload();
+   h.state.messages=[h.message];h.subscriptions.get('chat.messageCount')?.();await new Promise(resolve=>setTimeout(resolve,160));assert.equal(h.requests.length,0);assert.equal(h.audios.length,0);
+  }finally{await h.close();}
+ }
 });
 
 test('larger native requests apply OpenAI, Fish, and unknown-provider chunk limits without losing text',async()=>{

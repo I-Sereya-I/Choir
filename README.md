@@ -4,16 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.5--staging.7-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.5--staging.8-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-173%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-177%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, and sound effects.
 
 </div>
 
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.7** adds an SFX mixer channel with saved volume and Silent controls for Choir and Cue playback. Freesound effects work in both players; failed effects show a warning and let speech continue. It includes description-based LLM voice selection with saved choices, the mixer Auto-play toggle, the visible Auto-plan toolbar shortcut, and save status alongside the Choir title. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
+This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.8** fixes Auto-plan and Auto-play when the completed reply reaches the chat asynchronously or Choir is already busy. It removes the drawer's narrator mute checkbox; narrator controls remain in the mixer and Cue bridge. The SFX mixer channel retains saved volume and Silent controls for Choir and Cue playback. Freesound effects work in both players; failed effects show a warning and let speech continue. It includes description-based LLM voice selection with saved choices, the mixer Auto-play toggle, the visible Auto-plan toolbar shortcut, and save status alongside the Choir title. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
 
 
 ## Overview
@@ -26,7 +26,7 @@ Choir separates narration and character dialogue from chat messages, assigns dis
 - **Dual connection modes.** Use one TTS connection across the whole cast, or assign different providers to individual characters.
 - **Choice of attribution engine.** Heuristic mode classifies narration and clear dialogue locally, without LLM requests. Ambiguous dialogue stops with guidance to choose Jev or LLM. Jev uses your Decision connection; LLM fallback requires the explicit opt-in. Standard LLM mode uses your selected planner connection.
 - **Foley sound effects.** Automatic text scanning detects physical actions such as footsteps, opening doors, knocks, page turns, and impacts, pulling matching audio clips from Freesound with automatic pre-fetching and volume balancing.
-- **Narrator muting.** Toggle narrator speech off to hear dialogue only, or leave it on for a full audiobook experience.
+- **Narrator controls.** Use the mixer's Narrator **Silent** button to mute audio or **No voice** to skip narration and synthesis. Cue's narrator controls remain supported.
 - **Companion extension bridge.** Exposes `window.__CHOIR_API__` so reading interfaces like Cue Living Novel can request speech turn planning and seamless paragraph playback.
 - **Floating voice mixer.** A draggable sound icon expands into a transport with master and individual speaker volume controls, mute toggles, seeking, and skip buttons.
 - **Passage caching.** Completed audio chunks cache immediately in local IndexedDB. Edits and reloads reuse matching attribution and audio without repurchasing tokens or quota.
@@ -42,6 +42,8 @@ Cast and connection changes save automatically with Saving / Saved / Save failed
 In **Standard LLM** mode, **Let LLM choose** sends the active character's description and personality, the active persona's description, and available voice descriptions to your selected planner. It chooses a voice that fits each speaker and saves that choice for later replies and reloads. NPCs use character cues from the story. To request a new choice, select **Let LLM choose** again, then plan or play a message where that character speaks. Cached attribution cannot substitute the first catalogue voice for this choice. Existing voice assignments stay fixed until you change them.
 
 The mixer's **Auto-plan On / Off** switch opts into planning new assistant replies without starting speech. **Show Auto-plan in chat toolbar** in the drawer adds a synchronized toolbar control. The setting is off by default, saves automatically, and uses your chosen planner engine; Jev and LLM planning may incur costs. The mixer's **Auto-play On / Off** button stays synchronized with **Auto-play new replies** in the drawer, saves automatically, and plans and plays replies when enabled. Auto-plan and Auto-play can be toggled independently.
+
+Automatic replies wait for the completed message or regenerated swipe to appear in the chat. Replies received while planning, playing, or using Cue queue until Choir is available. Duplicate completion events do not replay a generation. **Stop**, turning both automation switches off, changing chats, or disabling Choir cancels waiting replies. Edited, swiped, or deleted messages discard their pending automation. The removed **Mute narrator (dialogue only)** drawer setting is represented by Narrator **No voice** in the mixer if previously enabled, so you can turn narration back on there.
 
 The drawer's **Stop** button cancels planning, speech generation, and playback, including paused audio, while keeping completed cached passages. Saved-settings feedback sits above the aligned action buttons. **Test planner** follows the selected engine: heuristic tests run locally; Jev and LLM tests use their selected connections. Heuristic mode still uses your TTS provider when you play speech.
 
