@@ -135,7 +135,6 @@ export async function setup(ctx) {
     .choir-mixer .cm-auto-plan{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 14px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
     .choir-mixer .cm-auto-plan button{padding:5px 8px;border:1px solid #ffffff25;border-radius:7px;font-size:11px}
     .choir-mixer .cm-auto-plan button[aria-pressed="true"]{background:#c4b5fd20;color:var(--cm-accent)}
-    .choir-mixer .cm-auto-plan small{font-size:10px;color:var(--cm-muted)}
     .choir-mixer .cm-percent{font-size:10px;text-align:right;font-variant-numeric:tabular-nums;color:var(--cm-muted)}
     .choir-mixer .cm-channels-title{display:flex;justify-content:space-between;padding:10px 14px 3px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--cm-muted);flex-shrink:0}
     .choir-mixer .cm-channels{overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#ffffff25 transparent;padding:0 8px;min-height:0}
@@ -410,14 +409,15 @@ export async function setup(ctx) {
   const channelCount=document.createElement('span');channelCount.setAttribute('aria-hidden','true');channelsTitle.append(channelCount);
   const autoPlanRow=document.createElement('div');autoPlanRow.className='cm-auto-plan';
   const mixerAutoPlan=document.createElement('button');mixerAutoPlan.type='button';mixerAutoPlan.dataset.choirAction='auto-plan';mixerAutoPlan.setAttribute('aria-label','Auto-plan new replies');mixerAutoPlan.onclick=()=>run(toggleAutoPlan);
-  const autoPlanNote=document.createElement('small');autoPlanNote.textContent='Plan without playback';autoPlanRow.append(mixerAutoPlan,autoPlanNote);
+  const mixerAutoPlay=document.createElement('button');mixerAutoPlay.type='button';mixerAutoPlay.dataset.choirAction='auto-play';mixerAutoPlay.setAttribute('aria-label','Auto-play new replies');mixerAutoPlay.title='Automatically plan and play new assistant replies with the selected engine and cast voices.';mixerAutoPlay.onclick=()=>run(toggleAutoPlay);autoPlanRow.append(mixerAutoPlan,mixerAutoPlay);
   player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,autoPlanRow,channelsTitle,channelsRoot,legend);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
   unsubs.push(()=>{autoPlanAction?.destroy();autoPlanAction=null;toolbarAutoPlan.remove();});
   function refreshAutoPlanControls(){
     mixerAutoPlan.textContent=`Auto-plan ${config?.autoPlan?'On':'Off'}`;
     mixerAutoPlan.setAttribute('aria-pressed',String(Boolean(config?.autoPlan)));mixerAutoPlan.disabled=!chatId;
     mixerAutoPlan.title='Plan new assistant replies with the selected engine. Jev and LLM planning can incur costs. Auto-play is controlled separately.';
-    autoPlanNote.textContent=config?.auto?'Auto-play is also on':'Plan without playback';
+    mixerAutoPlay.textContent=`Auto-play ${config?.auto?'On':'Off'}`;
+    mixerAutoPlay.setAttribute('aria-pressed',String(Boolean(config?.auto)));mixerAutoPlay.disabled=!chatId;
     toolbarAutoPlan.querySelector('span').textContent=mixerAutoPlan.textContent;toolbarAutoPlan.title=mixerAutoPlan.title;
     toolbarAutoPlan.setAttribute('aria-label',mixerAutoPlan.textContent);toolbarAutoPlan.setAttribute('aria-pressed',String(Boolean(config?.autoPlan)));toolbarAutoPlan.disabled=!chatId;
     if(config?.showAutoPlanAction){
@@ -434,6 +434,10 @@ export async function setup(ctx) {
   function toggleAutoPlan(){
     if(!chatId)throw new Error('Open a chat first.');
     config=capture();config.autoPlan=!config.autoPlan;scheduleSettingsSave();refreshAutoPlanControls();
+  }
+  function toggleAutoPlay(){
+    if(!chatId)throw new Error('Open a chat first.');
+    $('auto').checked=!$('auto').checked;scheduleSettingsSave();
   }
   let mixerWriteQueue=null;
   const persistMixer=()=>{const snapshot=structuredClone(mixerState),write=()=>ctx.settings.set('ui:mixer',snapshot);const operation=mixerWriteQueue?mixerWriteQueue.catch(()=>{}).then(write):write();mixerWriteQueue=operation;return operation.then(()=>{if(mixerWriteQueue===operation)mixerWriteQueue=null;},error=>{if(mixerWriteQueue===operation)mixerWriteQueue=null;status(`Mixer preferences could not be saved: ${error.message}`,true);});};

@@ -68,6 +68,15 @@ try{
   const autoPlanSwitch=page.getByRole('button',{name:'Auto-plan new replies',exact:true});
   assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'true');
   await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').autoPlan===true);await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');
+  const autoPlaySwitch=page.getByRole('button',{name:'Auto-play new replies',exact:true}),autoPlaySetting=page.getByRole('checkbox',{name:'Auto-play new replies',exact:true});
+  assert.equal(await autoPlaySwitch.innerText(),'Auto-play Off');assert.equal(await autoPlaySwitch.getAttribute('aria-pressed'),'false');
+  await autoPlaySwitch.click();assert.equal(await autoPlaySetting.isChecked(),true);assert.equal(await autoPlaySwitch.getAttribute('aria-pressed'),'true');assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');
+  await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').auto===true);
+  await autoPlaySwitch.press('Space');assert.equal(await autoPlaySetting.isChecked(),false);assert.equal(await autoPlaySwitch.getAttribute('aria-pressed'),'false');
+  await autoPlaySetting.check();assert.equal(await autoPlaySwitch.innerText(),'Auto-play On');
+  if(process.env.CHOIR_AUTOMATION_SCREENSHOT)await page.locator('.cm-auto-plan').screenshot({path:process.env.CHOIR_AUTOMATION_SCREENSHOT});
+  await autoPlaySetting.uncheck();assert.equal(await autoPlaySwitch.innerText(),'Auto-play Off');
+  await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').auto===false);assert.equal(await page.evaluate(()=>window.calls.length),0);
   const chatShortcut=page.getByRole('navigation',{name:'Chat toolbar'}).getByRole('button');
   assert.equal(await chatShortcut.count(),0);
   await page.locator('[data-et="showAutoPlanAction"]').check();await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').showAutoPlanAction===true);

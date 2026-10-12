@@ -145,11 +145,18 @@ test('automatic planning ignores unsuitable events and duplicate events during a
   }finally{await h.close();}
 });
 
-test('existing Auto-play still plans and plays even when Auto-plan is off',async()=>{
+test('mixer Auto-play toggle syncs with settings, persists, and plays even when Auto-plan is off',async()=>{
   const h=await harness();try{
-    h.$('auto').checked=true;h.$('auto').dispatchEvent(new h.dom.window.Event('change'));
+    assert.equal(h.$('auto-play').textContent,'Auto-play Off');assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');
+    h.$('auto-play').click();assert.equal(h.$('auto').checked,true);assert.equal(h.$('auto-play').textContent,'Auto-play On');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'false');
+    await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.store.get('chat:chat-a').auto,true);assert.equal(h.synthesis.length,0);
+    await h.reload();assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'true');assert.equal(h.$('auto').checked,true);
+    h.$('auto').checked=false;h.$('auto').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');
+    h.$('auto').checked=true;h.$('auto').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'true');
     h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content});
     await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'false');assert.ok(h.synthesis.length>0);
+    h.$('auto-plan').click();h.$('auto-play').click();assert.equal(h.$('auto').checked,false);assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');
+    await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(h.$('auto-play').textContent,'Auto-play Off');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');
   }finally{await h.close();}
 });
 
