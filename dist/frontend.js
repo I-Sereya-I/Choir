@@ -1127,7 +1127,7 @@ export async function setup(ctx) {
   const ambienceLabel=document.createElement('label');ambienceLabel.className='cm-master';ambienceLabel.textContent='Ambience';ambienceLabel.title='Background bed level under speech. Effects follow Master.';
   const ambienceReadout=document.createElement('span');ambienceReadout.className='cm-percent';ambienceReadout.setAttribute('aria-hidden','true');showVolume(ambienceLevel,ambienceReadout,mixerState.ambience);ambienceLabel.append(ambienceLevel,ambienceReadout);
   const mixerPlay=document.createElement('button');mixerPlay.type='button';mixerPlay.dataset.choirAction='playback';
-  mixerPlay.onclick=()=>{if(currentAudio){if(currentAudio.paused){currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));pauseBeds(false);}else{currentAudio.pause();pauseBeds(true);updateTransport();}}else if(!busy && !controller){mixerPlay.disabled=true;status('Loading playback…');run(async()=>{const latest=latestReply();if(!latest)throw new Error('No assistant reply in the active chat.');if(plan && planSource?.chatId===chatId && planSource.messageId===latest.id && planSource.content===ctx.messages.getContent(latest.id))await play({resume:true});else await playMessage(latest.id);});}};
+  mixerPlay.onclick=()=>{if(currentAudio){if(currentAudio.paused){currentAudio.play().then(updateTransport).catch(e=>status(e.message,true));pauseBeds(false);}else{currentAudio.pause();pauseBeds(true);updateTransport();}}else if(!busy && !controller){mixerPlay.disabled=true;status('Loading playback…');run(async()=>{const latest=latestReply();if(!latest)throw new Error('No assistant reply in the active chat.');if(plan && planSource?.chatId===chatId && planSource.messageId===latest.id && sameSpeech(planSource.content,ctx.messages.getContent(latest.id)))await play({resume:true});else await playMessage(latest.id);});}};
   const mixerPlanLatest=document.createElement('button');mixerPlanLatest.type='button';mixerPlanLatest.dataset.choirAction='plan-latest';mixerPlanLatest.innerHTML=ICON_PLAN;mixerPlanLatest.title='Plan latest reply without starting audio';mixerPlanLatest.setAttribute('aria-label','Plan latest reply');mixerPlanLatest.onclick=()=>run(planLatest);
   const mixerNext=document.createElement('button');mixerNext.type='button';mixerNext.innerHTML=ICON_NEXT;mixerNext.title='Next spoken block';mixerNext.setAttribute('aria-label','Next spoken block');mixerNext.disabled=true;mixerNext.onclick=()=>advancePlayback?.();
   const mixerPrevious=document.createElement('button');mixerPrevious.type='button';mixerPrevious.innerHTML=ICON_PREVIOUS;mixerPrevious.title='Previous spoken block';mixerPrevious.setAttribute('aria-label','Previous spoken block');mixerPrevious.disabled=true;mixerPrevious.onclick=()=>advancePlayback?.(-1);
@@ -2271,7 +2271,7 @@ export async function setup(ctx) {
     const targetChat=chatId,version=loadVersion,token=revision;
     const saved=await ctx.settings.get(await planKey(targetChat,messageId));
     if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return false;
-    if(!saved || saved.content!==ctx.messages.getContent(messageId) || !await recordingMatchesTranscript(saved,saved.content))return false;
+    if(!saved || !sameSpeech(saved.content,ctx.messages.getContent(messageId)) || !await recordingMatchesTranscript(saved,saved.content))return false;
     if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return false;
     const cast=casting(config);
     // Attribution has no voice IDs. A blank selection needs a real LLM choice,
@@ -2290,13 +2290,13 @@ export async function setup(ctx) {
     const version=++latestNoticeVersion,targetChat=chatId;
     const latest=ctx.messages.getRecent(200).filter(v=>!v.is_user && !v.extra?.is_system).at(-1);
     const content=latest && ctx.messages.getContent(latest.id);
-    const current=plan && latest && planSource?.chatId===targetChat && planSource.messageId===latest.id && planSource.content===content;
+    const current=plan && latest && planSource?.chatId===targetChat && planSource.messageId===latest.id && sameSpeech(planSource.content,content);
     $('latestNotice').hidden=!current;
     if(current || !latest || !targetChat)return;
     void (async()=>{
       const saved=await ctx.settings.get(await planKey(targetChat,latest.id));
-      const matches=saved?.content===content && saved.attribution?.segments?.length && await recordingMatchesTranscript(saved,content);
-      if(!disposed && version===latestNoticeVersion && targetChat===chatId && ctx.messages.getContent(latest.id)===content)$('latestNotice').hidden=!matches;
+      const matches=saved && sameSpeech(saved.content,content) && saved.attribution?.segments?.length && await recordingMatchesTranscript(saved,content);
+      if(!disposed && version===latestNoticeVersion && targetChat===chatId && sameSpeech(ctx.messages.getContent(latest.id),content))$('latestNotice').hidden=!matches;
     })().catch(()=>{});
   }
   function renderPreview() {
@@ -2361,6 +2361,9 @@ export async function setup(ctx) {
       return description || personality?[{speaker,description,personality}]:[];
     });
   }
+  // Edits that only add images, trackers or other non-spoken markup keep a plan and its audio valid.
+  const spokenText=content=>transcriptFromMessage(content).replace(/\s+/g,' ').trim();
+  const sameSpeech=(a,b)=>a===b || (a!=null && b!=null && spokenText(a)===spokenText(b));
   async function recordingMatchesTranscript(recording,content) {
     let transcript=transcriptFromMessage(content);
     if(/\{\{\s*user\s*\}\}/i.test(transcript))transcript=replacePersonaMacro(transcript,await personaName());
@@ -2453,7 +2456,7 @@ export async function setup(ctx) {
         const progressKey=`progress:${(await planKey(targetChat,messageId)).slice(5)}`;
         const savedProgress=forceReplan?null:await ctx.settings.get(progressKey).catch(()=>null);
         if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
-        const completedSections=savedProgress?.content===content && savedProgress.transcript===transcript && Array.isArray(savedProgress.sections)?savedProgress.sections.filter(saved=>saved && typeof saved.text==='string'):[];
+        const completedSections=savedProgress && sameSpeech(savedProgress.content,content) && savedProgress.transcript===transcript && Array.isArray(savedProgress.sections)?savedProgress.sections.filter(saved=>saved && typeof saved.text==='string'):[];
         let timeoutSplits=0;
         streaming = autoPlay && sections.length > 1 && !config.autoDesignNPCs;
         soundsChosen=streaming && soundCuesWanted(config);
@@ -2881,7 +2884,7 @@ export async function setup(ctx) {
   }
   async function play(options={}) {
     if(!plan || !planSource)throw new Error('Plan a message first.');
-    if(chatId!==planSource.chatId || ctx.messages.getContent(planSource.messageId)!==planSource.content) {
+    if(chatId!==planSource.chatId || !sameSpeech(ctx.messages.getContent(planSource.messageId),planSource.content)) {
       clearPlan();throw new Error('Message or swipe changed. Generate a fresh plan.');
     }
     config=capture();
@@ -2917,7 +2920,7 @@ export async function setup(ctx) {
     }
     const resume=options.resume?await ctx.settings.get(`position:${chatId}`):null;
     if(token!==revision || ctrl.signal.aborted)throw abortError();
-    const validResume=resume?.messageId===planSource.messageId && resume.content===planSource.content && !resume.complete?resume:null;
+    const validResume=resume?.messageId===planSource.messageId && sameSpeech(resume.content,planSource.content) && !resume.complete?resume:null;
     const segments=plan.segments.flatMap((segment,index)=>{
       if(options.indices && !options.indices.includes(index))return [];
       return playbackBatches([segment],snapshot).map((batch,chunkIndex)=>({...batch,passageIndex:index,chunkIndex}));
@@ -2955,7 +2958,7 @@ export async function setup(ctx) {
       const recording=await recordingStore('get',recordingKey(targetChat,messageId));
       if(token!==revision || ctrl.signal.aborted)throw abortError();
       if(!recording)throw new Error('No saved audio for this message on this device. Plan and play it first.');
-      if(ctx.messages.getContent(messageId)!==recording.content)throw new Error('The message changed since recording. Plan and play the current reply.');
+      if(!sameSpeech(ctx.messages.getContent(messageId),recording.content))throw new Error('The message changed since recording. Plan and play the current reply.');
       if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to remove trackers or update the persona name.');
       mixerPlaybackSegments=recording.segments;renderMixer();
       let pauseNext=false;
@@ -2985,7 +2988,7 @@ export async function setup(ctx) {
     try {
       const content=ctx.messages.getContent(messageId);
       // A validated plan remains playable even if saving it failed or has not finished.
-      if(plan && planSource?.chatId===chatId && planSource.messageId===messageId && planSource.content===content && await recordingMatchesTranscript(planSource,content)){
+      if(plan && planSource?.chatId===chatId && planSource.messageId===messageId && sameSpeech(planSource.content,content) && await recordingMatchesTranscript(planSource,content)){
         if(valid()){status('Reusing the current speech plan.');await play();}return;
       }
       status('Checking saved plan and audio…');
@@ -2993,7 +2996,7 @@ export async function setup(ctx) {
       if(!valid())return;
       let recording;try{recording=await recordingStore('get',recordingKey(operation.chatId,messageId));}catch{}
       if(!valid())return;
-      if(recording?.content===content && await recordingMatchesTranscript(recording,content) && !(resolvePlannerMode(config)==='llm' && needsVoiceSelection({segments:(recording.segments || []).flatMap(segment=>segment.turns || [segment])},casting(config)))){
+      if(recording && sameSpeech(recording.content,content) && await recordingMatchesTranscript(recording,content) && !(resolvePlannerMode(config)==='llm' && needsVoiceSelection({segments:(recording.segments || []).flatMap(segment=>segment.turns || [segment])},casting(config)))){
         if(!valid())return;
         const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
         const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind).map(segment=>segment.text).join(' ');
@@ -3018,8 +3021,8 @@ export async function setup(ctx) {
   async function playSection(messageId,section){
     const targetChat=chatId,content=ctx.messages.getContent(messageId);
     if(controller && messagePlaybackId===messageId){stop();return;}
-    if(!(plan && planSource?.messageId===messageId && planSource.chatId===targetChat && planSource.content===content))await prepare(messageId);
-    if(chatId!==targetChat || ctx.messages.getContent(messageId)!==content || planSource?.messageId!==messageId || planSource.content!==content)return;
+    if(!(plan && planSource?.messageId===messageId && planSource.chatId===targetChat && sameSpeech(planSource.content,content)))await prepare(messageId);
+    if(chatId!==targetChat || !sameSpeech(ctx.messages.getContent(messageId),content) || planSource?.messageId!==messageId || !sameSpeech(planSource.content,content))return;
     const indices=sectionsFor(planSource,plan.segments)[section];if(!indices)throw new Error('This section changed. Choose a current section.');
     messagePlaybackId=messageId;await play({indices});
   }
@@ -3029,10 +3032,10 @@ export async function setup(ctx) {
     if(entry.controls){entry.controls.hidden=!isSecEnabled;entry.controls.style.display=isSecEnabled?'flex':'none';}
     entry.details.hidden=!isSecEnabled;entry.list.replaceChildren();if(entry.details.hidden)return;
     let source,segments;
-    if(planSource?.chatId===targetChat && planSource.messageId===entry.messageId && planSource.content===content){source=planSource;segments=plan.segments;}
+    if(planSource?.chatId===targetChat && planSource.messageId===entry.messageId && sameSpeech(planSource.content,content)){source=planSource;segments=plan.segments;}
     else {
       const saved=await ctx.settings.get(await planKey(targetChat,entry.messageId)).catch(()=>null);
-      if(saved && saved.content===content && await recordingMatchesTranscript(saved,content)){source=saved;segments=saved.attribution?.segments;}
+      if(saved && sameSpeech(saved.content,content) && await recordingMatchesTranscript(saved,content)){source=saved;segments=saved.attribution?.segments;}
     }
     if(disposed || entry.version!==version || chatId!==targetChat || !messageSections.has(entry) || !config?.sectionButtons)return;
     if(segments?.length)appendSectionButtons(entry.list,source,segments,entry.messageId);
@@ -3177,9 +3180,9 @@ export async function setup(ctx) {
     const latest=latestReply();
     if(!latest)throw new Error('No assistant reply in the active chat.');
     const targetChat=chatId,content=ctx.messages.getContent(latest.id);
-    const alreadyShown=plan && planSource?.messageId===latest.id && planSource.content===ctx.messages.getContent(latest.id);
+    const alreadyShown=plan && planSource?.messageId===latest.id && sameSpeech(planSource.content,ctx.messages.getContent(latest.id));
     const alreadyPlanned=alreadyShown || await restoreSavedPlan(latest.id);
-    if(disposed || targetChat!==chatId || ctx.messages.getContent(latest.id)!==content)return;
+    if(disposed || targetChat!==chatId || !sameSpeech(ctx.messages.getContent(latest.id),content))return;
     await prepare(latest.id,false,undefined,Boolean(alreadyPlanned));
   }
   $('latest').onclick=()=>run(planLatest);
@@ -3401,7 +3404,9 @@ export async function setup(ctx) {
       if(payload?.chatId && payload.chatId!==chatId)return;
       cancelAutoReplies(id);
       const affected=planSource || planningSource;
-      if(affected && (!id || id===affected.messageId)){stop(false);clearPlan();status('Message changed. Generate a fresh plan.');}
+      const edited=typeof payload?.message?.content==='string'?payload.message.content:id && ctx.messages.getContent(id);
+      const spokenUnchanged=(event==='MESSAGE_EDITED' || event==='SWIPE_EDITED') && edited!=null && sameSpeech(edited,affected?.content);
+      if(affected && (!id || id===affected.messageId) && !spokenUnchanged){stop(false);clearPlan();status('Message changed. Generate a fresh plan.');}
       renderMessages();
     }));
   }
