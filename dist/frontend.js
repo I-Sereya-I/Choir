@@ -851,6 +851,17 @@ export async function setup(ctx) {
     .choir-mixer .cm-channels-title{display:flex;align-items:center;gap:7px;width:100%;padding:10px 14px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;text-align:left;color:var(--cm-muted);flex-shrink:0}
     .choir-mixer .cm-channels-title span:last-child{margin-left:auto}
     .choir-mixer .cm-channels{overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#ffffff25 transparent;padding:0 8px;min-height:0}
+    .choir-mixer .cm-channel-tabs{position:relative;display:flex;align-items:center;gap:6px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;padding:3px 10px 7px;flex-shrink:0;min-width:0}
+    .choir-mixer .cm-channel-tab{min-width:44px;max-width:140px;min-height:44px;padding:6px 10px;border:1px solid #ffffff25;border-radius:8px;font-size:12px;white-space:nowrap;flex-shrink:0}
+    .choir-mixer .cm-channel-tab span{overflow:hidden;text-overflow:ellipsis}
+    .choir-mixer .cm-channel-tab[aria-selected="true"]{background:#c4b5fd20;border-color:#c4b5fd70;color:var(--cm-accent)}
+    .choir-mixer[data-channel-tabs="true"] .cm-channel{border:0;padding-bottom:10px}
+    .choir-mixer[data-channel-tabs="true"] .cm-levels-body{overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
+    .choir-mixer[data-channel-tabs="true"] .cm-channels{overflow:visible;flex-shrink:0}
+    .choir-mixer[data-channel-tabs="true"] .cm-master{padding-top:6px;padding-bottom:6px}
+    .choir-mixer[data-channel-tabs="true"] .cm-auto-plan{padding-top:6px;padding-bottom:6px}
+    .choir-mixer[data-channel-tabs="true"] .cm-channel-tabs{padding-top:1px;padding-bottom:3px}
+    .choir-mixer[data-channel-tabs="true"] .cm-legend{padding-top:6px;padding-bottom:7px}
     .choir-mixer .cm-empty{margin:0;padding:12px 6px;color:var(--cm-muted);font-size:11px}
     .choir-mixer .cm-channel{padding:6px;border-bottom:1px solid var(--cm-line);border-radius:8px;min-width:0}
     .choir-mixer .cm-channel:last-child{border-bottom:0}
@@ -1119,7 +1130,8 @@ export async function setup(ctx) {
   };
   let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged,mixerPlaybackSegments=null,bed=null,bedsPaused=false;
   // Keep the launcher unobtrusive on every load, including existing expanded preferences.
-  const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,levelsCollapsed:true,channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),...(savedMixer||{}),collapsed:true};
+  const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),...(savedMixer||{}),collapsed:true};
+  const channelTabsQuery=root.ownerDocument.defaultView?.matchMedia?.('(pointer:coarse), (max-width:600px)');let useChannelTabs=Boolean(channelTabsQuery?.matches);
   // Solo is no longer exposed; old solo preferences must not silently mute other voices.
   for(const channel of Object.values(mixerState.channels))delete channel.solo;
   // Dedicated effect levels replace legacy voice-channel preferences.
@@ -1162,6 +1174,7 @@ export async function setup(ctx) {
   const transport=document.createElement('div');transport.className='cm-transport';transport.append(mixerPlanLatest,mixerPrevious,mixerPlay,mixerNext,mixerStop);
   const mixerSeek=makeSeekControl(),legend=document.createElement('small');legend.className='cm-legend';legend.innerHTML=`<span>${ICON_MUTED} Silent = mute</span><span>${ICON_MIC_OFF} No voice = skip & don’t generate</span>`;
   const levels=document.createElement('div'),levelsBody=document.createElement('div');levels.className='cm-levels';levelsBody.className='cm-levels-body';levelsBody.id=`choir-channel-levels-${crypto.randomUUID()}`;
+  const channelTabs=document.createElement('div');channelTabs.className='cm-channel-tabs';channelTabs.setAttribute('role','tablist');channelTabs.setAttribute('aria-label','Mixer channels');
   const channelsTitle=document.createElement('button');channelsTitle.type='button';channelsTitle.className='cm-channels-title';channelsTitle.setAttribute('aria-label','Channel levels');channelsTitle.setAttribute('aria-controls',levelsBody.id);
   const levelsArrow=document.createElement('span');levelsArrow.setAttribute('aria-hidden','true');const levelsTitle=document.createElement('span');levelsTitle.textContent='Channel levels';channelsTitle.append(levelsArrow,levelsTitle);
   const channelCount=document.createElement('span');channelCount.setAttribute('aria-hidden','true');channelsTitle.append(channelCount);
@@ -1172,7 +1185,7 @@ export async function setup(ctx) {
   const mixerAutoPlay=document.createElement('button');mixerAutoPlay.type='button';mixerAutoPlay.dataset.choirAction='auto-play';mixerAutoPlay.setAttribute('aria-label','Auto-play new replies');mixerAutoPlay.title='Automatically plan and play new assistant replies with the selected engine and cast voices.';mixerAutoPlay.onclick=()=>run(toggleAutoPlay);
   const mixerSfx=document.createElement('button');mixerSfx.type='button';mixerSfx.dataset.choirAction='sfx';mixerSfx.setAttribute('aria-label','Sound effects');mixerSfx.title='Enable or disable Freesound effects in Choir and Cue. Speech continues separately.';mixerSfx.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableSfx').checked=!$('enableSfx').checked;scheduleSettingsSave();syncSfxPlayback();});
   const mixerAmbience=document.createElement('button');mixerAmbience.type='button';mixerAmbience.dataset.choirAction='ambience';mixerAmbience.setAttribute('aria-label','Ambient sound');mixerAmbience.title='Enable looping background ambience in Choir and Cue. Off stops the current bed.';mixerAmbience.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableAmbience').checked=!$('enableAmbience').checked;scheduleSettingsSave();syncAmbiencePlayback();});autoPlanRow.append(mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience);
-  levelsBody.append(channelsRoot,legend);levels.append(channelsTitle,levelsBody);
+  levelsBody.append(channelTabs,channelsRoot,legend);levels.append(channelsTitle,levelsBody);
   player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,autoPlanRow,levels);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
   unsubs.push(()=>{autoPlanAction?.destroy();autoPlanAction=null;toolbarAutoPlan.remove();});
   function refreshAutoPlanControls(){
@@ -1267,12 +1280,14 @@ export async function setup(ctx) {
   mixerHeader.addEventListener('pointerup',endDrag);mixerHeader.addEventListener('pointercancel',endDrag);
   const docWin=root?.ownerDocument?.defaultView || (typeof window!=='undefined'?window:null);
   const resizeMixer=()=>positionMixer();docWin?.addEventListener('resize',resizeMixer);
+  const changeChannelLayout=()=>{useChannelTabs=Boolean(channelTabsQuery.matches);renderMixer();};channelTabsQuery?.addEventListener('change',changeChannelLayout);
+  unsubs.push(()=>channelTabsQuery?.removeEventListener('change',changeChannelLayout));
   unsubs.push(()=>{docWin?.removeEventListener('resize',resizeMixer);mixer.remove();audioContext?.close().catch(()=>{});});
   function renderMixer(){
     const doc=root?.ownerDocument || (typeof document!=='undefined'?document:null);
     if(!doc)return;
     refreshAutoPlanControls();
-    const focused=doc.activeElement,focusLabel=channelsRoot.contains(focused)?focused.getAttribute('aria-label'):null,scrollTop=channelsRoot.scrollTop;
+    const focused=doc.activeElement,focusLabel=channelsRoot.contains(focused)?focused.getAttribute('aria-label'):null,focusTabKey=channelTabs.contains(focused)?focused.dataset.channelKey:null,scrollTop=channelsRoot.scrollTop,tabScroll=channelTabs.scrollLeft;
     updateNextControls();
     channelsRoot.replaceChildren();speakerLabel.replaceChildren();
     if(currentSpeaker){const prefix=doc.createElement('span');prefix.className='cm-sr-only';prefix.textContent='Speaking: ';speakerLabel.append(prefix,doc.createTextNode(currentSpeaker));}else speakerLabel.textContent='Ready to play';
@@ -1302,8 +1317,24 @@ export async function setup(ctx) {
       const controls=doc.createElement('div');controls.className='cm-channel-controls';const volume=makeMixerVolume(name,mixerState[kind],readout,value=>{mixerState[kind]=value;applyVolume();});
       controls.append(volume);row.append(head,controls);channelsRoot.append(row);
     }
-    channelCount.textContent=String(channelsRoot.querySelectorAll('.cm-channel').length);legend.hidden=!speakers.size;
+    const rows=[...channelsRoot.querySelectorAll('.cm-channel')],keys=rows.map(row=>`${row.dataset.kind}:${row.dataset.speaker}`);
+    const selected=keys.includes(mixerState.channelTab)?mixerState.channelTab:keys[0],revealSelected=selected!==channelTabs.querySelector('[aria-selected="true"]')?.dataset.channelKey || mixer.dataset.channelTabs!==String(useChannelTabs);
+    mixer.dataset.channelTabs=String(useChannelTabs);channelTabs.hidden=!useChannelTabs;channelTabs.replaceChildren();
+    rows.forEach((row,index)=>{
+      const key=keys[index],active=key===selected,tabId=`${levelsBody.id}-tab-${index}`;row.id=`${levelsBody.id}-panel-${index}`;row.hidden=useChannelTabs && !active;
+      if(useChannelTabs){
+        row.setAttribute('role','tabpanel');row.setAttribute('aria-labelledby',tabId);
+        const tab=doc.createElement('button');tab.type='button';tab.className='cm-channel-tab';tab.id=tabId;tab.dataset.channelKey=key;tab.setAttribute('role','tab');tab.setAttribute('aria-label',row.dataset.speaker);tab.setAttribute('aria-controls',row.id);tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;tab.title=row.dataset.speaker;
+        const label=doc.createElement('span');label.textContent=row.dataset.speaker;tab.append(label);
+        const select=next=>{mixerState.channelTab=keys[next];renderMixer();void persistMixer();};tab.onclick=()=>select(index);
+        tab.onkeydown=event=>{const next=event.key==='ArrowRight'?(index+1)%rows.length:event.key==='ArrowLeft'?(index+rows.length-1)%rows.length:event.key==='Home'?0:event.key==='End'?rows.length-1:null;if(next===null)return;event.preventDefault();select(next);channelTabs.children[next]?.focus({preventScroll:true});};
+        channelTabs.append(tab);
+      }
+    });
+    channelCount.textContent=String(rows.length);legend.hidden=useChannelTabs?rows.find(row=>`${row.dataset.kind}:${row.dataset.speaker}`===selected)?.dataset.kind!=='voice':!speakers.size;
     positionMixer();
+    channelTabs.scrollLeft=tabScroll;if(useChannelTabs && revealSelected){const activeTab=[...channelTabs.children].find(tab=>tab.getAttribute('aria-selected')==='true');if(activeTab?.offsetLeft<channelTabs.scrollLeft)channelTabs.scrollLeft=activeTab.offsetLeft;else if(activeTab && activeTab.offsetLeft+activeTab.offsetWidth>channelTabs.scrollLeft+channelTabs.clientWidth)channelTabs.scrollLeft=activeTab.offsetLeft+activeTab.offsetWidth-channelTabs.clientWidth;}
+    if(focusTabKey)[...channelTabs.children].find(tab=>tab.dataset.channelKey===focusTabKey)?.focus({preventScroll:true});
     channelsRoot.scrollTop=scrollTop;if(focusLabel)[...channelsRoot.querySelectorAll('[aria-label]')].find(node=>node.getAttribute('aria-label')===focusLabel)?.focus({preventScroll:true});
   }
   function updateNextControls(){
