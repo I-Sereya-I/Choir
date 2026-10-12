@@ -904,7 +904,7 @@ export async function setup(ctx) {
     <div class="et-header">
       <div class="et-title-group">
         <h2>Choir</h2>
-        <span class="et-badge">Staging</span>
+        <span class="et-badge" data-et="branchBadge" hidden>Staging</span>
       </div>
       <span class="et-save-state" data-et="saveState" role="status" aria-live="polite">Settings saved per chat</span>
       <div class="et-toolbar">
@@ -3434,5 +3434,17 @@ const paragraphAudioCache = new Map();
   };
   mixer.addEventListener('choir:replace',cleanup,{once:true});unsubs.push(()=>mixer.removeEventListener('choir:replace',cleanup));
   await run(switchChat);
+  if(disposed)return cleanup;
+  // Branch metadata is optional UI information; it must not delay startup.
+  const branchLookup=new AbortController();unsubs.push(()=>branchLookup.abort());
+  void (async()=>{
+    const timeout=setTimeout(()=>branchLookup.abort(),5000),badge=$('branchBadge');
+    try{
+      const result=await (await api('/spindle',{signal:branchLookup.signal})).json();
+      const extension=result.extensions?.find(item=>item.identifier==='choir');
+      if(!disposed)badge.hidden=extension?.metadata?.branch!=='staging';
+    }catch{/* Keep an unknown branch unlabelled without interrupting playback. */}
+    finally{clearTimeout(timeout);}
+  })();
   return cleanup;
 }

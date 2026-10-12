@@ -4,16 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.5-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/main)
+[![Version](https://img.shields.io/badge/version-1.1.6-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/main)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-180%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-181%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, and sound effects.
 
 </div>
 
-Version **1.1.5** adds a compact **Plan latest** control beside Previous, makes the main Play button target the latest reply, and moves **SFX On / Off** beside Auto-plan and Auto-play. Mixer channels show only the voices in the current plan or playback, retaining preferences for hidden speakers. Freesound effects work in Choir and Cue; failed effects show a warning and let speech continue. It includes queued reply automation, description-based LLM voice selection with saved choices, the visible Auto-plan toolbar shortcut, and save status alongside the Choir title. This release uses the original `choir` identifier and existing settings. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **main** branch. The **staging** branch remains available for testing future features before release.
+Version **1.1.6** shows the **STAGING** badge only when Choir is installed from the **staging** branch. It hides the badge on **main** and checks branch information without delaying startup or playback. This release uses the original `choir` identifier and existing settings. Use **main** for the stable version and **staging** to test new features before release.
 
 
 ## Overview

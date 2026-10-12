@@ -28,6 +28,10 @@ async function harness(mixerPreferences){
   globalThis.Audio=FakeAudio;
   const connections=[{id:'a',name:'Narration provider',provider:'openai_tts',model:'model-a'},{id:'b',name:'Character provider',provider:'accent_tts',model:'model-b'}];
   globalThis.fetch=async(url,options={})=>{
+    if(url.endsWith('/spindle')){
+      state.branchLookups=(state.branchLookups || 0)+1;if(state.branchLookupFails)throw Error('Branch information unavailable');
+      return Response.json({extensions:[{identifier:'other-extension',metadata:{branch:'staging'}},{identifier:'choir',metadata:{branch:state.extensionBranch===undefined?'staging':state.extensionBranch}}]});
+    }
     if(url==='https://freesound.test/preview.mp3'){
       state.previewFetches.push(url);
       if(state.holdPreview)await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>{state.previewAborted++;reject(new DOMException('Stopped','AbortError'));},{once:true}));
@@ -89,6 +93,19 @@ async function harness(mixerPreferences){
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
     async close(){cleanup();await tick();URL.createObjectURL=createObjectURL;Object.assign(globalThis,original);dom.window.close();}};
 }
+
+test('the staging badge follows the installed Choir branch and unavailable branch information never breaks the drawer',async()=>{
+ const h=await harness();try{
+  await until(()=>!h.$('branchBadge').hidden);assert.equal(h.$('branchBadge').textContent,'Staging');
+  for(const branch of ['main',null,'feature-test']){
+   h.state.extensionBranch=branch;const lookups=h.state.branchLookups;await h.reload();await until(()=>h.state.branchLookups>lookups);await tick();
+   assert.equal(h.$('branchBadge').hidden,true);assert.ok(h.root.querySelector('.ensemble-tts'));
+  }
+  h.state.extensionBranch='staging';await h.reload();await until(()=>!h.$('branchBadge').hidden);
+  h.state.branchLookupFails=true;await h.reload();await tick();assert.equal(h.$('branchBadge').hidden,true);assert.ok(h.root.querySelector('.ensemble-tts'));await h.plan();
+  assert.equal(h.synthesis.length,0);
+ }finally{await h.close();}
+});
 
 test('autosave hides the manual save button and exposes a working retry only after storage failure',async()=>{
   const h=await harness();try{
