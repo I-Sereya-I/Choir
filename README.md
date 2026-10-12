@@ -4,16 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.5--staging.5-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.5--staging.6-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-165%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-172%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, and sound effects.
 
 </div>
 
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.5** adds description-based LLM voice selection and fixes saving automatic choices when reusing plans or retrying a failed save. It includes the mixer Auto-play toggle, visible Auto-plan shortcut in the chat toolbar, and save status alongside the Choir title. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
+This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.6** integrates Freesound effects into normal chat playback and preserves effects for Cue companion playback. The visible SFX toggle controls both players; failed effects show a warning and let speech continue. It includes description-based LLM voice selection with saved choices, the mixer Auto-play toggle, the visible Auto-plan toolbar shortcut, and save status alongside the Choir title. Disable the separate Choir Staging test copy if you previously installed it, then use this repository's **staging** branch.
 
 
 ## Overview
@@ -99,6 +99,10 @@ Open **Choir** from the drawer or its input-bar action.
 2. In Advanced Settings, add your Freesound API key.
 3. When dialogue or narration describes footsteps, doors, paper rustles, or impacts, Choir pulls and caches matching clips, playing them at balanced background levels.
 
+Effects play at detected cues in both Choir's chat player and companion paragraph playback. Cue requests a paragraph through Choir's bridge; Choir detects the cues, searches Freesound, and plays the preview audio. Turning off **Sound effects (Foley cues)** disables effects in both players, including saved replays. Muting the narrator keeps effects available.
+
+A valid Freesound API key is required for uncached effects. Missing keys, failed searches, and unavailable or invalid previews show **SFX skipped** in Choir while speech continues. Failed effects are not cached as silence; retry playback after correcting the key or service problem. Freesound searches use its [current search API](https://freesound.org/docs/api/resources_apiv2.html) and token authentication. Completed chat audio, including effects, survives reloads under your selected retention policy.
+
 ## Companion bridge
 
 Choir mounts a global API on `window.__CHOIR_API__` for companion overlays:
@@ -113,11 +117,13 @@ interface ChoirBridge {
   openDrawer(): void;
   stop(): void;
   planParagraph(text: string, speaker?: string): { segments: SpeechBatch[] };
-  playParagraph(options: PlayParagraphOptions): Promise<{ played: number }>;
+  playParagraph(options: PlayParagraphOptions): Promise<{ played: number; warnings?: string[] }>;
 }
 ```
 
 Companion interfaces listen for the `choir-available-v1` event on `window` to bind controls.
+
+Paragraph plans may contain `kind: 'sfx'` audio parts when effects are enabled. `playParagraph` handles those parts internally, retains speech when an effect fails, and reports optional SFX warnings alongside the actual number of played audio parts. The bridge remains version 1.
 
 ## Development
 

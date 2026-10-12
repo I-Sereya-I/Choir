@@ -44,6 +44,16 @@ test('Freesound keeps AbortSignal local and ignores a proxy result after cancell
  assert.equal(h.sent.filter(item=>item.message.result || item.message.error).length,0);
 });
 
+test('Freesound uses the current search endpoint, authenticates in a header and reports service errors',async()=>{
+ const h=await harness(null,async(url,options)=>{
+  const search=new URL(url);assert.equal(search.pathname,'/apiv2/search/');assert.equal(search.searchParams.get('query'),'page turn');assert.equal(search.searchParams.get('filter'),'duration:[0.1 TO 2.5]');assert.equal(search.searchParams.has('token'),false);
+  assert.equal(options.headers.Authorization,'Token test-freesound-key');assert.ok(!('signal' in options));structuredClone(options);
+  return {status:200,body:JSON.stringify({results:[{id:123,name:'Page turn',duration:0.8,previews:{'preview-hq-mp3':'https://freesound.test/high.mp3','preview-lq-mp3':'https://freesound.test/low.mp3'}}]})};
+ });
+ h.send('freesound',{apiKey:'test-freesound-key',query:'page turn'});assert.equal((await h.result()).message.result.results[0].previewUrl,'https://freesound.test/high.mp3');
+ const denied=await harness(null,async()=>({status:401,body:'Unauthorized'}));denied.send('freesound',{apiKey:'invalid-key',query:'page turn'});assert.match((await denied.result()).message.error,/Freesound HTTP 401/);
+});
+
 test('Jev errors stop by default and never bill the LLM',async()=>{
   let calls=0;
   const h=await harness(async()=>{calls++;throw Error('Unexpected LLM');},async()=>{throw Error('The object cannot be cloned');});

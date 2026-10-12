@@ -449,7 +449,7 @@ export function speechBatches(segments,maxChars,defaultRoute,batchGemini=true,li
       if(turns && previous.route===route && names.size<=2 && turns.length<200 && fits && new TextEncoder().encode(joined).length+metadataBytes<=GEMINI_SPEECH_BYTES) {
         turns.push(segment);previous.text+='\n'+segment.text;previous.speaker=[...names].join(' / ');
       } else batches.push({...segment,route,turns:[segment]});
-    } else if(previous && !previous.turns && previous.route===route && previous.voice===segment.voice && previous.speaker===segment.speaker && previous.style===segment.style && fits)previous.text+='\n'+segment.text;
+    } else if(previous && previous.kind!=='sfx' && segment.kind!=='sfx' && !previous.turns && previous.route===route && previous.voice===segment.voice && previous.speaker===segment.speaker && previous.style===segment.style && fits)previous.text+='\n'+segment.text;
     else batches.push({...segment,route});
     }
   }

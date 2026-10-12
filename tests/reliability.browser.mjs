@@ -13,7 +13,8 @@ async function harness(mixerPreferences){
   const original={document:globalThis.document,Audio:globalThis.Audio,fetch:globalThis.fetch,indexedDB:globalThis.indexedDB};
   globalThis.document=dom.window.document;globalThis.indexedDB=new IDBFactory();
   const root=document.querySelector('main'),footer=document.querySelector('footer'),toolbar=document.querySelector('[data-choir-toolbar]');
-  const state={active:'chat-a',blockAudio:false,failVoice:null,delay:0,held:false,aborted:0},store=new Map(),requests=[],synthesis=[],audios=[],events=new Map(),subscriptions=new Map(),heldPlans=[],toolbarActions=new Map();
+  const state={active:'chat-a',blockAudio:false,failVoice:null,delay:0,held:false,aborted:0,previewFetches:[],previewAborted:0},store=new Map(),requests=[],synthesis=[],audios=[],audioBlobs=[],events=new Map(),subscriptions=new Map(),heldPlans=[],toolbarActions=new Map();
+  const createObjectURL=URL.createObjectURL;URL.createObjectURL=blob=>{audioBlobs.push(blob);return createObjectURL(blob);};
   if(mixerPreferences)store.set('ui:mixer',mixerPreferences);
   const message={id:'message-a',content:'At dawn. "Hello." "Wait." The gate closed.',name:'Mira',is_user:false};
   store.set('chat:chat-a',{mode:'native',connection:'a',styleParam:'instructions',chunk:500,concurrency:1,prefetch:0,
@@ -27,6 +28,11 @@ async function harness(mixerPreferences){
   globalThis.Audio=FakeAudio;
   const connections=[{id:'a',name:'Narration provider',provider:'openai_tts',model:'model-a'},{id:'b',name:'Character provider',provider:'accent_tts',model:'model-b'}];
   globalThis.fetch=async(url,options={})=>{
+    if(url==='https://freesound.test/preview.mp3'){
+      state.previewFetches.push(url);
+      if(state.holdPreview)await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>{state.previewAborted++;reject(new DOMException('Stopped','AbortError'));},{once:true}));
+      return new Response('FREESOUND_PREVIEW',{status:state.previewStatus || 200,headers:{'Content-Type':state.previewType || 'audio/mpeg'}});
+    }
     if(url.endsWith('/tts/synthesize')){
       const input=JSON.parse(options.body);synthesis.push(input);const requestNumber=synthesis.length;
       if(state.delay)await new Promise((resolve,reject)=>{
@@ -56,10 +62,14 @@ async function harness(mixerPreferences){
       requests.push(structuredClone(request));if(request.action==='cancel')return;
       setTimeout(()=>{
         if(!backend)return;
-        if(request.action==='plan' && state.held || request.action==='designVoice' && state.holdDesignVoice){heldPlans.push(request);return;}
+        if(request.action==='plan' && state.held || request.action==='designVoice' && state.holdDesignVoice || request.action==='freesound' && state.holdFoley){heldPlans.push(request);return;}
         if(request.action==='plan' && state.failPlanAt===requests.filter(r=>r.action==='plan').length){backend({namespace:'choir',id:request.id,error:'Planner quota exhausted'});return;}
         let result;
         if(request.action==='ping')result={ready:true};
+        else if(request.action==='freesound'){
+          if(state.foleyError){backend({namespace:'choir',id:request.id,error:state.foleyError});return;}
+          result={results:state.noFoleyResults?[]:[{id:123,name:'Page turn',previewUrl:'https://freesound.test/preview.mp3'}]};
+        }
         else if(request.action==='gemini')result={base64:'AAABAA==',mimeType:'audio/L16;rate=24000'};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
         else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
@@ -75,9 +85,9 @@ async function harness(mixerPreferences){
   const plan=async()=>{$('latest').click();await tick();await until(()=>!$('latest').disabled && ($('status').textContent.startsWith('Ready:') || $('status').textContent.includes('Saved attribution')));};
   const play=async()=>{footer.querySelector('button').click();await tick();await until(()=>$('status').textContent.includes('Playback finished'));};
   const reload=async()=>{cleanup();cleanup=await setup(ctx);};
-  return {dom,state,store,requests,synthesis,audios,message,events,subscriptions,toolbarActions,connections,root,footer,toolbar,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
+  return {dom,state,store,requests,synthesis,audios,audioBlobs,message,events,subscriptions,toolbarActions,connections,root,footer,toolbar,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
-    async close(){cleanup();await tick();Object.assign(globalThis,original);dom.window.close();}};
+    async close(){cleanup();await tick();URL.createObjectURL=createObjectURL;Object.assign(globalThis,original);dom.window.close();}};
 }
 
 test('autosave hides the manual save button and exposes a working retry only after storage failure',async()=>{
@@ -90,6 +100,78 @@ test('autosave hides the manual save button and exposes a working retry only aft
     h.$('chunk').value='10001';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
     assert.equal(h.$('save').hidden,true);assert.match(h.$('saveState').textContent,/Not saved/);
   }finally{await h.close();}
+});
+
+const configureFoley=async(h,key='test-freesound-key')=>{h.$('freesoundApiKey').value=key;h.$('freesoundApiKey').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');};
+const playedFoley=async h=>(await Promise.all(h.audioBlobs.map(blob=>blob.text()))).filter(text=>text==='FREESOUND_PREVIEW').length;
+
+test('Choir chat plays Freesound preview audio at the cue, preserves speech, caches it across reload and honors the SFX toggle',async()=>{
+ const h=await harness();try{
+  assert.equal(h.$('enableSfx').closest('label').hidden,false);await configureFoley(h);h.message.content='She listened. The page snapped under her thumb.';
+  await h.plan();await h.play();assert.equal(await playedFoley(h),1);assert.equal(h.requests.filter(request=>request.action==='freesound').length,1);assert.equal(h.state.previewFetches.length,1);
+  assert.equal(h.synthesis.map(request=>request.text).join(' '),h.message.content);assert.ok(h.synthesis.every(request=>!request.text.includes('[SFX:')));
+  const sfxIndex=(await Promise.all(h.audioBlobs.map(blob=>blob.text()))).indexOf('FREESOUND_PREVIEW');
+  assert.ok(Math.abs(h.audios[sfxIndex].volume/h.audios[0].volume-0.45)<0.001);assert.equal(h.$('sfxStatus').hidden,true);
+  await h.reload();await h.play();assert.equal(await playedFoley(h),2);assert.equal(h.requests.filter(request=>request.action==='freesound').length,1);assert.equal(h.state.previewFetches.length,1);
+  h.$('enableSfx').checked=false;h.$('enableSfx').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  const replay=[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay');replay.click();await until(()=>h.$('status').textContent==='Replay finished.');assert.equal(await playedFoley(h),2);
+  await h.play();assert.equal(await playedFoley(h),2);assert.equal(h.requests.filter(request=>request.action==='freesound').length,1);await h.reload();assert.equal(h.$('enableSfx').checked,false);
+ }finally{await h.close();}
+});
+
+test('Freesound failures stay visible, continue speech, and retry without regenerating cached narration',async()=>{
+ for(const failure of ['key','auth','empty','preview','type']){
+  const h=await harness();try{
+   await configureFoley(h,failure==='key'?'':'test-freesound-key');h.message.content='The page snapped under her thumb.';
+   if(failure==='auth')h.state.foleyError='Freesound HTTP 401';if(failure==='empty')h.state.noFoleyResults=true;if(failure==='preview')h.state.previewStatus=503;if(failure==='type')h.state.previewType='text/html';
+   await h.plan();await h.play();assert.equal(await playedFoley(h),0);assert.equal(h.synthesis.map(request=>request.text).join(' '),h.message.content);
+   assert.match(h.$('status').textContent,/SFX skipped/);assert.equal(h.$('sfxStatus').hidden,false);assert.match(h.$('sfxStatus').textContent,/Speech continues/);
+   const generated=h.synthesis.length;h.state.foleyError=null;h.state.noFoleyResults=false;h.state.previewStatus=200;h.state.previewType='audio/mpeg';if(failure==='key')await configureFoley(h);
+   await h.play();assert.equal(await playedFoley(h),1);assert.equal(h.synthesis.length,generated);assert.equal(h.$('sfxStatus').hidden,true);
+  }finally{await h.close();}
+ }
+});
+
+test('Stop cancels Freesound search and preview downloads and late results cannot start audio',async()=>{
+ for(const stage of ['search','preview']){
+  const h=await harness();try{
+   await configureFoley(h);h.message.content='The page snapped under her thumb.';await h.plan();
+   if(stage==='search')h.state.holdFoley=true;else h.state.holdPreview=true;
+   h.footer.querySelector('button').click();await until(()=>stage==='search'?h.requests.some(request=>request.action==='freesound'):h.state.previewFetches.length===1);
+   h.$('stop').click();await tick();h.releaseHeld();await tick();assert.equal(h.$('status').textContent,'Stopped.');assert.equal(await playedFoley(h),0);assert.ok(h.audios.every(audio=>audio.paused));
+   if(stage==='search')assert.equal(h.state.previewFetches.length,0);else assert.equal(h.state.previewAborted,1);
+  }finally{await h.close();}
+ }
+});
+
+test('automatic streamed Choir playback and Cue share SFX while muted narration stays silent',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);h.message.content='The page snapped under her thumb. "Hello." A quiet room. '.repeat(4);
+  h.$('muteNarrator').checked=true;h.$('muteNarrator').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));h.$('auto').checked=true;h.$('auto').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content});await until(()=>h.$('status').textContent.includes('Playback finished') && !h.$('latest').disabled);
+  assert.equal(await playedFoley(h),4);assert.equal(h.requests.filter(request=>request.action==='freesound').length,1);assert.ok(h.synthesis.every(request=>request.text.includes('Hello')));
+  const bridge=globalThis.__CHOIR_API__,before=h.requests.filter(request=>request.action==='freesound').length,played=await playedFoley(h);
+  assert.equal(bridge.getConfig().enableSfx,true);assert.equal(bridge.planParagraph('The page snapped under her thumb.').segments.filter(segment=>segment.kind==='sfx').length,4);
+  const result=await bridge.playParagraph({text:'The page snapped under her thumb.',chatId:'chat-a'});assert.equal(result.played,4);assert.equal(await playedFoley(h),played+4);assert.equal(h.requests.filter(request=>request.action==='freesound').length,before);
+  bridge.setNarratorMuted(false);const speechBefore=h.synthesis.length;
+  await bridge.playParagraph({text:'The page snapped under her thumb.',chatId:'chat-a'});assert.ok(h.synthesis.length>speechBefore);assert.equal(h.requests.filter(request=>request.action==='freesound').length,before);
+  h.$('enableSfx').checked=false;h.$('enableSfx').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  const effectsBefore=await playedFoley(h);assert.ok(bridge.planParagraph('The page snapped under her thumb.').segments.every(segment=>segment.kind!=='sfx'));
+  await bridge.playParagraph({text:'The page snapped under her thumb.',chatId:'chat-a'});assert.equal(await playedFoley(h),effectsBefore);
+ }finally{await h.close();}
+});
+
+test('Cue fetches real preview blobs, retries failed SFX and honors companion cancellation',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);const bridge=globalThis.__CHOIR_API__,text='The page snapped under her thumb.';
+  h.state.foleyError='Freesound HTTP 401';const statuses=[];
+  const failed=await bridge.playParagraph({text,onStatus:status=>statuses.push(status)});assert.equal(failed.played,2);assert.match(failed.warnings[0],/401/);assert.equal(await playedFoley(h),0);assert.match(statuses.at(-1).message,/SFX skipped/);
+  h.state.foleyError=null;const result=await bridge.playParagraph({text});assert.equal(result.played,3);assert.equal(await playedFoley(h),1);assert.equal(h.state.previewFetches.length,1);assert.equal(h.synthesis.length,2);
+  await bridge.playParagraph({text});assert.equal(await playedFoley(h),2);assert.equal(h.requests.filter(request=>request.action==='freesound').length,2);
+  const ctrl=new AbortController();ctrl.abort();const searches=h.requests.length;await assert.rejects(bridge.playParagraph({text,signal:ctrl.signal}),{name:'AbortError'});assert.equal(h.requests.length,searches);
+  h.state.holdPreview=true;const pendingCtrl=new AbortController();const pending=bridge.playParagraph({text:'The glass shattered.',signal:pendingCtrl.signal});const stopped=assert.rejects(pending,{name:'AbortError'});
+  await until(()=>h.state.previewFetches.length===2);pendingCtrl.abort();await stopped;assert.equal(h.state.previewAborted,1);assert.equal(await playedFoley(h),2);assert.ok(h.audios.every(audio=>audio.paused));
+ }finally{await h.close();}
 });
 
 test('mixer Auto-plan is opt-in, persists, reuses cached plans, and never automatically starts TTS',async()=>{

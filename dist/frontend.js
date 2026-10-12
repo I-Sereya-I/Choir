@@ -450,7 +450,7 @@ function speechBatches(segments,maxChars,defaultRoute,batchGemini=true,limitsFor
       if(turns && previous.route===route && names.size<=2 && turns.length<200 && fits && new TextEncoder().encode(joined).length+metadataBytes<=GEMINI_SPEECH_BYTES) {
         turns.push(segment);previous.text+='\n'+segment.text;previous.speaker=[...names].join(' / ');
       } else batches.push({...segment,route,turns:[segment]});
-    } else if(previous && !previous.turns && previous.route===route && previous.voice===segment.voice && previous.speaker===segment.speaker && previous.style===segment.style && fits)previous.text+='\n'+segment.text;
+    } else if(previous && previous.kind!=='sfx' && segment.kind!=='sfx' && !previous.turns && previous.route===route && previous.voice===segment.voice && previous.speaker===segment.speaker && previous.style===segment.style && fits)previous.text+='\n'+segment.text;
     else batches.push({...segment,route});
     }
   }
@@ -959,11 +959,13 @@ export async function setup(ctx) {
       <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
       <label class="et-check"><input data-et="showAutoPlanAction" type="checkbox"> Show Auto-plan in chat toolbar</label>
       <label class="et-check"><input data-et="muteNarrator" type="checkbox"> Mute narrator (dialogue only)</label>
-      <label class="et-check" hidden><input data-et="enableSfx" type="checkbox" checked> Sound effects (Foley cues)</label>
+      <label class="et-check"><input data-et="enableSfx" type="checkbox" checked> Sound effects (Foley cues)</label>
       <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show section play buttons</label>
       <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
+
+    <p data-et="sfxStatus" role="status" hidden style="font-size:.85em"></p>
 
     <details>
       <summary>Advanced Settings</summary>
@@ -1892,7 +1894,7 @@ export async function setup(ctx) {
   }
   function needsVoiceSelection(attribution,cast){
     const actors=[...cast.fixed,...cast.npcs];
-    return attribution.segments.some(segment=>!actors.find(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker) || (actor.aliases || []).some(alias=>normalizeName(alias)===normalizeName(segment.speaker)))?.voice);
+    return attribution.segments.some(segment=>segment.kind!=='sfx' && !actors.find(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker) || (actor.aliases || []).some(alias=>normalizeName(alias)===normalizeName(segment.speaker)))?.voice);
   }
   function rememberPlanCast(result){
     const previous=config.casts[scope(config)] || [];
@@ -2003,7 +2005,7 @@ export async function setup(ctx) {
   function setBusy(value) {
     busy=value;
     for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','connectionMode','apply','auto'])if($(name))$(name).disabled=value;
-    for (const name of ['model','planner','plannerMode','decisionConnection','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','testTts','importCast'])if($(name))$(name).disabled=value;
+    for (const name of ['model','planner','plannerMode','decisionConnection','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','enableSfx','freesoundApiKey','testTts','importCast'])if($(name))$(name).disabled=value;
     updateTransport();
     if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button')])node.disabled=value;
@@ -2217,7 +2219,7 @@ export async function setup(ctx) {
     const record=await recordingStore('get',recordingKey(source.chatId,source.messageId)).catch(()=>null);
     if(source!==planSource)return;
     for(const [index,segment] of segments.entries()){
-      const batches=ttsBatches([segment],snapshot);
+      const batches=playbackBatches([segment],snapshot);
       const count=batches.filter(batch=>record?.passages?.[cacheKey(batch,snapshot)]).length;
       const node=$('preview').querySelector(`[data-cache-index="${index}"]`);
       if(node)node.textContent=speakerExcluded(segment.speaker)?'No voice · text retained':count===batches.length?'Cached':`${count}/${batches.length} cached · requires generation`;
@@ -2395,7 +2397,7 @@ export async function setup(ctx) {
           combined.push(...stripBase(checked.segments)); previous = section;
           if (streaming) {
             const offset=combined.length-checked.segments.length;
-            const sectionBatches = checked.segments.flatMap((segment,index)=>ttsBatches([segment],config).map((batch,chunkIndex)=>({...batch,passageIndex:offset+index,chunkIndex})));
+            const sectionBatches = checked.segments.flatMap((segment,index)=>playbackBatches([segment],config).map((batch,chunkIndex)=>({...batch,passageIndex:offset+index,chunkIndex})));
             player.push(sectionBatches);
           }
         }
@@ -2440,14 +2442,14 @@ export async function setup(ctx) {
       await persistPlan();
       if(!streaming)status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.map(s=>s.speaker)).size} speakers.${plannerMode==='heuristic'?' Local heuristic attribution; no LLM request.':plannerMode==='jev' && !jevFailure?' Jev attribution; no LLM request.':''}${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''}`);
       if(streaming) {
-        const {blobs,segments:playedBatches}=await player.playbackPromise;
+        const {blobs,segments:playedBatches,warnings}=await player.playbackPromise;
         const key=recordingKey(targetChat,messageId);
         const signature=JSON.stringify([snapshot.mode,snapshot.model,snapshot.connection,snapshot.styleParam,playedBatches,
           playedBatches.map(segment=>nativeConnections.find(c=>`native:${c.id}`===(segment.route || scope(snapshot)))?.model)]);
         let storageError='';
         try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content,transcript,signature,segments:playedBatches,blobs,retention:config.retention});}
         catch(error){storageError=error.message;}
-        if(token===revision){renderMessages();status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:config.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.');}
+        if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:config.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
       }
     } finally {ctrl.abort();if(planningSource?.token===token)planningSource=null;if(token===revision){controller=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();setBusy(false);}}
     if(autoPlay && !streaming && token===revision)await play();
@@ -2515,6 +2517,7 @@ export async function setup(ctx) {
     return {segment:{...segment,route,style:route==='gemini'?instructions:detectProvider(route)==='fish_audio' && snapshot.useStyle?segment.style:''},connection,parameters};
   }
   function cacheKey(segment,snapshot){
+    if(segment.kind==='sfx')return `sfx:${foleyKey(segment.sfx)}`;
     const request=synthesisSettings(segment,snapshot);
     return passageKey(request.segment,{...snapshot,defaultRoute:scope(snapshot)},request.connection,request.parameters);
   }
@@ -2533,8 +2536,27 @@ export async function setup(ctx) {
       return limits;
     });
   }
+  function playbackBatches(segments,snapshot,{filterMuted=true,batchGemini=false}={}){
+    const expanded=segments.flatMap(segment=>{
+      const {sfx,...speech}=segment;
+      if(snapshot.enableSfx===false || !sfx?.query)return [speech];
+      const index=sfx.trigger?speech.text.toLowerCase().indexOf(sfx.trigger.toLowerCase()):0;
+      const head=index>0?speech.text.slice(0,index).trim():'';
+      const tail=index>0?speech.text.slice(index).trim():speech.text;
+      return [...(head?[{...speech,text:head}]:[]),{kind:'sfx',speaker:'SFX',voice:'',text:`[SFX: ${sfx.query}]`,route:'sfx',sfx},...(tail?[{...speech,text:tail}]:[])];
+    }).filter(segment=>!(filterMuted && snapshot.muteNarrator && normalizeName(segment.speaker)==='narrator'));
+    return ttsBatches(expanded,snapshot,batchGemini);
+  }
+  const foleyKey=sfx=>JSON.stringify([sfx?.query || 'thump',sfx?.filter || 'duration:[0.1 TO 2.5]']);
+  const foleyWarning=warnings=>warnings?.length?` SFX skipped: ${warnings.join('; ')}.`:'';
+  function showFoleyStatus(message=''){
+    if(disposed)return;
+    $('sfxStatus').hidden=!message;$('sfxStatus').textContent=message;$('sfxStatus').classList.toggle('et-error',Boolean(message));
+  }
   function createStreamingPlayer(snapshot,source,cached,apiKey,ctrl,token) {
     const segments=[];
+    const warnings=new Set();showFoleyStatus();
+    const warnFoley=error=>{warnings.add(error.message);if(token===revision)showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
     const ready=new Map();
     const resolvers=new Map();
     let nextToSynthesize=0;
@@ -2596,6 +2618,8 @@ export async function setup(ctx) {
             if(!blob){flightKey=key;const promise=new Promise((resolve,reject)=>{resolveFlight=resolve;rejectFlight=reject;});promise.catch(()=>{});inflight.set(key,promise);}
             if(blob) {
               status(`Replaying ${idx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
+            } else if(seg.kind==='sfx') {
+              blob=await fetchFoleyAudio(seg.sfx,snapshot,ctrl.signal);
             } else if((seg.route || scope(snapshot))==='gemini') {
               if(!apiKey)throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');
               const result=await rpc('gemini',{segment:request.segment,model:snapshot.model,apiKey,allowVoiceFallback:snapshot.allowVoiceFallback},ctrl.signal);
@@ -2626,8 +2650,8 @@ export async function setup(ctx) {
             resolvers.get(idx)({blob});
           } catch(error) {
             rejectFlight?.(error);
-            failures.add(idx);if(!skipped.has(idx) && !speakerExcluded(segments[idx].speaker))failed=true;
-            resolvers.get(idx)({error});
+            if(segments[idx].kind==='sfx' && !ctrl.signal.aborted && token===revision){warnFoley(error);resolvers.get(idx)({skip:true});}
+            else{failures.add(idx);if(!skipped.has(idx) && !speakerExcluded(segments[idx].speaker))failed=true;resolvers.get(idx)({error});}
           } finally {
             if(flightKey)inflight.delete(flightKey);
             activeWorkers--;
@@ -2662,22 +2686,27 @@ export async function setup(ctx) {
         ensureSlot(playIdx);pump();
         const outcome=await Promise.race([ready.get(playIdx),new Promise(resolve=>{wakePolicy=resolve;})]);wakePolicy=null;
         if(outcome.policy)continue;
-        if(outcome.error){await saveQueue;throw new Error(`${outcome.error.message} Completed passages were retained.${saveError?` Storage failed: ${saveError}`:''}`);}
         if(token!==revision || ctrl.signal.aborted)throw abortError();
+        if(outcome.skip){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
+        if(outcome.error){await saveQueue;throw new Error(`${outcome.error.message} Completed passages were retained.${saveError?` Storage failed: ${saveError}`:''}`);}
         const blob=outcome.blob;
         const seg=segments[playIdx];
         status(`Playing ${playIdx+1}/${totalExpected || segments.length}: ${seg.speaker}`);
         activePlayback={chatId:source.chatId,messageId:source.messageId,content:source.content,passage:seg.passageIndex ?? playIdx,chunk:seg.chunkIndex ?? 0};
         const offset=resumePending && source.resume.passage===activePlayback.passage && source.resume.chunk===activePlayback.chunk?source.resume.seconds:0;resumePending=false;
         const paused=pauseNext;pauseNext=false;
-        await playBlob(blob,ctrl.signal,seg.speaker,offset,snapshot.normalizeLoudness,paused);
+        try{await playBlob(blob,ctrl.signal,seg.speaker,offset,snapshot.normalizeLoudness,paused);}
+        catch(error){
+          if(seg.kind!=='sfx' || ctrl.signal.aborted || token!==revision)throw error;
+          warnFoley(error);delete passages[cacheKey(seg,snapshot)];blobs[playIdx]=undefined;foleyCache.delete(foleyKey(seg.sfx));await persist();
+        }
         const previous=playIdx;playIdx=jumpTo ?? playIdx+1;jumpTo=null;nextToSynthesize=playIdx<previous?Math.min(nextToSynthesize,playIdx):Math.max(nextToSynthesize,playIdx);
         activePlayback={...activePlayback,passage:segments[playIdx]?.passageIndex ?? (activePlayback.passage+1),chunk:segments[playIdx]?.chunkIndex ?? 0,complete:isDoneAdding && playIdx===segments.length};
         savePosition(0);activePlayback=null;pump();
       }
       await saveQueue;
       if(saveError)status(`Audio could not be saved: ${saveError}`,true);
-      return {blobs,segments};
+      return {blobs,segments,warnings:[...warnings]};
     })();
 
     // Observe failures immediately while the next planning section is pending.
@@ -2713,9 +2742,8 @@ export async function setup(ctx) {
     if(token!==revision || ctrl.signal.aborted)throw abortError();
     const validResume=resume?.messageId===planSource.messageId && resume.content===planSource.content && !resume.complete?resume:null;
     const segments=plan.segments.flatMap((segment,index)=>{
-      if(snapshot.muteNarrator && normalizeName(segment.speaker)==='narrator')return [];
       if(options.indices && !options.indices.includes(index))return [];
-      return ttsBatches([segment],snapshot).map((batch,chunkIndex)=>({...batch,passageIndex:index,chunkIndex}));
+      return playbackBatches([segment],snapshot).map((batch,chunkIndex)=>({...batch,passageIndex:index,chunkIndex}));
     });
     if(!segments.some(segment=>!speakerExcluded(segment.speaker))){controller=null;status('All characters have No voice enabled. Text and saved audio remain available.');updateTransport();return;}
     validateSettings(snapshot);
@@ -2733,13 +2761,13 @@ export async function setup(ctx) {
       const player=createStreamingPlayer(snapshot,source,cached,apiKey,ctrl,token);
       player.push(segments,segments.length);
       player.finish();
-      const {blobs}=await player.playbackPromise;
+      const {blobs,warnings}=await player.playbackPromise;
       {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
-      if(token===revision){renderMessages();status(storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.');}
+      if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
     } finally {ctrl.abort();void refreshCacheStatus();if(token===revision){activePlayback=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();controller=null;setBusy(false);}}
   }
   async function replayRecording(messageId) {
@@ -2755,7 +2783,7 @@ export async function setup(ctx) {
       let pauseNext=false;
       for(let index=0;index<recording.blobs.length;) {
         const blob=recording.blobs[index];
-        if(!blob || speakerExcluded(recording.segments[index].speaker)){index++;continue;}
+        if(!blob || speakerExcluded(recording.segments[index].speaker) || recording.segments[index].kind==='sfx' && config.enableSfx===false){index++;continue;}
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
         const segment=recording.segments[index];
@@ -2788,7 +2816,7 @@ export async function setup(ctx) {
       if(recording?.content===content && await recordingMatchesTranscript(recording,content) && !(resolvePlannerMode(config)==='llm' && needsVoiceSelection({segments:(recording.segments || []).flatMap(segment=>segment.turns || [segment])},casting(config)))){
         if(!valid())return;
         const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
-        const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).map(segment=>segment.text).join(' ');
+        const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).filter(segment=>segment.kind!=='sfx').map(segment=>segment.text).join(' ');
         if(canonical(recordedText)===canonical(recording.transcript || transcriptFromMessage(content)) && Array.from(recording.blobs || []).every(Boolean) && recording.blobs?.length===recording.segments?.length){await replayRecording(messageId);return;}
       }
       if(valid())await prepare(messageId,true);
@@ -3097,48 +3125,36 @@ export async function setup(ctx) {
   unsubs.push(()=>action.destroy());
 
   $('muteNarrator').addEventListener('change',()=>{config=capture();if(plan)renderPreview();});
+  $('enableSfx').addEventListener('change',()=>showFoleyStatus());
+  $('freesoundApiKey').addEventListener('input',()=>showFoleyStatus());
 
   const foleyCache = new Map();
   async function fetchFoleyAudio(sfx, snapshot, signal) {
+    signal.throwIfAborted();
     const query = sfx.query || 'thump';
     const filter = sfx.filter || 'duration:[0.1 TO 2.5]';
-    const cacheKey = `${query}|${filter}`;
-    if (foleyCache.has(cacheKey)) return foleyCache.get(cacheKey);
-
-    let previewUrl = null;
+    const key=foleyKey(sfx);
+    if(foleyCache.has(key))return foleyCache.get(key);
     const apiKey = snapshot.freesoundApiKey || $('freesoundApiKey')?.value?.trim() || '';
-    if (!apiKey) return null;
-    try {
-      const res = await rpc('freesound', { query, filter, apiKey }, signal, 10000);
-      const first = res?.results?.[0];
-      if (first?.previewUrl) previewUrl = first.previewUrl;
-    } catch {
-      try {
-        const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(query)}&filter=${encodeURIComponent(filter)}&fields=id,name,duration,previews&sort=score&page_size=3&token=${encodeURIComponent(apiKey)}`;
-        const r = await fetch(url, { headers: { 'Accept': 'application/json' }, signal });
-        const d = await r.json();
-        const first = (d?.results || []).find(it => it.previews);
-        if (first) {
-          previewUrl = first.previews['preview-hq-mp3'] || first.previews['preview-lq-mp3'] || Object.values(first.previews)[0];
-        }
-      } catch {}
-    }
-
-    if (!previewUrl) return null;
-    const audioResp = await fetch(previewUrl, { signal });
-    const blob = await audioResp.blob();
-    foleyCache.set(cacheKey, blob);
+    if(!apiKey)throw new Error('Configure a Freesound API key in Advanced Settings');
+    const result=await rpc('freesound',{query,filter,apiKey},signal,10000);
+    signal.throwIfAborted();
+    const previewUrl=result?.results?.find(sound=>sound.previewUrl)?.previewUrl;
+    if(!previewUrl)throw new Error(`No Freesound result for "${query}"`);
+    const audioResp=await fetch(previewUrl,{signal});
+    if(!audioResp.ok)throw new Error(`Freesound preview HTTP ${audioResp.status}`);
+    const mime=audioResp.headers.get('Content-Type') || '';
+    if(mime && !/^(audio\/|application\/octet-stream)/i.test(mime))throw new Error('Freesound preview did not return audio');
+    const blob=await audioResp.blob();
+    signal.throwIfAborted();
+    if(!blob.size)throw new Error('Freesound returned an empty preview');
+    foleyCache.set(key,blob);
+    if(foleyCache.size>64)foleyCache.delete(foleyCache.keys().next().value);
     return blob;
   }
 
   async function synthesizeSegment(seg,snapshot,apiKey,signal) {
-    if(seg.kind === 'sfx') {
-      const sfxBlob = await fetchFoleyAudio(seg.sfx || { query: seg.sound || 'thump' }, snapshot, signal);
-      if (sfxBlob) return sfxBlob;
-      // 0.2s silence fallback if network fails
-      const emptyWav = new Uint8Array([82,73,70,70,44,0,0,0,87,65,86,69,102,109,116,32,16,0,0,0,1,0,1,0,68,172,0,0,136,88,1,0,2,0,16,0,100,97,116,97,8,0,0,0,0,0,0,0,0,0,0,0]);
-      return new Blob([emptyWav], { type: 'audio/wav' });
-    }
+    if(seg.kind==='sfx')return fetchFoleyAudio(seg.sfx,snapshot,signal);
     if((seg.route || scope(snapshot))==='gemini') {
       if(!apiKey)throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');
       const result=await rpc('gemini',{segment:seg,model:snapshot.model,apiKey},signal);
@@ -3172,7 +3188,7 @@ export async function setup(ctx) {
 
 const paragraphAudioCache = new Map();
   function segmentCacheKey(seg, snap) {
-    if (seg.kind === 'sfx') return `sfx:${seg.sfx?.query || seg.text}`;
+    if(seg.kind==='sfx')return `sfx:${foleyKey(seg.sfx)}`;
     return `tts:${seg.route || scope(snap)}:${seg.voice || ''}:${seg.speaker || ''}:${seg.style || ''}:${seg.text}`;
   }
   function getCachedOrSynthesize(seg, snap, apiKey, sig) {
@@ -3239,35 +3255,7 @@ const paragraphAudioCache = new Map();
       segments = planResult?.segments || [];
     }
 
-    if (snap.enableSfx !== false) {
-      segments = attachFoleyCues(segments);
-      const exp = [];
-      for (const s of segments) {
-        if (s.sfx?.query) {
-          const trigger = s.sfx.trigger || '';
-          const idx = trigger ? s.text.toLowerCase().indexOf(trigger.toLowerCase()) : -1;
-          if (idx > 0) {
-            const head = s.text.slice(0, idx).trim();
-            const tail = s.text.slice(idx).trim();
-            if (head) exp.push({ ...s, text: head, sfx: undefined });
-            exp.push({ kind: 'sfx', speaker: 'SFX', voice: '', text: `[SFX: ${s.sfx.query}]`, route: 'sfx', sfx: s.sfx });
-            if (tail) exp.push({ ...s, text: tail, sfx: undefined });
-          } else {
-            exp.push({ kind: 'sfx', speaker: 'SFX', voice: '', text: `[SFX: ${s.sfx.query}]`, route: 'sfx', sfx: s.sfx });
-            exp.push({ ...s, sfx: undefined });
-          }
-        } else {
-          exp.push(s);
-        }
-      }
-      segments = exp;
-    }
-
-    if (filterMuted && snap.muteNarrator) {
-      segments = segments.filter(s => normalizeName(s.speaker) !== 'narrator');
-    }
-
-    return ttsBatches(segments, snap, snap.batchGemini);
+    return playbackBatches(attachFoleyCues(segments),snap,{filterMuted,batchGemini:snap.batchGemini});
   }
 
   const bridge = {
@@ -3291,6 +3279,7 @@ const paragraphAudioCache = new Map();
     },
     playParagraph: async ({ text, speaker, nextText, chatId: targetChat, messageId, paragraphIndex, signal, onStatus } = {}) => {
       if (disposed) return { played: 0 };
+      if(signal?.aborted)throw abortError();
       stop(false);
       const cap = capture();
       const castInfo = casting(cap);
@@ -3307,6 +3296,7 @@ const paragraphAudioCache = new Map();
       const onAbort = () => ctrl.abort();
       signal?.addEventListener('abort', onAbort, { once: true });
       const apiKey = $('key')?.value?.trim() || '';
+      let played=0;const warnings=new Set();showFoleyStatus();
 
       // Prefetch upcoming paragraph in background for 0ms transition latency
       if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
@@ -3330,19 +3320,23 @@ const paragraphAudioCache = new Map();
           }
 
           onStatus?.({ kind: 'loading', speaker: batch.speaker });
-          const blob = await getCachedOrSynthesize(batch, snapshot, apiKey, ctrl.signal);
-          if (ctrl.signal.aborted || signal?.aborted) throw abortError();
-
-          onStatus?.({ kind: 'playing', speaker: batch.speaker });
-          const vol = batch.kind === 'sfx' ? 0.45 : 1.0;
-          if(batch.kind==='sfx' && !mixerState.channels.SFX)mixerState.channels.SFX={volume:vol,muted:false};
-          await playBlob(blob,ctrl.signal,batch.speaker,0,snapshot.normalizeLoudness);
+          try{
+            const blob = await getCachedOrSynthesize(batch, snapshot, apiKey, ctrl.signal);
+            if (ctrl.signal.aborted || signal?.aborted) throw abortError();
+            onStatus?.({ kind: 'playing', speaker: batch.speaker });
+            await playBlob(blob,ctrl.signal,batch.speaker,0,snapshot.normalizeLoudness);
+            played++;
+          }catch(error){
+            if(batch.kind!=='sfx' || ctrl.signal.aborted || signal?.aborted)throw error;
+            paragraphAudioCache.delete(segmentCacheKey(batch,snapshot));foleyCache.delete(foleyKey(batch.sfx));
+            warnings.add(error.message);showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);
+          }
           if (i < batches.length - 1 && !ctrl.signal.aborted && !signal?.aborted) {
             await new Promise(r => setTimeout(r, 60));
           }
         }
-        onStatus?.({ kind: 'idle' });
-        return { played: batches.length };
+        onStatus?.({ kind: 'idle', ...(warnings.size?{message:foleyWarning([...warnings]).trim()}: {}) });
+        return { played, ...(warnings.size?{warnings:[...warnings]}: {}) };
       } finally {
         signal?.removeEventListener('abort', onAbort);
         if (controller === ctrl) controller = null;

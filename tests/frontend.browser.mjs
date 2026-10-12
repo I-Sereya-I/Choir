@@ -1219,7 +1219,7 @@ test('__CHOIR_API__ companion bridge exposes controls and handles paragraph play
 
 
 
-test('Foley SFX detects cues from text, queries Freesound and intersperses SFX playback', async () => {
+test('Cue companion keeps narration when no Freesound key is configured and reports skipped effects', async () => {
   const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
   const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB, Blob: globalThis.Blob, URL: globalThis.URL, __CHOIR_API__: globalThis.__CHOIR_API__};
   globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
@@ -1229,6 +1229,7 @@ test('Foley SFX detects cues from text, queries Freesound and intersperses SFX p
 
   const nativeRequests = [];
   const audiosPlayed = [];
+  let freesoundRequests=0;
   class FakeAudio {
     constructor(url) { this.url = url; this.paused = true; }
     play() {
@@ -1243,6 +1244,7 @@ test('Foley SFX detects cues from text, queries Freesound and intersperses SFX p
 
   globalThis.fetch = async (url, options = {}) => {
     if (url.includes('freesound.org') || url.includes('/freesound')) {
+      freesoundRequests++;
       return new Response(JSON.stringify({
         results: [
           {
@@ -1320,17 +1322,16 @@ test('Foley SFX detects cues from text, queries Freesound and intersperses SFX p
     // Verify SFX toggle is present and on by default
     assert.ok($('enableSfx'), 'enableSfx toggle should exist in settings UI');
     assert.equal($('enableSfx').checked, true);
+    assert.equal(globalThis.__CHOIR_API__.getConfig().enableSfx,true);
 
     // Plan text containing a sound cue: 'The page snapped under her thumb.'
     const textWithCue = 'The page snapped under her thumb.';
     const plan = globalThis.__CHOIR_API__.planParagraph(textWithCue);
     assert.ok(plan.segments.length > 0);
     const sfxSegment = plan.segments.find(s => s.sfx);
-    assert.ok(sfxSegment, 'Segment should detect foley cue');
-    assert.equal(sfxSegment.sfx.query, 'page turn');
-    assert.equal(sfxSegment.sfx.trigger, 'page snapped');
+    assert.equal(sfxSegment.kind,'sfx');assert.equal(sfxSegment.sfx.query,'page turn');
 
-    // Play paragraph: verify that TTS and SFX both play
+    // Missing-key effects are skipped without replacing them with cached silence.
     audiosPlayed.length = 0;
     nativeRequests.length = 0;
     const playRes = await globalThis.__CHOIR_API__.playParagraph({
@@ -1339,8 +1340,9 @@ test('Foley SFX detects cues from text, queries Freesound and intersperses SFX p
       paragraphIndex: 0
     });
 
-    assert.ok(playRes.played >= 2, `Should have played TTS and SFX parts (played: ${playRes.played})`);
-    assert.ok(audiosPlayed.length >= 2, 'Audio player should have received at least 2 blobs (SFX + Speech)');
+    assert.equal(playRes.played,2);assert.equal(audiosPlayed.length,2);assert.equal(freesoundRequests,0);
+    assert.equal(nativeRequests.length,2);assert.equal(nativeRequests.map(request=>request.text).join(' '),textWithCue);
+    assert.match(playRes.warnings[0],/Freesound API key/);assert.equal($('sfxStatus').hidden,false);
 
     cleanup?.();
   } finally {

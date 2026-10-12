@@ -29,6 +29,13 @@ test('Gemini batching includes delivery metadata in its safe input budget',()=>{
   assert.throws(()=>geminiRequest({text:'你'.repeat(2000),voice:'Kore',style:'Warm'},'gemini-3.8-flash-tts'),/safe input budget/);
 });
 
+test('consecutive Foley cues keep separate audio parts when narration is muted',()=>{
+  const cues=['page turn','door creak','page turn'].map(query=>({kind:'sfx',speaker:'SFX',voice:'',route:'sfx',text:`[SFX: ${query}]`,sfx:{query}}));
+  const batches=speechBatches(cues,1800,'native:a',false);
+  assert.deepEqual(batches.map(batch=>batch.sfx.query),['page turn','door creak','page turn']);
+  assert.deepEqual(batches.map(batch=>batch.text),cues.map(cue=>cue.text));
+});
+
 test('Gemini batches preserve turn metadata and split on third speaker or provider change',()=>{
   const turns=['Narrator','Alice','Narrator','Bob','Alice'].map((speaker,i)=>({speaker,voice:speaker==='Narrator'?'Charon':speaker==='Alice'?'Kore':'Puck',text:'Turn '+i,style:'Soft',route:'gemini'}));
   const batches=speechBatches(turns,1800,'gemini');
