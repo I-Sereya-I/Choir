@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 const require=createRequire(process.env.CHOIR_BROWSER_MODULES?path.join(process.env.CHOIR_BROWSER_MODULES,'package.json'):import.meta.url);
 const {chromium}=require('playwright');
 const errors=[];
-const html=`<!doctype html><html><head><meta charset="utf-8"><title>Choir integration fixture</title></head><body style="margin:0;background:#141923;color:#e5e9f0;font:16px system-ui;color-scheme:dark"><div style="display:grid;grid-template-columns:1fr 680px;gap:24px;padding:32px"><article><h1>Lumiverse · Choir</h1><p>The hall fell silent.</p><p>“Welcome.”</p><p>A new story begins.</p><nav aria-label="Chat toolbar"><span id="chat-actions"></span></nav><footer></footer></article><main style="border:1px solid #ffffff30;border-radius:16px"></main></div><script type="module">
+const html=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Choir integration fixture</title></head><body style="margin:0;background:#141923;color:#e5e9f0;font:16px system-ui;color-scheme:dark"><div style="display:grid;grid-template-columns:1fr 680px;gap:24px;padding:32px"><article><h1>Lumiverse · Choir</h1><p>The hall fell silent.</p><p>“Welcome.”</p><p>A new story begins.</p><nav aria-label="Chat toolbar"><span id="chat-actions"></span></nav><footer></footer></article><main style="border:1px solid #ffffff30;border-radius:16px"></main></div><script type="module">
 import {setup} from '/dist/frontend.js';import {validatePlan,speechSourceUnits} from '/src/core.js';
 const store=new Map(),events=new Map(),root=document.querySelector('main'),footer=document.querySelector('footer');let backend;window.calls=[];window.plans=0;window.gains=[];window.audios=[];window.foleySearches=0;window.foleyDownloads=0;const RealAudio=window.Audio;window.Audio=function(url){const audio=new RealAudio(url);window.audios.push(audio);return audio;};
 const createGain=AudioContext.prototype.createGain;AudioContext.prototype.createGain=function(){const gain=createGain.call(this);window.gains.push(gain);return gain;};
@@ -114,7 +114,7 @@ try{
   await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
   await page.locator('[data-et="showAutoPlanAction"]').uncheck();assert.equal(await chatShortcut.count(),0);
   const master=page.getByRole('slider',{name:'Master volume',exact:true});await master.press('Home');await master.press('ArrowRight');
-  assert.equal(await master.getAttribute('aria-valuetext'),'1 percent');assert.equal(await master.locator('..').locator('.cm-percent').innerText(),'1%');await master.press('End');
+  assert.equal(await master.getAttribute('aria-valuetext'),'1 percent');assert.equal(await page.locator('.cm-master .cm-percent').innerText(),'1%');await master.press('End');
   await planLatest.click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   assert.equal(await page.evaluate(()=>window.audios.length),0);assert.deepEqual(await page.locator('.cm-channel[data-kind="voice"]').evaluateAll(nodes=>nodes.map(node=>node.dataset.speaker)),['Narrator','Mira']);
   const planBounds=await planLatest.boundingBox(),previousBounds=await page.getByRole('button',{name:'Previous spoken block',exact:true}).boundingBox();assert.ok(planBounds.x+planBounds.width<=previousBounds.x);
@@ -148,7 +148,7 @@ try{
   assert.equal(await page.locator('main [data-choir-action]').count(),0);assert.equal(await page.locator('footer [aria-label="Next spoken block"]').count(),0);assert.equal(await page.locator('footer input[type="range"]').count(),0);assert.equal(await page.locator('[aria-label="Next spoken block"]').count(),1);
   await mixer.getByRole('button',{name:'Narrator silent',exact:true}).click();assert.equal(await mixer.getByRole('button',{name:'Narrator silent',exact:true}).getAttribute('aria-pressed'),'true');
   assert.equal(await page.evaluate(()=>document.activeElement.getAttribute('aria-label')),'Narrator silent');
-  await mixer.getByRole('button',{name:'Mira no voice',exact:true}).click();assert.equal(await mixer.getByRole('button',{name:'Mira no voice',exact:true}).innerText(),'✓ No voice');
+  await mixer.getByRole('button',{name:'Mira no voice',exact:true}).click();assert.equal(await mixer.getByRole('button',{name:'Mira no voice',exact:true}).getAttribute('aria-pressed'),'true');assert.equal(await mixer.getByRole('button',{name:'Mira no voice',exact:true}).locator('svg').count(),1);
   await mixer.getByRole('slider',{name:'Narrator volume',exact:true}).press('Home');await mixer.getByRole('slider',{name:'Narrator volume',exact:true}).press('ArrowRight');
   assert.equal(await mixer.locator('[data-speaker="Narrator"] .cm-percent').innerText(),'1%');await mixer.getByRole('slider',{name:'Narrator volume',exact:true}).press('End');
   await mixer.locator('.cm-header').click({position:{x:150,y:12}});
@@ -244,6 +244,20 @@ try{
   await page.evaluate(()=>window.cleanup());assert.equal(await page.locator('[data-choir-mixer]').count(),0);
   const touch=await browser.newPage({viewport:{width:320,height:640},isMobile:true,hasTouch:true});touch.on('pageerror',error=>errors.push(error.message));await touch.goto(`http://127.0.0.1:${server.address().port}`);await touch.waitForFunction(()=>window.ready);await touch.getByRole('button',{name:'Open Choir voice mixer',exact:true}).tap();
   const targets=await touch.locator('.cm-transport button').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {x:rect.x,width:rect.width,height:rect.height};}));assert.equal(targets.length,5);assert.ok(targets.every((rect,index)=>rect.width>=44 && rect.height>=44 && (!index || rect.x>=targets[index-1].x+targets[index-1].width)));
+  const touchMixer=touch.locator('[data-choir-mixer]');assert.equal(await touch.getByRole('slider',{name:'Master volume',exact:true}).isVisible(),false);
+  const masterPercent=touch.getByRole('spinbutton',{name:'Master volume percent',exact:true});assert.equal(await masterPercent.getAttribute('inputmode'),'numeric');
+  await touch.getByRole('button',{name:'Decrease Master volume',exact:true}).tap();assert.equal(await masterPercent.inputValue(),'95');await masterPercent.fill('37');assert.equal(await masterPercent.inputValue(),'37');
+  await touch.waitForFunction(()=>window.fixtureStore.get('ui:mixer').master===0.37);
+  await touch.getByRole('button',{name:'Plan latest reply',exact:true}).tap();await touch.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
+  await touch.getByRole('button',{name:'Channel levels',exact:true}).tap();await touch.getByRole('spinbutton',{name:'Narrator volume percent',exact:true}).fill('25');
+  await touch.getByRole('button',{name:'Narrator silent',exact:true}).tap();assert.equal(await touch.getByRole('button',{name:'Narrator silent',exact:true}).getAttribute('aria-pressed'),'true');assert.equal(await touch.getByRole('spinbutton',{name:'Narrator volume percent',exact:true}).inputValue(),'25');
+  await touch.getByRole('button',{name:'Mira no voice',exact:true}).tap();assert.equal(await touch.getByRole('button',{name:'Mira no voice',exact:true}).getAttribute('aria-pressed'),'true');
+  await touch.getByRole('spinbutton',{name:'SFX volume percent',exact:true}).fill('43');await touch.getByRole('spinbutton',{name:'Ambience volume percent',exact:true}).fill('32');
+  await touch.waitForFunction(()=>window.fixtureStore.get('ui:mixer').sfx===0.43 && window.fixtureStore.get('ui:mixer').ambience===0.32);
+  const volumeTargets=await touchMixer.locator('.cm-volume-steps button,.cm-toggle').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {width:rect.width,height:rect.height};}));assert.ok(volumeTargets.every(rect=>rect.width>=44 && rect.height>=44));
+  assert.equal(await touchMixer.locator('.cm-channel-controls').evaluateAll(nodes=>nodes.every(node=>node.scrollWidth<=node.clientWidth+1)),true);
+  await touch.evaluate(()=>document.activeElement.blur());await touchMixer.locator('.cm-channels').evaluate(node=>node.scrollTop=0);
+  if(process.env.CHOIR_TOUCH_MIXER_SCREENSHOT)await touchMixer.screenshot({path:process.env.CHOIR_TOUCH_MIXER_SCREENSHOT});
   assert.equal(await touch.locator('[data-choir-mixer]').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);await touch.evaluate(()=>window.cleanup());await touch.close();
   assert.deepEqual(errors,[]);console.log('PASS: Chrome captured default setup and application, Fish voice ID entry and preview, Plan latest without audio, main Play latest, current-plan voice filtering, SFX switch synced with drawer and Cue, paused SFX skipping, queued Auto-plan/Auto-play, keyboard controls, narrow and touch layouts, long voice lists, saved preferences, transport, seeking, Freesound cache, loudness, teardown.');
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}
