@@ -284,10 +284,15 @@ function restoreAttribution(saved, transcript, config) {
 }
 
 function passageKey(segment, settings, connection, parameters={}) {
+  const effectiveParameters={...connection?.default_parameters,...parameters};
+  // This preference changes the transport, not the generated audio.
+  delete effectiveParameters.use_streaming_endpoint;
+  const canonical=value=>Array.isArray(value)?value.map(canonical):value && typeof value==='object'
+    ? Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
   return JSON.stringify([2,segment.text,segment.voice,segment.route || settings.defaultRoute,
     segment.style || '',connection?.model || settings.model,connection?.provider || '',
     connection?.api_url || connection?.base_url || '',
-    settings.allowVoiceFallback===true,parameters]);
+    settings.allowVoiceFallback===true,canonical(effectiveParameters)]);
 }
 
 function mixerVolume(master, speaker, channels) {
@@ -3589,26 +3594,21 @@ export async function setup(ctx) {
 
   async function synthesizeSegment(seg,snapshot,apiKey,signal) {
     if(seg.kind)return fetchFoleyAudio(seg,snapshot,signal);
+    const request=synthesisSettings(seg,snapshot);
     if((seg.route || scope(snapshot))==='gemini') {
       if(!apiKey)throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');
-      const result=await rpc('gemini',{segment:seg,model:snapshot.model,apiKey},signal);
+      const result=await rpc('gemini',{segment:request.segment,model:snapshot.model,apiKey,allowVoiceFallback:snapshot.allowVoiceFallback},signal);
       const audio=audioBytes(result.base64,result.mimeType);
       return new Blob([audio.data],{type:audio.mimeType});
     } else {
       const route=seg.route || scope(snapshot);
       const connection=nativeConnections.find(c=>`native:${c.id}`===route);
       if(!connection)throw new Error(`TTS connection for ${seg.speaker} is no longer available. Choose another connection and plan again.`);
-      const parameters={};
-      const supported=nativeProviders.find(provider=>provider.id===connection.provider)?.capabilities?.parameters || {};
-      const styleParam=route===scope(snapshot)
-        ? (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:undefined)
-        : (snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:['instructions','instruct','prompt'].find(p=>supported[p]));
-      if(snapshot.useStyle && styleParam && seg.style)parameters[styleParam]=seg.style;
       const isFish=detectProvider(route)==='fish_audio';
       const textToSend=isFish && snapshot.useStyle && seg.style && !seg.text.startsWith('[')
         ? (seg.style.trim().startsWith('[') ? `${seg.style.trim()} ${seg.text}` : `[${seg.style.trim()}] ${seg.text}`)
         : seg.text;
-      return await nativeSpeech(connection,{voice:seg.voice,text:textToSend,parameters},signal,seg.speaker);
+      return await nativeSpeech(connection,{voice:seg.voice,text:textToSend,parameters:request.parameters},signal,seg.speaker);
     }
   }
 
@@ -3616,19 +3616,20 @@ export async function setup(ctx) {
 
 const paragraphAudioCache = new Map();
   function segmentCacheKey(seg, snap) {
-    if(seg.kind)return `${seg.kind}:${foleyKey(seg[seg.kind])}`;
-    return `tts:${seg.route || scope(snap)}:${seg.voice || ''}:${seg.speaker || ''}:${seg.style || ''}:${seg.text}`;
+    return cacheKey(seg,snap);
   }
   function getCachedOrSynthesize(seg, snap, apiKey, sig) {
     const k = segmentCacheKey(seg, snap);
-    if (paragraphAudioCache.has(k)) {
-      return paragraphAudioCache.get(k);
-    }
-    const prom = synthesizeSegment(seg, snap, apiKey, sig).catch(err => {
-      paragraphAudioCache.delete(k);
+    const cached=paragraphAudioCache.get(k);
+    if(cached && !cached.signal?.aborted)return cached.promise;
+    const entry={signal:sig};
+    const prom = synthesizeSegment(seg, snap, apiKey, sig).then(blob=>{
+      sig?.throwIfAborted();entry.signal=null;return blob;
+    }).catch(err => {
+      if(paragraphAudioCache.get(k)===entry)paragraphAudioCache.delete(k);
       throw err;
     });
-    paragraphAudioCache.set(k, prom);
+    entry.promise=prom;paragraphAudioCache.set(k, entry);
     if (paragraphAudioCache.size > 80) {
       const oldest = paragraphAudioCache.keys().next().value;
       paragraphAudioCache.delete(oldest);
@@ -3728,37 +3729,37 @@ const paragraphAudioCache = new Map();
       const castInfo = casting(cap);
       const snapshot = { ...structuredClone(cap), fixed: castInfo.fixed, voices: castInfo.voices, npcs: castInfo.npcs, defaultRoute: castInfo.defaultRoute };
 
-      let cueWarning='';
-      try{await loadParagraphCues(text,snapshot,speaker,signal);}
-      catch(error){if(signal?.aborted){if(token===revision)stopBeds();throw error;}cueWarning=error.message;}
-      if(disposed)return { played: 0 };
-      mixerPlaybackSegments=planAndBatchParagraph(text,snapshot,false,speaker);renderMixer();
-      const batches = planAndBatchParagraph(text,snapshot,true,speaker).filter(batch=>!playbackExcluded(batch));
-      if (!batches.length) {
-        onStatus?.({ kind: 'idle', message: snapshot.muteNarrator ? 'Narrator muted' : 'No speech' });
-        return { played: 0 };
-      }
-
       const ctrl = new AbortController();
       controller = ctrl;
       updateTransport();
       const onAbort = () => ctrl.abort();
       signal?.addEventListener('abort', onAbort, { once: true });
-      const apiKey = $('key')?.value?.trim() || '';
-      let played=0;const warnings=new Set(cueWarning?[cueWarning]:[]);showFoleyStatus(cueWarning?`SFX skipped: ${cueWarning}. Speech continues.`:missingFoleyKey(snapshot),Boolean(cueWarning));
-      const warnFoley=error=>{warnings.add(error.message);showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
-
-      // Prefetch upcoming paragraph in background for 0ms transition latency
-      if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
-        void loadParagraphCues(nextText, snapshot, '', ctrl.signal).catch(() => {}).then(() => {
-          const first = planAndBatchParagraph(nextText, snapshot, true).find(batch => batch.kind !== 'ambience');
-          if (!ctrl.signal.aborted && first && !playbackExcluded(first)) {
-            getCachedOrSynthesize(first, snapshot, apiKey, ctrl.signal).catch(() => {});
-          }
-        }).catch(() => {});
-      }
-
       try {
+        let cueWarning='';
+        try{await loadParagraphCues(text,snapshot,speaker,ctrl.signal);}
+        catch(error){if(ctrl.signal.aborted || token!==revision)throw abortError();cueWarning=error.message;}
+        if(disposed || token!==revision || ctrl.signal.aborted || signal?.aborted)throw abortError();
+        mixerPlaybackSegments=planAndBatchParagraph(text,snapshot,false,speaker);renderMixer();
+        const batches = planAndBatchParagraph(text,snapshot,true,speaker).filter(batch=>!playbackExcluded(batch));
+        if (!batches.length) {
+          onStatus?.({ kind: 'idle', message: snapshot.muteNarrator ? 'Narrator muted' : 'No speech' });
+          return { played: 0 };
+        }
+
+        const apiKey = $('key')?.value?.trim() || '';
+        let played=0;const warnings=new Set(cueWarning?[cueWarning]:[]);showFoleyStatus(cueWarning?`SFX skipped: ${cueWarning}. Speech continues.`:missingFoleyKey(snapshot),Boolean(cueWarning));
+        const warnFoley=error=>{warnings.add(error.message);showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
+
+        // Prefetch upcoming paragraph in background for 0ms transition latency
+        if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
+          void loadParagraphCues(nextText, snapshot, '', ctrl.signal).catch(() => {}).then(() => {
+            const first = planAndBatchParagraph(nextText, snapshot, true).find(batch => batch.kind !== 'ambience');
+            if (!ctrl.signal.aborted && first && !playbackExcluded(first)) {
+              getCachedOrSynthesize(first, snapshot, apiKey, ctrl.signal).catch(() => {});
+            }
+          }).catch(() => {});
+        }
+
         for (let i = 0; i < batches.length; i++) {
           if (ctrl.signal.aborted || signal?.aborted) throw abortError();
           const batch = batches[i];

@@ -33,6 +33,16 @@ test('cache identity changes only with synthesis inputs, never mixer controls or
   assert.notEqual(passageKey(segment,settings,connection,{accent:'French'}),key);
 });
 
+test('audio cache tracks effective connection defaults while ignoring transport preferences',()=>{
+  const segment={speaker:'Narrator',voice:'n',route:'native:a',text:'Hello.',style:''},settings={model:'unused'};
+  const connection={model:'tts-1',provider:'openai_tts',default_parameters:{speed:1,output_format:'mp3'}};
+  const key=passageKey(segment,settings,connection);
+  assert.notEqual(passageKey(segment,settings,{...connection,default_parameters:{speed:1.2,output_format:'mp3'}}),key);
+  assert.notEqual(passageKey(segment,settings,{...connection,default_parameters:{speed:1,output_format:'wav'}}),key);
+  assert.equal(passageKey(segment,settings,{...connection,default_parameters:{output_format:'mp3',speed:1,use_streaming_endpoint:true}}),key);
+  assert.equal(passageKey(segment,settings,connection,{speed:1.2}),passageKey(segment,settings,{...connection,default_parameters:{speed:1.2,output_format:'mp3'}},{speed:1.2}));
+});
+
 test('mixer handles mute, multiple solos, clamping and speaker names that match object properties',()=>{
   const channels={Mira:{volume:0.4,solo:true},Guard:{volume:1},Narrator:{volume:0.5,solo:true,mute:true}};
   assert.equal(mixerVolume(0.5,'Mira',channels),0.2);assert.equal(mixerVolume(1,'Guard',channels),0);assert.equal(mixerVolume(1,'Narrator',channels),0);
