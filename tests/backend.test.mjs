@@ -696,6 +696,19 @@ test('Jev with spindle.decisions passes userId to evaluate for operator-scoped h
   assert.equal(result.message.result.segments[0].speaker,'Alice');
 });
 
+test('Jev with spindle.decisions asks about each line in place and sends the whole transcript',async()=>{
+  let evalInput;
+  const decisions={evaluate:async input=>{evalInput=input;return {answers:{speaker_0:{choice:'Alice'},speaker_1:{choice:'Bob'}}};}};
+  const h=await harness(null,null,null,null,null,decisions);
+  const transcript=`${'The room was quiet. '.repeat(250)}Alice looked up. "Robots?" Bob shrugged. "Robots."`;
+  h.send('planJev',{transcript,config:{...config,voices:[{id:'Charon'},{id:'Kore'}],fixed:[{speaker:'Narrator',voice:'Charon',style:''},{speaker:'Alice',voice:'Kore',style:''},{speaker:'Bob',voice:'Charon',style:''}],useStyle:false}});
+  const result=await h.result();
+  assert.equal(evalInput.state.transcript,transcript);
+  assert.match(evalInput.questions.speaker_0.instructions,/Alice looked up\. \[\["Robots\?"\]\] Bob shrugged/);
+  assert.match(evalInput.questions.speaker_1.instructions,/Bob shrugged\. \[\["Robots\."\]\]/);
+  assert.deepEqual([...result.message.result.segments.filter(s=>s.speaker!=='Narrator').map(s=>s.speaker)],['Alice','Bob']);
+});
+
 test('testPlanner with Jev and spindle.decisions passes userId to evaluate',async()=>{
   let evalInput;
   const decisions={
