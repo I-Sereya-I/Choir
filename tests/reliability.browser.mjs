@@ -1262,3 +1262,17 @@ test('several LLM sound effects in one passage play in story order before their 
   assert.deepEqual(h.synthesis.map(request=>request.text),['The','page snapped as the','glass shattered on the floor.']);
  }finally{await h.close();}
 });
+
+test('edits that only add images or trackers keep the plan, playback and saved audio; spoken edits still replan',async()=>{
+  const h=await harness();try{
+    await h.plan();h.state.delay=50;h.$('play').click();await until(()=>h.synthesis.length>0);
+    h.message.content='At dawn. ![scene](https://img.test/a.png) "Hello." <img src="b.png">\n\n"Wait." The gate closed.\n<div class="tracker">Time: 06:00 | Mood: calm</div>';
+    h.events.get('MESSAGE_EDITED')({messageId:'message-a',chatId:'chat-a'});await tick();
+    assert.equal(h.state.aborted,0);assert.equal(h.$('preview').querySelectorAll('.et-card').length,4);
+    await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.synthesis.length,4);
+    h.state.delay=0;await h.reload();await h.play();
+    assert.equal(h.synthesis.length,4);assert.equal(h.requests.filter(r=>r.action==='plan').length,1);
+    h.message.content='At dawn. "Greetings." "Wait." The gate closed.';h.events.get('MESSAGE_EDITED')({messageId:'message-a',chatId:'chat-a'});
+    assert.equal(h.$('preview').children.length,0);
+  }finally{await h.close();}
+});
