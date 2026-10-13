@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {randomUuid,sha256Hex} from '../src/core.js';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
 
 test('HTTP UUID fallback uses secure random bytes, preserves v4 bits and generates distinct IDs',()=>{
   const httpCrypto={getRandomValues:globalThis.crypto.getRandomValues.bind(globalThis.crypto)};
@@ -515,6 +515,7 @@ test('music entries are asked for only when enabled, keep known feels and genres
   const {music}=parseSoundCues(JSON.stringify({cues:[],music:[
     {segment:0,trigger:'The forest',feels:['eerie','Spooky','Dark','Mysterious','Intense'],genres:['soundtrack','Horror','Jazz'],keywords:[' harp ','forest','','x','y','z','w']},
     {segment:0,trigger:'Then the sun',stop:true},
+    {segment:0,feels:['Spooky'],genres:['Trap']},
     {segment:0,feels:['Spooky'],genres:['Trap'],keywords:['drums']},
     {segment:0,trigger:'Then the sun',feels:['Uplifting']},
     {segment:0,trigger:'rose',genres:['Classical']}
@@ -522,12 +523,20 @@ test('music entries are asked for only when enabled, keep known feels and genres
   assert.deepEqual(music,[
     {segment:0,feels:['Eerie','Dark','Mysterious'],genres:['Soundtrack','Horror'],keywords:['harp','forest','x','y','z'],trigger:'The forest'},
     {segment:0,stop:true,trigger:'Then the sun'},
-    {segment:0,feels:['Uplifting'],genres:[],keywords:[],trigger:'Then the sun'}
+    {segment:0,feels:[],genres:[],keywords:['drums'],trigger:''}
   ]);
   const config={voices:[{id:'n'}],fixed:[{speaker:'Narrator',voice:'n',style:''}],npcs:[]};
   const plan=validatePlan({segments:applySoundCues(segments.map(segment=>({...segment,voice:'n'})),{music})},segments[0].text,config);
   assert.deepEqual(plan.segments[0].music,music.map(({segment,...entry})=>entry));
   assert.deepEqual(restoreAttribution(structuredClone(attributionPlan(plan,config)),segments[0].text,config).segments[0].music,plan.segments[0].music);
+});
+
+test('cue triggers match across typographic and ASCII quotes and keep the story offset',()=>{
+  const text='She whispered “Don’t go” and the door creaked.';
+  assert.equal(cueOffset(text,'"Don\'t go"'),text.indexOf('“'));
+  assert.equal(cueOffset('He said "it\'s late" twice.','“it’s late”'),8);
+  const {cues}=parseSoundCues(JSON.stringify({cues:[{segment:0,trigger:'"Don\'t go" and the door',query:'door creak'}]}),[{speaker:'Narrator',text}]);
+  assert.equal(cues[0].trigger,'"Don\'t go" and the door');
 });
 
 test('rankMusic scores feels, genre, keywords and full-length tracks',()=>{

@@ -100,9 +100,12 @@ async function harness(mixerPreferences,mobile=false){
           if(state.sfxError){backend({namespace:'choir',id:request.id,error:state.sfxError});return;}
           const anchored=entries=>request.input.segments.flatMap((segment,index)=>Object.entries(entries).filter(([trigger])=>segment.text.includes(trigger)).map(([trigger,query])=>({segment:index,trigger,...(query?{query}:{stop:true})})));
           result={cues:anchored({'page snapped':'page turn','glass shattered':'glass shatter'}),ambience:anchored({'Rain drummed':'rain','The tavern':'tavern crowd','Silence fell':''}),
-            music:request.input.music?anchored({'Night fell':'music'}).map(({query,...entry})=>({...entry,feels:['Dark'],genres:['Soundtrack'],keywords:['organ']})):[]};
+            music:request.input.music?anchored({'Night fell':'Dark','The storm broke':'Intense'}).map(({query,...entry})=>({...entry,feels:[query],genres:['Soundtrack'],keywords:['organ']})):[]};
         }
-        else if(request.action==='music')result={title:'Crypto',url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Crypto.mp3'};
+        else if(request.action==='music'){
+          const title=state.musicTitle || 'Crypto',reply=()=>backend?.({namespace:'choir',id:request.id,result:{title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`}});
+          if(state.holdMusic){state.releaseMusic=reply;return;}result={title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`};
+        }
         else if(request.action==='gemini')result={base64:'AAABAA==',mimeType:'audio/L16;rate=24000'};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
         else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
@@ -735,8 +738,10 @@ test('a music marker streams the chosen incompetech track under speech with its 
   assert.ok(Math.abs(music.volume-0.4)<0.000001);assert.equal(voices(h)[0].volume,1);await until(()=>h.store.get('ui:mixer')?.music===2);
   h.$('pause').click();assert.equal(music.paused,true);h.$('pause').click();assert.equal(music.paused,false);
   h.$('stop').click();assert.equal(music.paused,true);assert.equal(h.$('musicCredit').hidden,true);assert.equal(music.src,undefined);assert.equal(music.loads,1);
+  const musicRequests=()=>h.requests.filter(request=>request.action==='music').length;
   h.state.blockAudio=false;h.state.bedPlayError=true;await h.play();assert.match(h.$('sfxStatus').textContent,/Music skipped \(Dark, Soundtrack\): Browser blocked background audio/);
-  h.state.bedPlayError=false;await h.play();assert.equal(h.requests.filter(request=>request.action==='music').length,2);assert.equal(beds(h).at(-1).src,'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Crypto.mp3');
+  h.state.bedPlayError=false;h.state.bedDecodeError=true;await h.play();assert.equal(musicRequests(),1);await until(()=>/Music skipped \(Dark, Soundtrack\): Browser could not play the incompetech track/.test(h.$('sfxStatus').textContent));
+  h.state.bedDecodeError=false;await h.play();assert.equal(musicRequests(),2);assert.equal(beds(h).at(-1).src,'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Crypto.mp3');
  }finally{await h.close();}
 });
 
@@ -756,6 +761,19 @@ test('Cue carries the playing music into later paragraphs, announces it and one 
    assert.deepEqual(['enableSfx','enableAmbience','enableMusic'].map(name=>h.$(name).checked),[false,false,false]);
    await until(()=>['enableSfx','enableAmbience','enableMusic'].every(name=>h.store.get('chat:chat-a')[name]===false));
    bridge.setSoundEnabled(true);await until(()=>['enableSfx','enableAmbience','enableMusic'].every(name=>h.store.get('chat:chat-a')[name]===true));assert.equal(h.$('enableMusic').checked,true);
+  }finally{delete globalThis.dispatchEvent;}
+ }finally{await h.close();}
+});
+
+test('a loading replacement track keeps the old one credited and announced until it starts',async()=>{
+ const h=await harness();try{
+  const events=[],target=new EventTarget();target.addEventListener('choir-music-v1',event=>events.push(event.detail?.title ?? null));globalThis.dispatchEvent=event=>target.dispatchEvent(event);
+  try{
+   await toggle(h,'enableMusic',true);const bridge=globalThis.__CHOIR_API__;
+   await bridge.playParagraph({text:'Night fell over the road.'});await until(()=>bridge.getMusic()?.title==='Crypto');
+   h.state.holdMusic=true;h.state.musicTitle='Storm';await bridge.playParagraph({text:'The storm broke at once.'});await until(()=>h.state.releaseMusic);
+   assert.equal(bridge.getMusic().title,'Crypto');assert.match(h.$('musicCredit').textContent,/^"Crypto"/);assert.deepEqual(events,['Crypto']);
+   h.state.releaseMusic();await until(()=>bridge.getMusic()?.title==='Storm');assert.match(h.$('musicCredit').textContent,/^"Storm"/);assert.deepEqual(events,['Crypto','Storm']);
   }finally{delete globalThis.dispatchEvent;}
  }finally{await h.close();}
 });
@@ -799,6 +817,8 @@ test('ambience playback and decode failures stay visible, keep speech running an
    h.state.bedPlayError=false;h.state.bedDecodeError=false;h.state.blockAudio=false;
    assert.equal((await bridge.playParagraph({text})).played,1);assert.equal((await pending).error?.name,'AbortError');
    await until(()=>beds(h).length===2 && !beds(h)[1].paused);assert.equal(h.$('sfxStatus').hidden,true);
+   // Only a file that failed to decode is fetched again; a blocked play reuses the cached bed.
+   assert.equal(h.state.bedFetches.length,failure==='decode'?2:1);
   }finally{await h.close();await pending;}
  }
 });
