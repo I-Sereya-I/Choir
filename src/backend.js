@@ -302,16 +302,20 @@ function textGenerationOptions(connection,parameters){
 async function chooseSound(choices, input, userId, signal, state, instructions) {
   const ids = choices.map((_, i) => `s${i}`);
   const questions = { q0: { type: 'choice', instructions, criteria: Object.fromEntries(choices.map((choice, i) => [ids[i], choice])) } };
-  const decide = async () => {
+  const decide = async signal => {
     const answers = typeof spindle.decisions?.evaluate === 'function'
       ? (await spindle.decisions.evaluate({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal })).answers
       : input.jevApiKey?.trim() ? await jevDecision({ apiKey: input.jevApiKey, endpoint: input.jevEndpoint, state, questions, signal }) : {};
     return Math.max(0, ids.indexOf(answers?.q0?.choice));
   };
-  let wait;
-  const pick = await Promise.race([decide(), new Promise(resolve => { wait = setTimeout(() => resolve(0), 5000); })]).catch(() => 0);
-  clearTimeout(wait);
-  return pick;
+  // The choice is cancelled at 5 s or with the request, so a late answer never keeps spending.
+  const decision = new AbortController(), stop = () => decision.abort();
+  const stopped = new Promise(resolve => decision.signal.addEventListener('abort', () => resolve(0), { once: true }));
+  signal.addEventListener('abort', stop, { once: true });
+  const wait = setTimeout(stop, 5000);
+  try { return await Promise.race([decide(decision.signal), stopped]); }
+  catch { return 0; }
+  finally { clearTimeout(wait); signal.removeEventListener('abort', stop); }
 }
 
 async function getJson(url, headers, signal, service) {

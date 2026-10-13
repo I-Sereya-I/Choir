@@ -741,8 +741,12 @@ export function fastClassifyPlan(transcript, config) {
   }
 }
 
+// Stories and LLM replies mix typographic and ASCII quotes; one-for-one replacement keeps offsets valid.
+const plainQuotes = text => text.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"');
+
 export function cueOffset(text, trigger) {
   if (!trigger) return 0;
+  text = plainQuotes(text); trigger = plainQuotes(trigger);
   const exact = text.indexOf(trigger);
   return exact >= 0 ? exact : text.toLowerCase().indexOf(trigger.toLowerCase());
 }
@@ -763,7 +767,7 @@ function segmentSoundCues(value, text, kind='sfx') {
     let sound = {stop};
     if (!stop && kind === 'music') {
       sound = {feels:musicTerms(cue?.feels, MUSIC_FEELS, 3), genres:musicTerms(cue?.genres, Object.values(MUSIC_GENRES), 2), keywords:musicTerms(cue?.keywords, null, 5)};
-      if (!sound.feels.length && !sound.genres.length) return [];
+      if (!sound.feels.length && !sound.genres.length && !sound.keywords.length) return [];
     } else if (!stop) {
       const query = typeof cue?.query === 'string' ? cue.query.trim().replace(/\s+/g, ' ') : '';
       if (!query) return [];

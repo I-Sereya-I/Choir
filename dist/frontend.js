@@ -742,8 +742,12 @@ function fastClassifyPlan(transcript, config) {
   }
 }
 
+// Stories and LLM replies mix typographic and ASCII quotes; one-for-one replacement keeps offsets valid.
+const plainQuotes = text => text.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"');
+
 function cueOffset(text, trigger) {
   if (!trigger) return 0;
+  text = plainQuotes(text); trigger = plainQuotes(trigger);
   const exact = text.indexOf(trigger);
   return exact >= 0 ? exact : text.toLowerCase().indexOf(trigger.toLowerCase());
 }
@@ -764,7 +768,7 @@ function segmentSoundCues(value, text, kind='sfx') {
     let sound = {stop};
     if (!stop && kind === 'music') {
       sound = {feels:musicTerms(cue?.feels, MUSIC_FEELS, 3), genres:musicTerms(cue?.genres, Object.values(MUSIC_GENRES), 2), keywords:musicTerms(cue?.keywords, null, 5)};
-      if (!sound.feels.length && !sound.genres.length) return [];
+      if (!sound.feels.length && !sound.genres.length && !sound.keywords.length) return [];
     } else if (!stop) {
       const query = typeof cue?.query === 'string' ? cue.query.trim().replace(/\s+/g, ' ') : '';
       if (!query) return [];
@@ -1393,9 +1397,11 @@ export async function setup(ctx) {
   const BED_LEVEL={ambience:0.25,music:0.2},BED_NAME={ambience:'Ambience',music:'Music'},AMBIENCE_FADE_MS=1500,AMBIENCE_FILTER='duration:[10 TO 120]',fadingBeds=new Set(),beds={ambience:null,music:null};
   const bedVolume=layer=>{if(layer.audio)layer.audio.volume=effectVolume(layer.kind)*BED_LEVEL[layer.kind]*layer.level;};
   const bedEnabled=kind=>kind==='music'?config?.enableMusic===true:config?.enableAmbience!==false;
+  const musicLabel=entry=>[...entry.feels,...entry.genres].join(', ') || entry.keywords.join(', ');
   const isBed=segment=>segment?.kind==='ambience' || segment?.kind==='music';
   let announcedMusic;
-  const currentMusic=()=>{const title=beds.music?.audio && beds.music.title;return title?{title,credit:`"${title}" Kevin MacLeod (incompetech.com) · CC BY 4.0`}:null;};
+  // While a replacement loads, the fading track is still the one heard.
+  const currentMusic=()=>{const title=(beds.music?.audio?beds.music:[...fadingBeds].findLast(layer=>layer.kind==='music' && layer.audio))?.title;return title?{title,credit:`"${title}" Kevin MacLeod (incompetech.com) · CC BY 4.0`}:null;};
   function showMusicCredit(){
     if(disposed)return;const music=currentMusic();$('musicCredit').hidden=!music;$('musicCredit').textContent=music?.credit || '';
     // A replacement that is still loading keeps the previous announcement.
@@ -1405,12 +1411,12 @@ export async function setup(ctx) {
     clearInterval(layer.timer);const from=layer.level,start=Date.now();
     layer.timer=setInterval(()=>{const progress=Math.min(1,(Date.now()-start)/AMBIENCE_FADE_MS);layer.level=progress<1?from+(to-from)*progress:to;bedVolume(layer);if(progress===1){clearInterval(layer.timer);done?.();}},50);
   }
-  function dropBed(layer){clearInterval(layer.timer);layer.loading.abort();if(layer.audio){layer.audio.onerror=null;layer.audio.pause();if(layer.kind==='music'){layer.audio.removeAttribute('src');layer.audio.load();}}if(layer.url)URL.revokeObjectURL(layer.url);fadingBeds.delete(layer);}
-  function failBed(layer,error){
+  function dropBed(layer){clearInterval(layer.timer);layer.loading.abort();if(layer.audio){layer.audio.onerror=null;layer.audio.pause();if(layer.kind==='music'){layer.audio.removeAttribute('src');layer.audio.load();}}if(layer.url)URL.revokeObjectURL(layer.url);fadingBeds.delete(layer);if(layer.kind==='music')showMusicCredit();}
+  function failBed(layer,error,badFile=false){
     if(beds[layer.kind]!==layer || layer.loading.signal.aborted)return;
     beds[layer.kind]=null;dropBed(layer);showMusicCredit();updateTransport();
-    // A track that cannot play must not be replayed from a cache.
-    if(layer.kind==='music'){foleyCache.delete(layer.key);paragraphAudioCache.delete(`music:${layer.key}`);layer.purge?.();}
+    // A file that cannot load must not be replayed from a cache; a play blocked by autoplay rules is no bad file.
+    if(badFile){foleyCache.delete(layer.key);paragraphAudioCache.delete(`${layer.kind}:${layer.key}`);layer.purge?.();}
     const detail=error?.name==='NotAllowedError'?'Browser blocked background audio. Click Play to retry.':error?.message || 'Background audio could not play.';
     const warning=`${BED_NAME[layer.kind]} skipped (${layer.query}): ${detail} Speech continues.`;
     const previous=$('sfxStatus').hidden?'':$('sfxStatus').textContent;
@@ -1426,11 +1432,11 @@ export async function setup(ctx) {
     if(key===(beds[kind]?.key || ''))return;
     if(beds[kind]){const old=beds[kind];fadingBeds.add(old);fadeBed(old,0,()=>dropBed(old));}
     // A carried bed keeps loading after the paragraph that started it is cancelled.
-    const layer=beds[kind]=key?{kind,key,query:entry.query || [...entry.feels,...entry.genres].join(', '),feels:entry.feels,purge,level:0,loading:new AbortController()}:null;showMusicCredit();updateTransport();
+    const layer=beds[kind]=key?{kind,key,query:entry.query || musicLabel(entry),feels:entry.feels,purge,level:0,loading:new AbortController()}:null;showMusicCredit();updateTransport();
     if(layer)load(layer.loading.signal).then(source=>{
       if(beds[kind]!==layer)return;
       layer.title=source.title;layer.audio=new Audio(source.url || (layer.url=URL.createObjectURL(source)));layer.audio.loop=true;bedVolume(layer);
-      layer.audio.onerror=()=>failBed(layer,new Error(kind==='music'?'Browser could not play the incompetech track.':'Browser could not decode the Freesound ambience preview.'));
+      layer.audio.onerror=()=>failBed(layer,new Error(kind==='music'?'Browser could not play the incompetech track.':'Browser could not decode the Freesound ambience preview.'),true);
       if(!bedsPaused)playBed(layer);
       if(beds[kind]===layer){fadeBed(layer,1);showMusicCredit();}
     }).catch(error=>failBed(layer,error));
@@ -3103,7 +3109,7 @@ export async function setup(ctx) {
     const expanded=segments.flatMap(segment=>{
       const {sfx,ambience,music,...speech}=segment;
       const points=[
-        ...(snapshot.enableMusic===true?music || []:[]).map(entry=>sound('music','Music',entry.stop?'[Music stop]':`[Music: ${[...entry.feels,...entry.genres].join(', ')}]`,entry)),
+        ...(snapshot.enableMusic===true?music || []:[]).map(entry=>sound('music','Music',entry.stop?'[Music stop]':`[Music: ${musicLabel(entry)}]`,entry)),
         ...(snapshot.enableAmbience===false?[]:ambience || []).map(entry=>sound('ambience','Ambience',entry.stop?'[Ambience stop]':`[Ambience: ${entry.query}]`,entry.stop?entry:{...entry,filter:AMBIENCE_FILTER})),
         ...(snapshot.enableSfx===false?[]:sfx || []).map(cue=>sound('sfx','SFX',`[SFX: ${cue.query}]`,cue))
       ];

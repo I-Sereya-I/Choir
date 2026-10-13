@@ -742,8 +742,12 @@ function fastClassifyPlan(transcript, config) {
   }
 }
 
+// Stories and LLM replies mix typographic and ASCII quotes; one-for-one replacement keeps offsets valid.
+const plainQuotes = text => text.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"');
+
 function cueOffset(text, trigger) {
   if (!trigger) return 0;
+  text = plainQuotes(text); trigger = plainQuotes(trigger);
   const exact = text.indexOf(trigger);
   return exact >= 0 ? exact : text.toLowerCase().indexOf(trigger.toLowerCase());
 }
@@ -764,7 +768,7 @@ function segmentSoundCues(value, text, kind='sfx') {
     let sound = {stop};
     if (!stop && kind === 'music') {
       sound = {feels:musicTerms(cue?.feels, MUSIC_FEELS, 3), genres:musicTerms(cue?.genres, Object.values(MUSIC_GENRES), 2), keywords:musicTerms(cue?.keywords, null, 5)};
-      if (!sound.feels.length && !sound.genres.length) return [];
+      if (!sound.feels.length && !sound.genres.length && !sound.keywords.length) return [];
     } else if (!stop) {
       const query = typeof cue?.query === 'string' ? cue.query.trim().replace(/\s+/g, ' ') : '';
       if (!query) return [];
@@ -1156,16 +1160,20 @@ function textGenerationOptions(connection,parameters){
 async function chooseSound(choices, input, userId, signal, state, instructions) {
   const ids = choices.map((_, i) => `s${i}`);
   const questions = { q0: { type: 'choice', instructions, criteria: Object.fromEntries(choices.map((choice, i) => [ids[i], choice])) } };
-  const decide = async () => {
+  const decide = async signal => {
     const answers = typeof spindle.decisions?.evaluate === 'function'
       ? (await spindle.decisions.evaluate({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal })).answers
       : input.jevApiKey?.trim() ? await jevDecision({ apiKey: input.jevApiKey, endpoint: input.jevEndpoint, state, questions, signal }) : {};
     return Math.max(0, ids.indexOf(answers?.q0?.choice));
   };
-  let wait;
-  const pick = await Promise.race([decide(), new Promise(resolve => { wait = setTimeout(() => resolve(0), 5000); })]).catch(() => 0);
-  clearTimeout(wait);
-  return pick;
+  // The choice is cancelled at 5 s or with the request, so a late answer never keeps spending.
+  const decision = new AbortController(), stop = () => decision.abort();
+  const stopped = new Promise(resolve => decision.signal.addEventListener('abort', () => resolve(0), { once: true }));
+  signal.addEventListener('abort', stop, { once: true });
+  const wait = setTimeout(stop, 5000);
+  try { return await Promise.race([decide(decision.signal), stopped]); }
+  catch { return 0; }
+  finally { clearTimeout(wait); signal.removeEventListener('abort', stop); }
 }
 
 async function getJson(url, headers, signal, service) {

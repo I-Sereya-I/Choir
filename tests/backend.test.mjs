@@ -93,7 +93,7 @@ test('Freesound keeps its top result without a story moment or Decision model an
   let evaluations=0;await topFirst({moment:' '},{evaluate:async()=>{evaluations++;return {answers:{q0:{choice:'s1'}}};}});assert.equal(evaluations,0);
   await topFirst({},{evaluate:async()=>{throw Error('No Decision connection');}});
   await topFirst({},{evaluate:async()=>({answers:{q0:{choice:'unknown'}}})});
-  await topFirst({},{evaluate:()=>new Promise(()=>{})},search,(fn,ms)=>{if(ms===5000)fn();});
+  let slow;await topFirst({},{evaluate:(input,options)=>{slow=options.signal;return new Promise(()=>{});}},search,(fn,ms)=>{if(ms===5000)setTimeout(fn,0);});assert.equal(slow.aborted,true);
   await topFirst({jevApiKey:'jev-key'},undefined,url=>url.includes('freesound.org')?search(url):{status:500,body:'Upstream error'});
 });
 
