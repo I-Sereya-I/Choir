@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {randomUuid,sha256Hex} from '../src/core.js';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
 
 test('HTTP UUID fallback uses secure random bytes, preserves v4 bits and generates distinct IDs',()=>{
   const httpCrypto={getRandomValues:globalThis.crypto.getRandomValues.bind(globalThis.crypto)};
@@ -455,7 +455,7 @@ The countertop had never seen this much purposeful flurry.`;
 test('sound choices accept complete JSON surrounded by commentary and ignore reasoning examples',()=>{
   const segments=[{speaker:'Narrator',text:'She slammed the door marked "{exit}". Rain fell outside.'}];
   const chosen={cues:[{segment:0,trigger:'She slammed the door',query:'door slam'}],ambience:[{segment:0,trigger:'Rain fell outside',query:'rain'}]};
-  const expected={cues:[{segment:0,trigger:'She slammed the door',query:'door slam'}],ambience:[{segment:0,trigger:'Rain fell outside',query:'rain'}]};
+  const expected={cues:[{segment:0,trigger:'She slammed the door',query:'door slam'}],ambience:[{segment:0,trigger:'Rain fell outside',query:'rain'}],music:[]};
   for(const response of [
     `Metadata: {"status":"ready"}\n\`\`\`json\n${JSON.stringify(chosen)}\n\`\`\`\nSummary: {"count":2}`,
     `<think>{"cues":[{"segment":0,"query":"footsteps"}],"ambience":[]}</think>\n${JSON.stringify(chosen)}`,
@@ -492,7 +492,7 @@ test('LLM sound cues and ambience beds are validated against the segments, keep 
     {segment:1,stop:true,trigger:'¿Quién'},
     {segment:1,query:'wind',trigger:'anda'}
   ]);
-  assert.deepEqual(parseSoundCues('{"cues":[]}',segments),{cues:[],ambience:[]});
+  assert.deepEqual(parseSoundCues('{"cues":[]}',segments),{cues:[],ambience:[],music:[]});
   assert.throws(()=>parseSoundCues('no json here',segments),/not valid JSON/);
   assert.throws(()=>parseSoundCues('{"effects":[]}',segments),/no cues list/);
   const config={voices:[{id:'n'},{id:'m'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Mira',voice:'m',style:''}],npcs:[]};
@@ -502,4 +502,44 @@ test('LLM sound cues and ambience beds are validated against the segments, keep 
   assert.deepEqual(plan.segments.map(segment=>segment.ambience),[[{query:'rain',trigger:'Afuera llovía'}],[{stop:true,trigger:'¿Quién'},{query:'wind',trigger:'anda'}]]);
   const restored=restoreAttribution(structuredClone(attributionPlan(plan,config)),transcript,config);
   assert.deepEqual(restored.segments.map(({sfx,ambience})=>({sfx,ambience})),plan.segments.map(({sfx,ambience})=>({sfx,ambience})));
+});
+
+test('music entries are asked for only when enabled, keep known feels and genres, and survive saved attribution',()=>{
+  const segments=[{speaker:'Narrator',text:'The forest grew dark. Then the sun rose.'}];
+  assert.doesNotMatch(soundCuePrompt(segments)[0].content,/music entries/);
+  const prompt=soundCuePrompt(segments,{music:true})[0].content;
+  assert.match(prompt,/music entries follow/);assert.match(prompt,/Suspenseful/);assert.match(prompt,/Silent Film Score/);assert.match(prompt,/"music":\[\]/);
+  const {music}=parseSoundCues(JSON.stringify({cues:[],music:[
+    {segment:0,trigger:'The forest',feels:['eerie','Spooky','Dark','Mysterious','Intense'],genres:['soundtrack','Horror','Jazz'],keywords:[' harp ','forest','','x','y','z','w']},
+    {segment:0,trigger:'Then the sun',stop:true},
+    {segment:0,feels:['Spooky'],genres:['Trap'],keywords:['drums']},
+    {segment:0,trigger:'Then the sun',feels:['Uplifting']},
+    {segment:0,trigger:'rose',genres:['Classical']}
+  ]}),segments);
+  assert.deepEqual(music,[
+    {segment:0,feels:['Eerie','Dark','Mysterious'],genres:['Soundtrack','Horror'],keywords:['harp','forest','x','y','z'],trigger:'The forest'},
+    {segment:0,stop:true,trigger:'Then the sun'},
+    {segment:0,feels:['Uplifting'],genres:[],keywords:[],trigger:'Then the sun'}
+  ]);
+  const config={voices:[{id:'n'}],fixed:[{speaker:'Narrator',voice:'n',style:''}],npcs:[]};
+  const plan=validatePlan({segments:applySoundCues(segments.map(segment=>({...segment,voice:'n'})),{music})},segments[0].text,config);
+  assert.deepEqual(plan.segments[0].music,music.map(({segment,...entry})=>entry));
+  assert.deepEqual(restoreAttribution(structuredClone(attributionPlan(plan,config)),segments[0].text,config).segments[0].music,plan.segments[0].music);
+});
+
+test('rankMusic scores feels, genre, keywords and full-length tracks',()=>{
+  const piece=(title,feel,genre,length='00:03:00',extra={})=>({title,filename:`${title}.mp3`,feel,genre,length,instruments:'',description:'',...extra});
+  const pieces=[
+    piece('Sting','Dark, Mysterious','22','00:00:08'),
+    piece('Jolly','Bouncy, Humorous','15'),
+    piece('Shadows','Dark, Mysterious, Eerie','10'),
+    piece('Woods','Mysterious','22','00:02:00',{instruments:'Harp, Strings',description:'A walk in the forest.'}),
+    piece('Broken','Dark','22','00:04:00',{filename:''}),
+    piece('Night','Dark','25')
+  ];
+  const want={feels:['Dark','Mysterious'],genres:['Soundtrack'],keywords:['harp','forest']};
+  // Sting 3+3+2, Woods 3+2+2+0.5, Shadows 3+3+0.5, Night 3+0.5, Jolly 0.5; tracks without a file are skipped.
+  assert.deepEqual(rankMusic(pieces,want).map(track=>track.title),['Sting','Woods','Shadows','Night','Jolly']);
+  assert.deepEqual(rankMusic(pieces,want,2).map(track=>track.title),['Sting','Woods']);
+  assert.equal(rankMusic(pieces,{}).at(-1).title,'Sting');
 });

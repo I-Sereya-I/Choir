@@ -319,10 +319,10 @@ function validatePlan(raw, transcript, config) {
     // Assigned voices always win; blank fixed voices are cast once by the planner.
     const delivery = typeof segment.style === 'string' ? segment.style.trim() : '';
     if (delivery.length > 600) throw new Error('Turn styles must be at most 600 characters.');
-    const sfx = segmentSoundCues(segment.sfx, text), ambience = segmentSoundCues(segment.ambience, text, true);
+    const sfx = segmentSoundCues(segment.sfx, text), ambience = segmentSoundCues(segment.ambience, text, 'ambience'), music = segmentSoundCues(segment.music, text, 'music');
     return {speaker:actor.speaker, voice:actor.voice,...((actor.route || config.defaultRoute)?{route:actor.route || config.defaultRoute}:{}), gender:actor.gender || 'auto', text,
       style: config.useStyle === false ? '' : [actor.style, delivery].filter(Boolean).join('. '),
-      ...(sfx ? {sfx} : {}), ...(ambience ? {ambience} : {})};
+      ...(sfx ? {sfx} : {}), ...(ambience ? {ambience} : {}), ...(music ? {music} : {})};
   });
   if (transcript.slice(cursor).trim()) throw new Error('The plan omits the end of the original message.');
   const fixed = new Set(config.fixed.map(v => normalizeName(v.speaker)));
@@ -334,7 +334,7 @@ function attributionPlan(plan, config) {
   return {segments:plan.segments.map(segment=>{
     const actor=[...config.fixed,...config.npcs].find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker));
     const prefix=actor?.style?`${actor.style}. `:'';
-    return {speaker:segment.speaker,text:segment.text,style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style,...(segment.sfx?{sfx:segment.sfx}:{}),...(segment.ambience?{ambience:segment.ambience}:{})};
+    return {speaker:segment.speaker,text:segment.text,style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style,...(segment.sfx?{sfx:segment.sfx}:{}),...(segment.ambience?{ambience:segment.ambience}:{}),...(segment.music?{music:segment.music}:{})};
   })};
 }
 
@@ -748,33 +748,66 @@ function cueOffset(text, trigger) {
   return exact >= 0 ? exact : text.toLowerCase().indexOf(trigger.toLowerCase());
 }
 
-// Ambience entries may also be {stop:true}, which ends the current bed.
-function segmentSoundCues(value, text, stops=false) {
+// Kevin MacLeod's incompetech catalog: genre ids from genre.json and the feels used by more than a few tracks.
+const MUSIC_GENRES = {2:'African',3:'Blues',4:'Classical',5:'Contemporary',6:'Disco',7:'Electronica',8:'Funk',9:'Holiday',10:'Horror',11:'Jazz',12:'Latin',13:'Modern',14:'Musical',15:'Polka',16:'Pop',18:'Reggae',19:'Rock',20:'Silent Film Score',21:'Ska',22:'Soundtrack',23:'Stings',24:'Unclassifiable',25:'World',26:'Urban'};
+const MUSIC_FEELS = ['Action','Aggressive','Bouncy','Bright','Calming','Dark','Driving','Epic','Eerie','Grooving','Humorous','Intense','Mysterious','Mystical','Relaxed','Somber','Suspenseful','Unnerving','Uplifting'];
+
+const musicTerms = (list, allowed, max) => {
+  const words = (Array.isArray(list) ? list : []).filter(item => typeof item === 'string').map(item => item.trim().replace(/\s+/g, ' ')).filter(Boolean);
+  return [...new Set(allowed ? words.map(word => allowed.find(name => name.toLowerCase() === word.toLowerCase())).filter(Boolean) : words)].slice(0, max);
+};
+
+// Ambience and music entries may also be {stop:true}, which ends the current bed.
+function segmentSoundCues(value, text, kind='sfx') {
   const cues = (Array.isArray(value) ? value : value ? [value] : []).flatMap(cue => {
-    const query = typeof cue?.query === 'string' ? cue.query.trim().replace(/\s+/g, ' ') : '';
-    const stop = stops && cue?.stop === true;
-    if (!query && !stop) return [];
+    const stop = kind !== 'sfx' && cue?.stop === true;
+    let sound = {stop};
+    if (!stop && kind === 'music') {
+      sound = {feels:musicTerms(cue?.feels, MUSIC_FEELS, 3), genres:musicTerms(cue?.genres, Object.values(MUSIC_GENRES), 2), keywords:musicTerms(cue?.keywords, null, 5)};
+      if (!sound.feels.length && !sound.genres.length) return [];
+    } else if (!stop) {
+      const query = typeof cue?.query === 'string' ? cue.query.trim().replace(/\s+/g, ' ') : '';
+      if (!query) return [];
+      sound = {query};
+    }
     const trigger = typeof cue.trigger === 'string' ? cue.trigger.trim() : '';
-    return [{...(stop ? {stop} : {query}), trigger: trigger && cueOffset(text, trigger) >= 0 ? trigger : ''}];
+    return [{...sound, trigger: trigger && cueOffset(text, trigger) >= 0 ? trigger : ''}];
   });
   return cues.length ? cues : null;
 }
 
-const AMBIENCE_LIMIT = 3;
+const secondsOf = length => String(length || '').split(':').reduce((total, part) => total * 60 + (Number(part) || 0), 0);
+
+// Pieces are raw catalog entries; the best fits for the wanted feels, genres and keywords come first.
+function rankMusic(pieces, {feels=[], genres=[], keywords=[]}={}, n=10) {
+  const wantFeels = feels.map(feel => feel.toLowerCase()), wantGenres = genres.map(genre => genre.toLowerCase()), words = keywords.map(word => word.toLowerCase());
+  return (Array.isArray(pieces) ? pieces : []).filter(piece => piece?.filename && piece.title).map(piece => {
+    const pieceFeels = String(piece.feel || '').split(',').map(feel => feel.trim().toLowerCase());
+    const text = [piece.title, piece.description, piece.instruments].join(' ').toLowerCase();
+    const score = 3 * wantFeels.filter(feel => pieceFeels.includes(feel)).length
+      + (wantGenres.includes(String(MUSIC_GENRES[piece.genre] || '').toLowerCase()) ? 2 : 0)
+      + words.filter(word => text.includes(word)).length
+      + (secondsOf(piece.length) >= 90 ? 0.5 : 0);
+    return {piece, score};
+  }).sort((a, b) => b.score - a.score).slice(0, n).map(({piece}) => piece);
+}
+
+const AMBIENCE_LIMIT = 3, MUSIC_LIMIT = 3;
 
 function soundCueLimit(segments) {
   const characters = segments.reduce((total, segment) => total + String(segment.text || '').length, 0);
   return Math.min(12, Math.max(2, Math.ceil(characters / 400)));
 }
 
-function soundCuePrompt(segments) {
+function soundCuePrompt(segments, {music=false}={}) {
   return [
-    {role:'system',content:`You are the Foley editor for an audiobook. Choose short sound effects and looping background ambience that make the scene audible. Return ONLY JSON {"cues":[{"segment":0,"trigger":"exact words","query":"freesound search"}],"ambience":[{"segment":0,"trigger":"exact words","query":"freesound search"},{"segment":3,"trigger":"exact words","stop":true}]}.
+    {role:'system',content:`You are the Foley editor for an audiobook. Choose short sound effects and looping background ambience that make the scene audible. Return ONLY JSON {"cues":[{"segment":0,"trigger":"exact words","query":"freesound search"}],"ambience":[{"segment":0,"trigger":"exact words","query":"freesound search"},{"segment":3,"trigger":"exact words","stop":true}]${music?',"music":[{"segment":0,"trigger":"exact words","feels":["Mysterious"],"genres":["Soundtrack"],"keywords":["harp","forest"]}]':''}}.
 Choose only concrete physical sounds that happen in the scene as it is told: objects, movement, impacts, doors, footsteps, weather, fire, water, animals, vehicles, machines, weapons, crowds. Skip sounds that are remembered, imagined, hypothetical, negated or metaphorical. Skip voices and vocal sounds such as speech, laughter, sighs, gasps, screams and singing, because the voice actors perform those. Skip music.
 segment is the index of the numbered segment where the sound happens. trigger copies 2 to 6 consecutive words exactly as written in that segment, in the original language, from the start of the sentence or clause where the sound happens; the effect plays right before those words. query is an English Freesound search of 1 to 3 words naming the sound source and action the way sound files are named, such as "door slam", "bottle clink", "egg crack" or "sword clash", whatever language the story uses. Never add places or scene details: every search word must match.
 Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments.
-ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.
-Return {"cues":[],"ambience":[]} when nothing fits.`},
+ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.${music?`
+music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments or the setting, such as "piano", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Return at most ${MUSIC_LIMIT} music entries in story order, usually one at the start, and change music only when the mood clearly shifts.`:''}
+Return {"cues":[],"ambience":[]${music?',"music":[]':''}} when nothing fits.`},
     {role:'user',content:JSON.stringify({segments:segments.map((segment, index) => ({index, speaker:segment.speaker, text:segment.text}))})}
   ];
 }
@@ -802,19 +835,19 @@ function parseSoundCues(content, segments) {
     }
   }
   if (!Array.isArray(parsed?.cues)) throw new Error(hasJson?'the sound effect response has no cues list':'the sound effect response was not valid JSON');
-  const valid = (entries, stops) => (Array.isArray(entries) ? entries : []).flatMap(entry => {
+  const valid = (entries, kind) => (Array.isArray(entries) ? entries : []).flatMap(entry => {
     if (!Number.isInteger(entry?.segment) || !segments[entry.segment]) return [];
-    const cue = segmentSoundCues(entry, segments[entry.segment].text, stops);
+    const cue = segmentSoundCues(entry, segments[entry.segment].text, kind);
     return cue ? [{segment:entry.segment, ...cue[0]}] : [];
   });
-  return {cues:valid(parsed.cues).slice(0, soundCueLimit(segments)), ambience:valid(parsed.ambience, true).slice(0, AMBIENCE_LIMIT)};
+  return {cues:valid(parsed.cues).slice(0, soundCueLimit(segments)), ambience:valid(parsed.ambience, 'ambience').slice(0, AMBIENCE_LIMIT), music:valid(parsed.music, 'music').slice(0, MUSIC_LIMIT)};
 }
 
-function applySoundCues(segments, {cues=[], ambience=[]}={}) {
+function applySoundCues(segments, {cues=[], ambience=[], music=[]}={}) {
   const own = (entries, index) => entries.filter(entry => entry.segment === index).map(({segment, ...entry}) => entry);
   return segments.map((segment, index) => {
-    const sfx = own(cues, index), beds = own(ambience, index);
-    return sfx.length || beds.length ? {...segment, ...(sfx.length ? {sfx} : {}), ...(beds.length ? {ambience:beds} : {})} : segment;
+    const sounds = Object.entries({sfx:own(cues, index), ambience:own(ambience, index), music:own(music, index)}).filter(([, entries]) => entries.length);
+    return sounds.length ? {...segment, ...Object.fromEntries(sounds)} : segment;
   });
 }
 
@@ -1117,17 +1150,51 @@ function textGenerationOptions(connection,parameters){
     : {parameters,reasoning:{source:'off'}};
 }
 
-// Freesound ranks clips by their words alone, so a Decision model picks the clip that is heard in the story moment.
-async function chooseSound(sounds, input, userId, signal) {
-  const ids = sounds.map((_, i) => `s${i}`);
-  const state = { sound: input.query, moment: input.moment };
-  const questions = { q0: { type: 'choice',
-    instructions: `The story needs a ${input.kind === 'ambience' ? 'looping background ambience' : 'short sound effect'} for this moment. Wanted sound: "${input.query}". Story moment: "${input.moment}". Which sound file best matches what is actually heard in the story moment? Reject files whose name or tags describe a different action, setting, or sound source.`,
-    criteria: Object.fromEntries(sounds.map((sound, i) => [ids[i], `${sound.name} — tags: ${sound.tags.join(', ')} (${Math.round(sound.duration * 10) / 10}s)`])) } };
-  const answers = typeof spindle.decisions?.evaluate === 'function'
-    ? (await spindle.decisions.evaluate({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal })).answers
-    : input.jevApiKey?.trim() ? await jevDecision({ apiKey: input.jevApiKey, endpoint: input.jevEndpoint, state, questions, signal }) : {};
-  return Math.max(0, ids.indexOf(answers?.q0?.choice));
+// Searches rank by words alone, so a Decision model picks the result that fits the story moment.
+// A slow or failed choice keeps the top result.
+async function chooseSound(choices, input, userId, signal, state, instructions) {
+  const ids = choices.map((_, i) => `s${i}`);
+  const questions = { q0: { type: 'choice', instructions, criteria: Object.fromEntries(choices.map((choice, i) => [ids[i], choice])) } };
+  const decide = async () => {
+    const answers = typeof spindle.decisions?.evaluate === 'function'
+      ? (await spindle.decisions.evaluate({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal })).answers
+      : input.jevApiKey?.trim() ? await jevDecision({ apiKey: input.jevApiKey, endpoint: input.jevEndpoint, state, questions, signal }) : {};
+    return Math.max(0, ids.indexOf(answers?.q0?.choice));
+  };
+  let wait;
+  const pick = await Promise.race([decide(), new Promise(resolve => { wait = setTimeout(() => resolve(0), 5000); })]).catch(() => 0);
+  clearTimeout(wait);
+  return pick;
+}
+
+async function getJson(url, headers, signal, service) {
+  if (typeof spindle !== 'undefined' && typeof spindle?.cors === 'function') {
+    signal.throwIfAborted();
+    const resp = await spindle.cors(url, { method: 'GET', headers });
+    signal.throwIfAborted();
+    if (resp.status < 200 || resp.status >= 300) throw new Error(`${service} HTTP ${resp.status}`);
+    return typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body;
+  }
+  if (typeof fetch === 'function') {
+    const resp = await fetch(url, { headers, signal });
+    if (!resp.ok) throw new Error(`${service} HTTP ${resp.status}`);
+    return await resp.json();
+  }
+  throw new Error('No HTTP transport available.');
+}
+
+const MUSIC_BASE = 'https://incompetech.com/music/royalty-free/';
+// The catalog is fetched once per backend process; a failed fetch is retried after a minute, not per cue.
+let musicCatalog, musicCatalogFailedAt = 0;
+function loadMusicCatalog() {
+  if (!musicCatalog || musicCatalogFailedAt && Date.now() - musicCatalogFailedAt > 60000) {
+    musicCatalogFailedAt = 0;
+    musicCatalog = getJson(`${MUSIC_BASE}pieces.json`, { Accept: 'application/json' }, new AbortController().signal, 'Incompetech catalog').then(pieces => {
+      if (!Array.isArray(pieces)) throw new Error('Incompetech catalog is not a track list');
+      return pieces;
+    }).catch(error => { musicCatalogFailedAt = Date.now(); throw error; });
+  }
+  return musicCatalog;
 }
 
 // Spindle supplies this global before importing the backend bundle.
@@ -1154,7 +1221,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.5-staging.26',ready:true}});return;
+      send({result:{version:'1.1.5-staging.27',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);
@@ -1323,12 +1390,12 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     }
     if (message.action === 'sfx') {
       const segments=Array.isArray(input.segments)?input.segments.filter(segment=>typeof segment?.text==='string' && segment.text.trim()):[];
-      if(!segments.length){send({result:{cues:[],ambience:[]}});return;}
+      if(!segments.length){send({result:{cues:[],ambience:[],music:[]}});return;}
       progress({stage:'Resolving saved LLM connection'});
       const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
       if(controller.signal.aborted)return;
       if(!connection?.model)throw new Error('Select a Planner LLM connection with a text-generation model to choose sound effects.');
-      const messages=soundCuePrompt(segments);let failure,finishReason;
+      const messages=soundCuePrompt(segments,{music:input.music===true});let failure,finishReason;
       for(let attempt=0;attempt<2;attempt++){
         if(controller.signal.aborted)return;
         progress({stage:`Waiting for sound effect choices (attempt ${attempt+1}/2)`,provider:connection.provider,model:connection.model});
@@ -1390,23 +1457,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       if (!query) throw new Error('Search query is required.');
       const filter = typeof input.filter === 'string' && input.filter.trim() ? input.filter.trim() : 'duration:[0.1 TO 2.5]';
       const url = `https://freesound.org/apiv2/search/?query=${encodeURIComponent(query)}&filter=${encodeURIComponent(filter)}&fields=id,name,duration,previews,tags&sort=score&page_size=8`;
-      const headers={'Accept':'application/json','Authorization':`Token ${apiKey}`};
-      let resData;
-      if (typeof spindle !== 'undefined' && typeof spindle?.cors === 'function') {
-        controller.signal.throwIfAborted();
-        const resp = await spindle.cors(url, { method: 'GET', headers });
-        controller.signal.throwIfAborted();
-        if (resp.status < 200 || resp.status >= 300) {
-          throw new Error(`Freesound HTTP ${resp.status}`);
-        }
-        resData = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body;
-      } else if (typeof fetch === 'function') {
-        const resp = await fetch(url, { headers, signal: controller.signal });
-        if (!resp.ok) throw new Error(`Freesound HTTP ${resp.status}`);
-        resData = await resp.json();
-      } else {
-        throw new Error('No HTTP transport available.');
-      }
+      const resData = await getJson(url, {'Accept':'application/json','Authorization':`Token ${apiKey}`}, controller.signal, 'Freesound');
       const results = (Array.isArray(resData?.results) ? resData.results : []).map(r => ({
         id: r.id,
         name: r.name,
@@ -1415,13 +1466,26 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         tags: Array.isArray(r.tags) ? r.tags.slice(0, 8) : []
       })).filter(r => r.previewUrl);
       if (results.length > 1 && typeof input.moment === 'string' && input.moment.trim()) {
-        // A slow or failed choice keeps Freesound's top result.
-        let wait;
-        const pick = await Promise.race([chooseSound(results, input, userId, controller.signal), new Promise(resolve => { wait = setTimeout(() => resolve(0), 5000); })]).catch(() => 0);
-        clearTimeout(wait);
+        const pick = await chooseSound(results.map(sound => `${sound.name} — tags: ${sound.tags.join(', ')} (${Math.round(sound.duration * 10) / 10}s)`), input, userId, controller.signal,
+          { sound: query, moment: input.moment },
+          `The story needs a ${input.kind === 'ambience' ? 'looping background ambience' : 'short sound effect'} for this moment. Wanted sound: "${query}". Story moment: "${input.moment}". Which sound file best matches what is actually heard in the story moment? Reject files whose name or tags describe a different action, setting, or sound source.`);
         results.unshift(...results.splice(pick, 1));
       }
       send({ result: { query, results } }); return;
+    }
+    if (message.action === 'music') {
+      const want = {feels:input.feels || [], genres:input.genres || [], keywords:input.keywords || []};
+      const tracks = rankMusic(await loadMusicCatalog(), want, 8);
+      controller.signal.throwIfAborted();
+      if (!tracks.length) throw new Error('The incompetech catalog has no tracks.');
+      const wanted = [want.feels.join(', '), want.genres.join(', '), want.keywords.join(', ')].filter(Boolean).join('; ');
+      const pick = tracks.length > 1 && typeof input.moment === 'string' && input.moment.trim()
+        ? await chooseSound(tracks.map(track => `${track.title} — ${track.feel || ''}; ${MUSIC_GENRES[track.genre] || ''}; ${track.instruments || ''}; ${String(track.description || '').slice(0, 200)} (${track.length})`), input, userId, controller.signal,
+          { music: wanted, moment: input.moment },
+          `The story needs instrumental background music that plays quietly under the narration of this moment. Wanted music: "${wanted}". Story moment: "${input.moment}". Which track best fits the mood and setting of the story moment?`)
+        : 0;
+      const track = tracks[pick];
+      send({ result: { title: track.title, url: `${MUSIC_BASE}mp3-royaltyfree/${encodeURIComponent(track.filename)}`, length: track.length } }); return;
     }
     if (message.action === 'searchVoices') {
       const query = typeof input.query === 'string' ? input.query.trim() : '';

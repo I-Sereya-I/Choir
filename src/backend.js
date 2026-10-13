@@ -1,4 +1,4 @@
-import { MAX_SPEECH_CHARS, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, plannerPrompt, geminiRequest, extractGeminiAudio, speechSourceUnits, normalizeName, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues } from './core.js';
+import { MAX_SPEECH_CHARS, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, plannerPrompt, geminiRequest, extractGeminiAudio, speechSourceUnits, normalizeName, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -297,17 +297,51 @@ function textGenerationOptions(connection,parameters){
     : {parameters,reasoning:{source:'off'}};
 }
 
-// Freesound ranks clips by their words alone, so a Decision model picks the clip that is heard in the story moment.
-async function chooseSound(sounds, input, userId, signal) {
-  const ids = sounds.map((_, i) => `s${i}`);
-  const state = { sound: input.query, moment: input.moment };
-  const questions = { q0: { type: 'choice',
-    instructions: `The story needs a ${input.kind === 'ambience' ? 'looping background ambience' : 'short sound effect'} for this moment. Wanted sound: "${input.query}". Story moment: "${input.moment}". Which sound file best matches what is actually heard in the story moment? Reject files whose name or tags describe a different action, setting, or sound source.`,
-    criteria: Object.fromEntries(sounds.map((sound, i) => [ids[i], `${sound.name} — tags: ${sound.tags.join(', ')} (${Math.round(sound.duration * 10) / 10}s)`])) } };
-  const answers = typeof spindle.decisions?.evaluate === 'function'
-    ? (await spindle.decisions.evaluate({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal })).answers
-    : input.jevApiKey?.trim() ? await jevDecision({ apiKey: input.jevApiKey, endpoint: input.jevEndpoint, state, questions, signal }) : {};
-  return Math.max(0, ids.indexOf(answers?.q0?.choice));
+// Searches rank by words alone, so a Decision model picks the result that fits the story moment.
+// A slow or failed choice keeps the top result.
+async function chooseSound(choices, input, userId, signal, state, instructions) {
+  const ids = choices.map((_, i) => `s${i}`);
+  const questions = { q0: { type: 'choice', instructions, criteria: Object.fromEntries(choices.map((choice, i) => [ids[i], choice])) } };
+  const decide = async () => {
+    const answers = typeof spindle.decisions?.evaluate === 'function'
+      ? (await spindle.decisions.evaluate({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal })).answers
+      : input.jevApiKey?.trim() ? await jevDecision({ apiKey: input.jevApiKey, endpoint: input.jevEndpoint, state, questions, signal }) : {};
+    return Math.max(0, ids.indexOf(answers?.q0?.choice));
+  };
+  let wait;
+  const pick = await Promise.race([decide(), new Promise(resolve => { wait = setTimeout(() => resolve(0), 5000); })]).catch(() => 0);
+  clearTimeout(wait);
+  return pick;
+}
+
+async function getJson(url, headers, signal, service) {
+  if (typeof spindle !== 'undefined' && typeof spindle?.cors === 'function') {
+    signal.throwIfAborted();
+    const resp = await spindle.cors(url, { method: 'GET', headers });
+    signal.throwIfAborted();
+    if (resp.status < 200 || resp.status >= 300) throw new Error(`${service} HTTP ${resp.status}`);
+    return typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body;
+  }
+  if (typeof fetch === 'function') {
+    const resp = await fetch(url, { headers, signal });
+    if (!resp.ok) throw new Error(`${service} HTTP ${resp.status}`);
+    return await resp.json();
+  }
+  throw new Error('No HTTP transport available.');
+}
+
+const MUSIC_BASE = 'https://incompetech.com/music/royalty-free/';
+// The catalog is fetched once per backend process; a failed fetch is retried after a minute, not per cue.
+let musicCatalog, musicCatalogFailedAt = 0;
+function loadMusicCatalog() {
+  if (!musicCatalog || musicCatalogFailedAt && Date.now() - musicCatalogFailedAt > 60000) {
+    musicCatalogFailedAt = 0;
+    musicCatalog = getJson(`${MUSIC_BASE}pieces.json`, { Accept: 'application/json' }, new AbortController().signal, 'Incompetech catalog').then(pieces => {
+      if (!Array.isArray(pieces)) throw new Error('Incompetech catalog is not a track list');
+      return pieces;
+    }).catch(error => { musicCatalogFailedAt = Date.now(); throw error; });
+  }
+  return musicCatalog;
 }
 
 // Spindle supplies this global before importing the backend bundle.
@@ -334,7 +368,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.5-staging.26',ready:true}});return;
+      send({result:{version:'1.1.5-staging.27',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);
@@ -503,12 +537,12 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
     }
     if (message.action === 'sfx') {
       const segments=Array.isArray(input.segments)?input.segments.filter(segment=>typeof segment?.text==='string' && segment.text.trim()):[];
-      if(!segments.length){send({result:{cues:[],ambience:[]}});return;}
+      if(!segments.length){send({result:{cues:[],ambience:[],music:[]}});return;}
       progress({stage:'Resolving saved LLM connection'});
       const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
       if(controller.signal.aborted)return;
       if(!connection?.model)throw new Error('Select a Planner LLM connection with a text-generation model to choose sound effects.');
-      const messages=soundCuePrompt(segments);let failure,finishReason;
+      const messages=soundCuePrompt(segments,{music:input.music===true});let failure,finishReason;
       for(let attempt=0;attempt<2;attempt++){
         if(controller.signal.aborted)return;
         progress({stage:`Waiting for sound effect choices (attempt ${attempt+1}/2)`,provider:connection.provider,model:connection.model});
@@ -570,23 +604,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       if (!query) throw new Error('Search query is required.');
       const filter = typeof input.filter === 'string' && input.filter.trim() ? input.filter.trim() : 'duration:[0.1 TO 2.5]';
       const url = `https://freesound.org/apiv2/search/?query=${encodeURIComponent(query)}&filter=${encodeURIComponent(filter)}&fields=id,name,duration,previews,tags&sort=score&page_size=8`;
-      const headers={'Accept':'application/json','Authorization':`Token ${apiKey}`};
-      let resData;
-      if (typeof spindle !== 'undefined' && typeof spindle?.cors === 'function') {
-        controller.signal.throwIfAborted();
-        const resp = await spindle.cors(url, { method: 'GET', headers });
-        controller.signal.throwIfAborted();
-        if (resp.status < 200 || resp.status >= 300) {
-          throw new Error(`Freesound HTTP ${resp.status}`);
-        }
-        resData = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body;
-      } else if (typeof fetch === 'function') {
-        const resp = await fetch(url, { headers, signal: controller.signal });
-        if (!resp.ok) throw new Error(`Freesound HTTP ${resp.status}`);
-        resData = await resp.json();
-      } else {
-        throw new Error('No HTTP transport available.');
-      }
+      const resData = await getJson(url, {'Accept':'application/json','Authorization':`Token ${apiKey}`}, controller.signal, 'Freesound');
       const results = (Array.isArray(resData?.results) ? resData.results : []).map(r => ({
         id: r.id,
         name: r.name,
@@ -595,13 +613,26 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         tags: Array.isArray(r.tags) ? r.tags.slice(0, 8) : []
       })).filter(r => r.previewUrl);
       if (results.length > 1 && typeof input.moment === 'string' && input.moment.trim()) {
-        // A slow or failed choice keeps Freesound's top result.
-        let wait;
-        const pick = await Promise.race([chooseSound(results, input, userId, controller.signal), new Promise(resolve => { wait = setTimeout(() => resolve(0), 5000); })]).catch(() => 0);
-        clearTimeout(wait);
+        const pick = await chooseSound(results.map(sound => `${sound.name} — tags: ${sound.tags.join(', ')} (${Math.round(sound.duration * 10) / 10}s)`), input, userId, controller.signal,
+          { sound: query, moment: input.moment },
+          `The story needs a ${input.kind === 'ambience' ? 'looping background ambience' : 'short sound effect'} for this moment. Wanted sound: "${query}". Story moment: "${input.moment}". Which sound file best matches what is actually heard in the story moment? Reject files whose name or tags describe a different action, setting, or sound source.`);
         results.unshift(...results.splice(pick, 1));
       }
       send({ result: { query, results } }); return;
+    }
+    if (message.action === 'music') {
+      const want = {feels:input.feels || [], genres:input.genres || [], keywords:input.keywords || []};
+      const tracks = rankMusic(await loadMusicCatalog(), want, 8);
+      controller.signal.throwIfAborted();
+      if (!tracks.length) throw new Error('The incompetech catalog has no tracks.');
+      const wanted = [want.feels.join(', '), want.genres.join(', '), want.keywords.join(', ')].filter(Boolean).join('; ');
+      const pick = tracks.length > 1 && typeof input.moment === 'string' && input.moment.trim()
+        ? await chooseSound(tracks.map(track => `${track.title} — ${track.feel || ''}; ${MUSIC_GENRES[track.genre] || ''}; ${track.instruments || ''}; ${String(track.description || '').slice(0, 200)} (${track.length})`), input, userId, controller.signal,
+          { music: wanted, moment: input.moment },
+          `The story needs instrumental background music that plays quietly under the narration of this moment. Wanted music: "${wanted}". Story moment: "${input.moment}". Which track best fits the mood and setting of the story moment?`)
+        : 0;
+      const track = tracks[pick];
+      send({ result: { title: track.title, url: `${MUSIC_BASE}mp3-royaltyfree/${encodeURIComponent(track.filename)}`, length: track.length } }); return;
     }
     if (message.action === 'searchVoices') {
       const query = typeof input.query === 'string' ? input.query.trim() : '';

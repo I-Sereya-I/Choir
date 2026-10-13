@@ -23,7 +23,7 @@ async function harness(mixerPreferences,mobile=false){
     fixed:[{speaker:'Narrator',voice:'n',style:'Calm'},{speaker:'You',voice:'y',style:''},{speaker:'Mira',voice:'m',route:'native:b',style:'',aliases:['Captain'],pronunciation:'Mira: mee-rah',accent:'Irish'}],
     casts:{'native:a':[{speaker:'Guard',voice:'g',style:''}]}});
   class FakeAudio{
-    constructor(){this.paused=true;this.currentTime=0;this.duration=20;audios.push(this);}
+    constructor(src){this.src=src;this.paused=true;this.currentTime=0;this.duration=20;audios.push(this);}
     play(){
       if(this.loop && state.bedPlayError)return Promise.reject(Object.assign(new Error('Playback requires a user gesture'),{name:'NotAllowedError'}));
       this.paused=false;this.onloadedmetadata?.();
@@ -97,8 +97,10 @@ async function harness(mixerPreferences,mobile=false){
         else if(request.action==='sfx'){
           if(state.sfxError){backend({namespace:'choir',id:request.id,error:state.sfxError});return;}
           const anchored=entries=>request.input.segments.flatMap((segment,index)=>Object.entries(entries).filter(([trigger])=>segment.text.includes(trigger)).map(([trigger,query])=>({segment:index,trigger,...(query?{query}:{stop:true})})));
-          result={cues:anchored({'page snapped':'page turn','glass shattered':'glass shatter'}),ambience:anchored({'Rain drummed':'rain','The tavern':'tavern crowd','Silence fell':''})};
+          result={cues:anchored({'page snapped':'page turn','glass shattered':'glass shatter'}),ambience:anchored({'Rain drummed':'rain','The tavern':'tavern crowd','Silence fell':''}),
+            music:request.input.music?anchored({'Night fell':'music'}).map(({query,...entry})=>({...entry,feels:['Dark'],genres:['Soundtrack'],keywords:['organ']})):[]};
         }
+        else if(request.action==='music')result={title:'Crypto',url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Crypto.mp3',length:'00:02:30'};
         else if(request.action==='gemini')result={base64:'AAABAA==',mimeType:'audio/L16;rate=24000'};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
         else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
@@ -726,6 +728,24 @@ test('Ambience slider sets bed level live without touching speech and persists a
   await until(()=>h.store.get('ui:mixer')?.ambience===0.4);h.$('stop').click();await h.reload();
   assert.equal(document.querySelector('[aria-label="Ambience volume"]').value,'0.4');
   h.$('play').click();await until(()=>beds(h).length===2 && beds(h)[1].volume>0);assert.ok(beds(h)[1].volume<=0.1+0.000001);
+ }finally{await h.close();}
+});
+
+test('a music marker streams the chosen incompetech track under speech with its credit and follows the Music slider and pause',async()=>{
+ const h=await harness();try{
+  h.$('showMixer').click();assert.equal(document.querySelector('[aria-label="Music volume"]'),null);
+  await toggle(h,'enableMusic',true);h.message.content=scene;await h.plan();
+  assert.equal(h.requests.find(request=>request.action==='sfx').input.music,true);
+  h.state.blockAudio=true;h.$('play').click();
+  await until(()=>beds(h).length===1 && beds(h)[0].volume===0.2);const music=beds(h)[0];
+  assert.equal(music.src,'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Crypto.mp3');assert.equal(music.paused,false);
+  assert.deepEqual(h.requests.filter(request=>request.action==='music').map(({input})=>[input.feels,input.genres,input.keywords]),[[['Dark'],['Soundtrack'],['organ']]]);
+  assert.equal(h.$('musicCredit').hidden,false);assert.equal(h.$('musicCredit').textContent,'"Crypto" Kevin MacLeod (incompetech.com) · CC BY 4.0');
+  const volume=document.querySelector('[aria-label="Music volume"]');assert.equal(volume.max,'3');
+  volume.value='2';volume.dispatchEvent(new h.dom.window.Event('input'));volume.dispatchEvent(new h.dom.window.Event('change'));
+  assert.ok(Math.abs(music.volume-0.4)<0.000001);assert.equal(voices(h)[0].volume,1);await until(()=>h.store.get('ui:mixer')?.music===2);
+  h.$('pause').click();assert.equal(music.paused,true);h.$('pause').click();assert.equal(music.paused,false);
+  h.$('stop').click();assert.equal(music.paused,true);assert.equal(h.$('musicCredit').hidden,true);
  }finally{await h.close();}
 });
 

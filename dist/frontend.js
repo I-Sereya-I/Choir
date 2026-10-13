@@ -319,10 +319,10 @@ function validatePlan(raw, transcript, config) {
     // Assigned voices always win; blank fixed voices are cast once by the planner.
     const delivery = typeof segment.style === 'string' ? segment.style.trim() : '';
     if (delivery.length > 600) throw new Error('Turn styles must be at most 600 characters.');
-    const sfx = segmentSoundCues(segment.sfx, text), ambience = segmentSoundCues(segment.ambience, text, true);
+    const sfx = segmentSoundCues(segment.sfx, text), ambience = segmentSoundCues(segment.ambience, text, 'ambience'), music = segmentSoundCues(segment.music, text, 'music');
     return {speaker:actor.speaker, voice:actor.voice,...((actor.route || config.defaultRoute)?{route:actor.route || config.defaultRoute}:{}), gender:actor.gender || 'auto', text,
       style: config.useStyle === false ? '' : [actor.style, delivery].filter(Boolean).join('. '),
-      ...(sfx ? {sfx} : {}), ...(ambience ? {ambience} : {})};
+      ...(sfx ? {sfx} : {}), ...(ambience ? {ambience} : {}), ...(music ? {music} : {})};
   });
   if (transcript.slice(cursor).trim()) throw new Error('The plan omits the end of the original message.');
   const fixed = new Set(config.fixed.map(v => normalizeName(v.speaker)));
@@ -334,7 +334,7 @@ function attributionPlan(plan, config) {
   return {segments:plan.segments.map(segment=>{
     const actor=[...config.fixed,...config.npcs].find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker));
     const prefix=actor?.style?`${actor.style}. `:'';
-    return {speaker:segment.speaker,text:segment.text,style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style,...(segment.sfx?{sfx:segment.sfx}:{}),...(segment.ambience?{ambience:segment.ambience}:{})};
+    return {speaker:segment.speaker,text:segment.text,style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style,...(segment.sfx?{sfx:segment.sfx}:{}),...(segment.ambience?{ambience:segment.ambience}:{}),...(segment.music?{music:segment.music}:{})};
   })};
 }
 
@@ -748,33 +748,66 @@ function cueOffset(text, trigger) {
   return exact >= 0 ? exact : text.toLowerCase().indexOf(trigger.toLowerCase());
 }
 
-// Ambience entries may also be {stop:true}, which ends the current bed.
-function segmentSoundCues(value, text, stops=false) {
+// Kevin MacLeod's incompetech catalog: genre ids from genre.json and the feels used by more than a few tracks.
+const MUSIC_GENRES = {2:'African',3:'Blues',4:'Classical',5:'Contemporary',6:'Disco',7:'Electronica',8:'Funk',9:'Holiday',10:'Horror',11:'Jazz',12:'Latin',13:'Modern',14:'Musical',15:'Polka',16:'Pop',18:'Reggae',19:'Rock',20:'Silent Film Score',21:'Ska',22:'Soundtrack',23:'Stings',24:'Unclassifiable',25:'World',26:'Urban'};
+const MUSIC_FEELS = ['Action','Aggressive','Bouncy','Bright','Calming','Dark','Driving','Epic','Eerie','Grooving','Humorous','Intense','Mysterious','Mystical','Relaxed','Somber','Suspenseful','Unnerving','Uplifting'];
+
+const musicTerms = (list, allowed, max) => {
+  const words = (Array.isArray(list) ? list : []).filter(item => typeof item === 'string').map(item => item.trim().replace(/\s+/g, ' ')).filter(Boolean);
+  return [...new Set(allowed ? words.map(word => allowed.find(name => name.toLowerCase() === word.toLowerCase())).filter(Boolean) : words)].slice(0, max);
+};
+
+// Ambience and music entries may also be {stop:true}, which ends the current bed.
+function segmentSoundCues(value, text, kind='sfx') {
   const cues = (Array.isArray(value) ? value : value ? [value] : []).flatMap(cue => {
-    const query = typeof cue?.query === 'string' ? cue.query.trim().replace(/\s+/g, ' ') : '';
-    const stop = stops && cue?.stop === true;
-    if (!query && !stop) return [];
+    const stop = kind !== 'sfx' && cue?.stop === true;
+    let sound = {stop};
+    if (!stop && kind === 'music') {
+      sound = {feels:musicTerms(cue?.feels, MUSIC_FEELS, 3), genres:musicTerms(cue?.genres, Object.values(MUSIC_GENRES), 2), keywords:musicTerms(cue?.keywords, null, 5)};
+      if (!sound.feels.length && !sound.genres.length) return [];
+    } else if (!stop) {
+      const query = typeof cue?.query === 'string' ? cue.query.trim().replace(/\s+/g, ' ') : '';
+      if (!query) return [];
+      sound = {query};
+    }
     const trigger = typeof cue.trigger === 'string' ? cue.trigger.trim() : '';
-    return [{...(stop ? {stop} : {query}), trigger: trigger && cueOffset(text, trigger) >= 0 ? trigger : ''}];
+    return [{...sound, trigger: trigger && cueOffset(text, trigger) >= 0 ? trigger : ''}];
   });
   return cues.length ? cues : null;
 }
 
-const AMBIENCE_LIMIT = 3;
+const secondsOf = length => String(length || '').split(':').reduce((total, part) => total * 60 + (Number(part) || 0), 0);
+
+// Pieces are raw catalog entries; the best fits for the wanted feels, genres and keywords come first.
+function rankMusic(pieces, {feels=[], genres=[], keywords=[]}={}, n=10) {
+  const wantFeels = feels.map(feel => feel.toLowerCase()), wantGenres = genres.map(genre => genre.toLowerCase()), words = keywords.map(word => word.toLowerCase());
+  return (Array.isArray(pieces) ? pieces : []).filter(piece => piece?.filename && piece.title).map(piece => {
+    const pieceFeels = String(piece.feel || '').split(',').map(feel => feel.trim().toLowerCase());
+    const text = [piece.title, piece.description, piece.instruments].join(' ').toLowerCase();
+    const score = 3 * wantFeels.filter(feel => pieceFeels.includes(feel)).length
+      + (wantGenres.includes(String(MUSIC_GENRES[piece.genre] || '').toLowerCase()) ? 2 : 0)
+      + words.filter(word => text.includes(word)).length
+      + (secondsOf(piece.length) >= 90 ? 0.5 : 0);
+    return {piece, score};
+  }).sort((a, b) => b.score - a.score).slice(0, n).map(({piece}) => piece);
+}
+
+const AMBIENCE_LIMIT = 3, MUSIC_LIMIT = 3;
 
 function soundCueLimit(segments) {
   const characters = segments.reduce((total, segment) => total + String(segment.text || '').length, 0);
   return Math.min(12, Math.max(2, Math.ceil(characters / 400)));
 }
 
-function soundCuePrompt(segments) {
+function soundCuePrompt(segments, {music=false}={}) {
   return [
-    {role:'system',content:`You are the Foley editor for an audiobook. Choose short sound effects and looping background ambience that make the scene audible. Return ONLY JSON {"cues":[{"segment":0,"trigger":"exact words","query":"freesound search"}],"ambience":[{"segment":0,"trigger":"exact words","query":"freesound search"},{"segment":3,"trigger":"exact words","stop":true}]}.
+    {role:'system',content:`You are the Foley editor for an audiobook. Choose short sound effects and looping background ambience that make the scene audible. Return ONLY JSON {"cues":[{"segment":0,"trigger":"exact words","query":"freesound search"}],"ambience":[{"segment":0,"trigger":"exact words","query":"freesound search"},{"segment":3,"trigger":"exact words","stop":true}]${music?',"music":[{"segment":0,"trigger":"exact words","feels":["Mysterious"],"genres":["Soundtrack"],"keywords":["harp","forest"]}]':''}}.
 Choose only concrete physical sounds that happen in the scene as it is told: objects, movement, impacts, doors, footsteps, weather, fire, water, animals, vehicles, machines, weapons, crowds. Skip sounds that are remembered, imagined, hypothetical, negated or metaphorical. Skip voices and vocal sounds such as speech, laughter, sighs, gasps, screams and singing, because the voice actors perform those. Skip music.
 segment is the index of the numbered segment where the sound happens. trigger copies 2 to 6 consecutive words exactly as written in that segment, in the original language, from the start of the sentence or clause where the sound happens; the effect plays right before those words. query is an English Freesound search of 1 to 3 words naming the sound source and action the way sound files are named, such as "door slam", "bottle clink", "egg crack" or "sword clash", whatever language the story uses. Never add places or scene details: every search word must match.
 Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments.
-ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.
-Return {"cues":[],"ambience":[]} when nothing fits.`},
+ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.${music?`
+music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments or the setting, such as "piano", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Return at most ${MUSIC_LIMIT} music entries in story order, usually one at the start, and change music only when the mood clearly shifts.`:''}
+Return {"cues":[],"ambience":[]${music?',"music":[]':''}} when nothing fits.`},
     {role:'user',content:JSON.stringify({segments:segments.map((segment, index) => ({index, speaker:segment.speaker, text:segment.text}))})}
   ];
 }
@@ -802,19 +835,19 @@ function parseSoundCues(content, segments) {
     }
   }
   if (!Array.isArray(parsed?.cues)) throw new Error(hasJson?'the sound effect response has no cues list':'the sound effect response was not valid JSON');
-  const valid = (entries, stops) => (Array.isArray(entries) ? entries : []).flatMap(entry => {
+  const valid = (entries, kind) => (Array.isArray(entries) ? entries : []).flatMap(entry => {
     if (!Number.isInteger(entry?.segment) || !segments[entry.segment]) return [];
-    const cue = segmentSoundCues(entry, segments[entry.segment].text, stops);
+    const cue = segmentSoundCues(entry, segments[entry.segment].text, kind);
     return cue ? [{segment:entry.segment, ...cue[0]}] : [];
   });
-  return {cues:valid(parsed.cues).slice(0, soundCueLimit(segments)), ambience:valid(parsed.ambience, true).slice(0, AMBIENCE_LIMIT)};
+  return {cues:valid(parsed.cues).slice(0, soundCueLimit(segments)), ambience:valid(parsed.ambience, 'ambience').slice(0, AMBIENCE_LIMIT), music:valid(parsed.music, 'music').slice(0, MUSIC_LIMIT)};
 }
 
-function applySoundCues(segments, {cues=[], ambience=[]}={}) {
+function applySoundCues(segments, {cues=[], ambience=[], music=[]}={}) {
   const own = (entries, index) => entries.filter(entry => entry.segment === index).map(({segment, ...entry}) => entry);
   return segments.map((segment, index) => {
-    const sfx = own(cues, index), beds = own(ambience, index);
-    return sfx.length || beds.length ? {...segment, ...(sfx.length ? {sfx} : {}), ...(beds.length ? {ambience:beds} : {})} : segment;
+    const sounds = Object.entries({sfx:own(cues, index), ambience:own(ambience, index), music:own(music, index)}).filter(([, entries]) => entries.length);
+    return sounds.length ? {...segment, ...Object.fromEntries(sounds)} : segment;
   });
 }
 
@@ -997,7 +1030,7 @@ export async function setup(ctx) {
     .choir-mixer .cm-channel-name{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
     .choir-mixer .cm-channel[data-no-voice="true"] .cm-channel-name{color:var(--cm-muted)}
     .choir-mixer .cm-channel-controls{display:grid;grid-template-columns:minmax(0,1fr) 28px 28px;align-items:center;gap:7px}
-    .choir-mixer .cm-channel[data-kind="sfx"] .cm-channel-controls,.choir-mixer .cm-channel[data-kind="ambience"] .cm-channel-controls{grid-template-columns:minmax(0,1fr)}
+    .choir-mixer .cm-channel[data-kind="sfx"] .cm-channel-controls,.choir-mixer .cm-channel[data-kind="ambience"] .cm-channel-controls,.choir-mixer .cm-channel[data-kind="music"] .cm-channel-controls{grid-template-columns:minmax(0,1fr)}
     .choir-mixer .cm-toggle{height:26px;border:1px solid #ffffff16;border-radius:7px;background:#ffffff04;font-size:10px;font-weight:500;color:#aeb8cc;white-space:nowrap}
     .choir-mixer .cm-toggle svg{width:16px;height:16px}
     .choir-mixer .cm-volume{min-width:0}
@@ -1045,6 +1078,7 @@ export async function setup(ctx) {
       <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
       <div class="et-status" data-et="statusActions" hidden></div>
       <div class="et-status" data-et="sfxStatus" role="status" aria-live="polite" hidden></div>
+      <small data-et="musicCredit" style="opacity:.75" hidden></small>
     </div>
     <div class="et-section-header">
       <h3>Lead Cast</h3>
@@ -1095,6 +1129,7 @@ export async function setup(ctx) {
       <label class="et-check"><input data-et="showAutoPlanAction" type="checkbox"> Show Auto-plan in chat toolbar</label>
       <label class="et-check"><input data-et="enableSfx" type="checkbox" checked> Sound effects (Foley cues)</label>
       <label class="et-check"><input data-et="enableAmbience" type="checkbox" checked> Ambient sound</label>
+      <label class="et-check" title="Kevin MacLeod's incompetech tracks, CC BY 4.0"><input data-et="enableMusic" type="checkbox"> Background music</label>
       <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show section play buttons</label>
       <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
@@ -1244,15 +1279,15 @@ export async function setup(ctx) {
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
   const defaults = () => ({mode:'native',model:'gemini-3.8-flash-tts',planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
-    extraVoices:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
+    extraVoices:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
       {speaker:'Character',voice:'',style:''} ]});
   const withoutSecrets=c=>({...c,jevApiKey:''});
   const planKey=async(chat,message)=>`plan:${await sha256Hex(JSON.stringify([chat,message]))}`;
-  let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged,mixerPlaybackSegments=null,bed=null,bedsPaused=false;
+  let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged,mixerPlaybackSegments=null,bedsPaused=false;
   // Keep the launcher unobtrusive on every load, including existing expanded preferences.
-  const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),...(savedMixer||{}),collapsed:true};
+  const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,music:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),...(savedMixer||{}),collapsed:true};
   const channelTabsQuery=root.ownerDocument.defaultView?.matchMedia?.('(pointer:coarse), (max-width:600px)');let useChannelTabs=Boolean(channelTabsQuery?.matches);
   // Solo is no longer exposed; old solo preferences must not silently mute other voices.
   for(const channel of Object.values(mixerState.channels))delete channel.solo;
@@ -1350,46 +1385,52 @@ export async function setup(ctx) {
     const sfxScale=isEffect?(config?.enableSfx===false?0:0.45):1;
     if(currentGain)currentGain.gain.value=volume*currentNormalize*sfxScale;
     else if(currentAudio)currentAudio.volume=Math.max(0, Math.min(1, volume*sfxScale));
-    for(const layer of [bed,...fadingBeds])if(layer)bedVolume(layer);
+    for(const layer of [...Object.values(beds),...fadingBeds])if(layer)bedVolume(layer);
   }
-  // One looping ambience bed plays under speech; a replaced bed fades out while the next fades in.
-  const AMBIENCE_LEVEL=0.25,AMBIENCE_FADE_MS=1500,AMBIENCE_FILTER='duration:[10 TO 120]',fadingBeds=new Set();
-  const bedVolume=layer=>{if(layer.audio)layer.audio.volume=effectVolume('ambience')*AMBIENCE_LEVEL*layer.level;};
+  // Ambience and music each loop one bed under speech; a replaced bed fades out while the next fades in.
+  const BED_LEVEL={ambience:0.25,music:0.2},BED_NAME={ambience:'Ambience',music:'Music'},AMBIENCE_FADE_MS=1500,AMBIENCE_FILTER='duration:[10 TO 120]',fadingBeds=new Set(),beds={ambience:null,music:null};
+  const bedVolume=layer=>{if(layer.audio)layer.audio.volume=effectVolume(layer.kind)*BED_LEVEL[layer.kind]*layer.level;};
+  const bedEnabled=kind=>kind==='music'?config?.enableMusic===true:config?.enableAmbience!==false;
+  const isBed=segment=>segment?.kind==='ambience' || segment?.kind==='music';
+  function showMusicCredit(){if(disposed)return;const title=beds.music?.audio && beds.music.title;$('musicCredit').hidden=!title;$('musicCredit').textContent=title?`"${title}" Kevin MacLeod (incompetech.com) · CC BY 4.0`:'';}
   function fadeBed(layer,to,done){
     clearInterval(layer.timer);const from=layer.level,start=Date.now();
     layer.timer=setInterval(()=>{const progress=Math.min(1,(Date.now()-start)/AMBIENCE_FADE_MS);layer.level=progress<1?from+(to-from)*progress:to;bedVolume(layer);if(progress===1){clearInterval(layer.timer);done?.();}},50);
   }
   function dropBed(layer){clearInterval(layer.timer);layer.loading.abort();if(layer.audio){layer.audio.onerror=null;layer.audio.pause();}if(layer.url)URL.revokeObjectURL(layer.url);fadingBeds.delete(layer);}
   function failBed(layer,error){
-    if(bed!==layer || layer.loading.signal.aborted)return;
-    bed=null;dropBed(layer);updateTransport();
+    if(beds[layer.kind]!==layer || layer.loading.signal.aborted)return;
+    beds[layer.kind]=null;dropBed(layer);showMusicCredit();updateTransport();
     const detail=error?.name==='NotAllowedError'?'Browser blocked background audio. Click Play to retry.':error?.message || 'Background audio could not play.';
-    const warning=`Ambience skipped (${layer.query}): ${detail} Speech continues.`;
+    const warning=`${BED_NAME[layer.kind]} skipped (${layer.query}): ${detail} Speech continues.`;
     const previous=$('sfxStatus').hidden?'':$('sfxStatus').textContent;
     showFoleyStatus(previous && !previous.includes(warning)?`${previous}\n${warning}`:warning);
   }
   function playBed(layer){
     try{layer.audio.play().catch(error=>failBed(layer,error));}catch(error){failBed(layer,error);}
   }
-  function followBed(entry,load){
-    if(config?.enableAmbience===false){stopBeds();updateTransport();return;}
-    const key=entry?.query?foleyKey(entry):'';
-    if(key===(bed?.key || ''))return;
-    if(bed){const old=bed;fadingBeds.add(old);fadeBed(old,0,()=>dropBed(old));}
+  // load resolves to a Freesound blob or, for music, an incompetech track {title,url} streamed directly.
+  function followBed(entry,load,kind='ambience'){
+    if(!bedEnabled(kind)){stopBeds(kind);updateTransport();return;}
+    const key=entry && !entry.stop?foleyKey(entry):'';
+    if(key===(beds[kind]?.key || ''))return;
+    if(beds[kind]){const old=beds[kind];fadingBeds.add(old);fadeBed(old,0,()=>dropBed(old));}
     // A carried bed keeps loading after the paragraph that started it is cancelled.
-    const layer=bed=key?{key,query:entry.query,level:0,loading:new AbortController()}:null;updateTransport();
-    if(layer)load(layer.loading.signal).then(blob=>{
-      if(bed!==layer)return;
-      layer.url=URL.createObjectURL(blob);layer.audio=new Audio(layer.url);layer.audio.loop=true;bedVolume(layer);
-      layer.audio.onerror=()=>failBed(layer,new Error('Browser could not decode the Freesound ambience preview.'));
+    const layer=beds[kind]=key?{kind,key,query:entry.query || [...entry.feels,...entry.genres].join(', '),level:0,loading:new AbortController()}:null;showMusicCredit();updateTransport();
+    if(layer)load(layer.loading.signal).then(source=>{
+      if(beds[kind]!==layer)return;
+      layer.title=source.title;layer.audio=new Audio(source.url || (layer.url=URL.createObjectURL(source)));layer.audio.loop=true;bedVolume(layer);
+      layer.audio.onerror=()=>failBed(layer,new Error(kind==='music'?'Browser could not play the incompetech track.':'Browser could not decode the Freesound ambience preview.'));
       if(!bedsPaused)playBed(layer);
-      if(bed===layer)fadeBed(layer,1);
+      if(beds[kind]===layer){fadeBed(layer,1);showMusicCredit();}
     }).catch(error=>failBed(layer,error));
   }
-  // The bed in effect at a batch comes from the closest ambience marker before it.
-  const bedIndex=(batches,index)=>{while(index>=0 && batches[index].kind!=='ambience')index--;return index;};
-  function stopBeds(){for(const layer of [bed,...fadingBeds])if(layer)dropBed(layer);bed=null;bedsPaused=false;}
-  function pauseBeds(paused){bedsPaused=paused;for(const layer of [bed,...fadingBeds])if(layer?.audio){if(paused)layer.audio.pause();else playBed(layer);}}
+  const fadeOutBeds=()=>{for(const kind in beds)followBed(null,null,kind);};
+  // The bed in effect at a batch comes from the closest marker of its kind before it.
+  const bedIndex=(batches,index,kind)=>{while(index>=0 && batches[index].kind!==kind)index--;return index;};
+  function stopBeds(kind){for(const layer of [...Object.values(beds),...fadingBeds])if(layer && (!kind || layer.kind===kind))dropBed(layer);for(const name in beds)if(!kind || name===kind)beds[name]=null;if(!kind)bedsPaused=false;showMusicCredit();}
+  function pauseBeds(paused){bedsPaused=paused;for(const layer of [...Object.values(beds),...fadingBeds])if(layer?.audio){if(paused)layer.audio.pause();else playBed(layer);}}
+
   function positionMixer(){
     const collapsed=Boolean(mixerState.collapsed);
     const isEnabled=Boolean(config?.enableMixer),expanded=isEnabled && !collapsed;
@@ -1447,7 +1488,7 @@ export async function setup(ctx) {
       row.append(head,controls);
       channelsRoot.append(row);
     }
-    for(const [kind,name,enabled] of [['sfx','SFX',config?.enableSfx!==false],['ambience','Ambience',config?.enableAmbience!==false]]){
+    for(const [kind,name,enabled] of [['sfx','SFX',config?.enableSfx!==false],['ambience','Ambience',config?.enableAmbience!==false],['music','Music',config?.enableMusic===true]]){
       if(!enabled)continue;
       const row=doc.createElement('div');row.className='cm-channel';row.dataset.kind=kind;row.dataset.speaker=name;row.setAttribute('aria-current',String(kind==='sfx' && currentSpeaker==='SFX'));
       const head=doc.createElement('div');head.className='cm-channel-head';const dot=doc.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
@@ -1485,13 +1526,14 @@ export async function setup(ctx) {
     const latest=latestReply(),paused=!currentAudio || currentAudio.paused,label=currentAudio?(paused?'Resume Choir audio':'Pause Choir audio'):'Play latest reply';
     mixerPlay.innerHTML=(paused?ICON_TRANSPORT_PLAY:ICON_TRANSPORT_PAUSE).replace(/<circle[^>]*\/>/,'');mixerPlay.title=label;mixerPlay.setAttribute('aria-label',label);mixerPlay.disabled=currentAudio?!audioReady:busy || Boolean(controller) || !chatId || !latest;
     mixerPlanLatest.disabled=busy || Boolean(controller) || !chatId || !latest;
-    mixerStop.disabled=!controller && !currentAudio && !autoReplyQueue.size && !bed;
+    mixerStop.disabled=!controller && !currentAudio && !autoReplyQueue.size && !beds.ambience && !beds.music;
     $('stop').disabled=mixerStop.disabled;
     mixer.dataset.playState=currentAudio?(paused?'paused':'playing'):busy?'loading':'idle';playbackCaption.textContent=currentAudio?(paused?'Paused':'Now playing'):busy?(planningSource?'Planning speech':'Preparing audio'):'Playback';
   }
   function speakerExcluded(speaker){return normalizeName(speaker)==='narrator' && Boolean(config?.muteNarrator) || [...(config?.fixed || []),...Object.values(config?.casts || {}).flat()].some(actor=>normalizeName(actor.speaker)===normalizeName(speaker) && actor.excluded) || config?.npcPolicy?.mode==='skip' && Object.values(config.casts || {}).flat().some(actor=>normalizeName(actor.speaker)===normalizeName(speaker));}
-  function playbackExcluded(segment){return speakerExcluded(segment.speaker) || segment.kind==='sfx' && config?.enableSfx===false || segment.kind==='ambience' && config?.enableAmbience===false;}
-  function syncAmbiencePlayback(){if(!$('enableAmbience').checked)stopBeds();showFoleyStatus();updateTransport();}
+  function playbackExcluded(segment){return speakerExcluded(segment.speaker) || segment.kind==='sfx' && config?.enableSfx===false || segment.kind==='ambience' && config?.enableAmbience===false || segment.kind==='music' && config?.enableMusic!==true;}
+  function syncAmbiencePlayback(){if(!$('enableAmbience').checked)stopBeds('ambience');showFoleyStatus();updateTransport();}
+  function syncMusicPlayback(){if(!$('enableMusic').checked)stopBeds('music');updateTransport();}
   function syncSfxPlayback(){showFoleyStatus();generationPolicyChanged?.();if(config?.enableSfx===false && currentSpeaker==='SFX')skipAudio?.();applyVolume();}
   async function setSpeakerExcluded(speaker,excluded){
     if(!chatId)return;
@@ -1597,7 +1639,7 @@ export async function setup(ctx) {
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
   const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
-  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','npcPolicy','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','enableAmbience','freesoundApiKey'];
+  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','npcPolicy','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','enableAmbience','enableMusic','freesoundApiKey'];
   const defaultVoiceFields=['voice','route','gender','style','accent','excluded'];
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   let closeDefaultEditor;
@@ -1669,7 +1711,7 @@ export async function setup(ctx) {
     const select=index=>{panels.forEach((panel,i)=>panel.hidden=i!==index);buttons.forEach((button,i)=>{button.setAttribute('aria-selected',String(i===index));button.tabIndex=i===index?0:-1;});};
     buttons.forEach((button,index)=>{button.onclick=()=>select(index);button.onkeydown=event=>{const next=event.key==='ArrowRight'?(index+1)%3:event.key==='ArrowLeft'?(index+2)%3:null;if(next!==null){event.preventDefault();select(next);buttons[next].focus();}};});select(0);
     const fields={};
-    const specs=[['connectionMode','Voice connections'],['mode','Default TTS provider'],['connection','Lumiverse connection'],['model','Gemini model'],['styleParam','Style handling'],['plannerMode','Planner engine'],['planner','Planner LLM connection'],['decisionConnection','Decision connection'],['auto','Auto-play new replies'],['autoPlan','Auto-plan new replies'],['showAutoPlanAction','Show Auto-plan in chat toolbar'],['enableSfx','Sound effects (Foley cues)'],['enableAmbience','Ambient sound'],['sectionButtons','Show section play buttons'],['enableMixer','Floating audio mixer'],['useStyle','Delivery styles'],['retention','Audio retention'],['concurrency','Concurrent TTS requests'],['chunk','Max characters per request'],['plannerTokens','Planner output tokens'],['prefetch','Prefetch passages'],['allowLlmFallback','Allow LLM fallback after Jev fails'],['normalizeLoudness','Match passage loudness'],['allowVoiceFallback','Allow Gemini custom voice fallback'],['apiBase','Lumiverse API base'],['freesoundApiKey','Freesound API key'],['autoDesignNPCs','Auto-design custom NPC voices']];
+    const specs=[['connectionMode','Voice connections'],['mode','Default TTS provider'],['connection','Lumiverse connection'],['model','Gemini model'],['styleParam','Style handling'],['plannerMode','Planner engine'],['planner','Planner LLM connection'],['decisionConnection','Decision connection'],['auto','Auto-play new replies'],['autoPlan','Auto-plan new replies'],['showAutoPlanAction','Show Auto-plan in chat toolbar'],['enableSfx','Sound effects (Foley cues)'],['enableAmbience','Ambient sound'],['enableMusic','Background music'],['sectionButtons','Show section play buttons'],['enableMixer','Floating audio mixer'],['useStyle','Delivery styles'],['retention','Audio retention'],['concurrency','Concurrent TTS requests'],['chunk','Max characters per request'],['plannerTokens','Planner output tokens'],['prefetch','Prefetch passages'],['allowLlmFallback','Allow LLM fallback after Jev fails'],['normalizeLoudness','Match passage loudness'],['allowVoiceFallback','Allow Gemini custom voice fallback'],['apiBase','Lumiverse API base'],['freesoundApiKey','Freesound API key'],['autoDesignNPCs','Auto-design custom NPC voices']];
     for(const [name,label] of specs){
       const source=$(name),input=source?source.cloneNode(true):document.createElement('input');input.removeAttribute('data-et');input.removeAttribute('aria-describedby');input.disabled=false;input.dataset.defaultField=name;
       if(name==='autoPlan')input.type='checkbox';
@@ -2352,7 +2394,7 @@ export async function setup(ctx) {
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,concurrency:Number($('concurrency').value),
       prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
-      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
+      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
   }
   function casting(c=config) {
     const routeActor=actor=>c.connectionMode==='one'?{...actor,route:scope(c),voice:singleVoice(actor,c)}:actor;
@@ -2382,7 +2424,7 @@ export async function setup(ctx) {
   function needsVoiceSelection(attribution,cast){
     const actors=[...cast.fixed,...cast.npcs];
     return attribution.segments.some(segment=>{
-      if(segment.kind==='sfx' || segment.kind==='ambience')return false;
+      if(segment.kind==='sfx' || isBed(segment))return false;
       const actor=actors.find(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker) || (actor.aliases || []).some(alias=>normalizeName(alias)===normalizeName(segment.speaker)));
       if(['single','skip'].includes(cast.npcPolicy?.mode) && !cast.fixed.includes(actor))return false;
       return !actor?.voice;
@@ -2483,7 +2525,7 @@ export async function setup(ctx) {
     $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;
     $('showAutoPlanAction').checked=Boolean(config.showAutoPlanAction);
     if($('enableSfx'))$('enableSfx').checked=config.enableSfx!==false;
-    $('enableAmbience').checked=config.enableAmbience!==false;
+    $('enableAmbience').checked=config.enableAmbience!==false;$('enableMusic').checked=config.enableMusic===true;
     if($('enableMixer'))$('enableMixer').checked=Boolean(config.enableMixer);
     if($('freesoundApiKey'))$('freesoundApiKey').value=config.freesoundApiKey||'';$('batchGemini').checked=config.batchGemini;$('concurrency').value=config.concurrency;$('autoDesignNPCs').checked=Boolean(config.autoDesignNPCs);
     if($('plannerMode'))$('plannerMode').value=resolvePlannerMode(config);
@@ -2501,7 +2543,7 @@ export async function setup(ctx) {
     busy=value;
     if(!value)scheduleAutoReplies();
     for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','connectionMode','apply','auto'])if($(name))$(name).disabled=value;
-    for (const name of ['model','planner','plannerMode','decisionConnection','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','enableSfx','enableAmbience','freesoundApiKey','testTts','importCast'])if($(name))$(name).disabled=value;
+    for (const name of ['model','planner','plannerMode','decisionConnection','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','enableSfx','enableAmbience','enableMusic','freesoundApiKey','testTts','importCast'])if($(name))$(name).disabled=value;
     updateTransport();
     if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button'),...$('npcPolicyRoot').querySelectorAll('input,select')])node.disabled=value;
@@ -2710,7 +2752,7 @@ export async function setup(ctx) {
     const record=await recordingStore('get',recordingKey(source.chatId,source.messageId)).catch(()=>null);
     if(source!==planSource)return;
     for(const [index,segment] of segments.entries()){
-      const batches=playbackBatches([segment],snapshot).filter(batch=>!batch.ambience?.stop);
+      const batches=playbackBatches([segment],snapshot).filter(batch=>!batch.ambience?.stop && !batch.music?.stop);
       const count=batches.filter(batch=>record?.passages?.[cacheKey(batch,snapshot)]).length;
       const node=$('preview').querySelector(`[data-cache-index="${index}"]`);
       if(node)node.textContent=speakerExcluded(segment.speaker)?'No voice · text retained':count===batches.length?'Cached':`${count}/${batches.length} cached · requires generation`;
@@ -3050,8 +3092,9 @@ export async function setup(ctx) {
   function playbackBatches(segments,snapshot,{filterMuted=true,batchGemini=false}={}){
     const sound=(kind,speaker,text,cue)=>({kind,speaker,voice:'',text,route:kind,[kind]:cue});
     const expanded=segments.flatMap(segment=>{
-      const {sfx,ambience,...speech}=segment;
+      const {sfx,ambience,music,...speech}=segment;
       const points=[
+        ...(snapshot.enableMusic===true?music || []:[]).map(entry=>sound('music','Music',entry.stop?'[Music stop]':`[Music: ${[...entry.feels,...entry.genres].join(', ')}]`,entry)),
         ...(snapshot.enableAmbience===false?[]:ambience || []).map(entry=>sound('ambience','Ambience',entry.stop?'[Ambience stop]':`[Ambience: ${entry.query}]`,entry.stop?entry:{...entry,filter:AMBIENCE_FILTER})),
         ...(snapshot.enableSfx===false?[]:sfx || []).map(cue=>sound('sfx','SFX',`[SFX: ${cue.query}]`,cue))
       ];
@@ -3069,16 +3112,17 @@ export async function setup(ctx) {
     }).filter(segment=>!(filterMuted && snapshot.muteNarrator && normalizeName(segment.speaker)==='narrator'));
     return ttsBatches(expanded,snapshot,batchGemini);
   }
-  const foleyKey=sfx=>JSON.stringify([sfx?.query || 'thump',sfx?.filter || 'duration:[0.2 TO 4]']);
+  const foleyKey=sound=>JSON.stringify(sound?.feels?[sound.feels,sound.genres,sound.keywords]:[sound?.query || 'thump',sound?.filter || 'duration:[0.2 TO 4]']);
   const freesoundKey=snapshot=>(snapshot.freesoundApiKey || $('freesoundApiKey')?.value || '').trim();
   const soundsEnabled=snapshot=>snapshot.enableSfx!==false || snapshot.enableAmbience!==false;
-  const soundCuesWanted=snapshot=>soundsEnabled(snapshot) && Boolean(freesoundKey(snapshot));
+  const soundCuesWanted=snapshot=>soundsEnabled(snapshot) && Boolean(freesoundKey(snapshot)) || snapshot.enableMusic===true;
   const missingFoleyKey=snapshot=>soundsEnabled(snapshot) && !freesoundKey(snapshot)?'Sound effects and ambience need a Freesound API key in Advanced settings. Speech continues.':'';
   async function chooseSoundCues(segments,signal,onStage=status){
     onStage('Choosing sound effects…');
-    const result=await rpc('sfx',{segments:segments.map(({speaker,text})=>({speaker,text})),connectionId:config.planner},signal,60000,
+    const result=await rpc('sfx',{segments:segments.map(({speaker,text})=>({speaker,text})),connectionId:config.planner,music:config.enableMusic===true},signal,60000,
       progress=>onStage(`Choosing sound effects: ${progress.stage}${progress.model?` · ${progress.model}`:''}`));
-    return result;
+    // Music alone needs no Freesound key; Freesound sounds without one would only fail later.
+    return freesoundKey(config)?result:{...result,cues:[],ambience:[]};
   }
   // Sound effects are optional: a failed choice never blocks speech.
   async function cuePlannedSegments(segments,ctrl,token){
@@ -3157,7 +3201,7 @@ export async function setup(ctx) {
       while(!failed && !ctrl.signal.aborted && activeWorkers<concurrency && nextToSynthesize<segments.length && nextToSynthesize<=playIdx+Number(snapshot.prefetch ?? 1)) {
         const idx=nextToSynthesize++;
         if(playbackExcluded(segments[idx]))continue;
-        if(segments[idx].kind==='ambience'){if(segments[idx].ambience.query)loadBed(idx).catch(()=>{});continue;}
+        if(isBed(segments[idx])){if(!segments[idx][segments[idx].kind].stop)loadBed(idx).catch(()=>{});continue;}
         if(scheduled.has(idx))continue;scheduled.add(idx);
         ensureSlot(idx);
         activeWorkers++;
@@ -3231,7 +3275,7 @@ export async function setup(ctx) {
           wakePlayback=null;
           continue;
         }
-        if(playbackExcluded(segments[playIdx]) || segments[playIdx].kind==='ambience'){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
+        if(playbackExcluded(segments[playIdx]) || isBed(segments[playIdx])){playIdx++;nextToSynthesize=Math.max(nextToSynthesize,playIdx);pump();continue;}
         ensureSlot(playIdx);pump();
         status(synthesisStages.get(playIdx) || `Waiting for audio ${playIdx+1}/${totalExpected || segments.length}: ${segments[playIdx].speaker}`);updateTransport();
         const outcome=await Promise.race([ready.get(playIdx),new Promise(resolve=>{wakePolicy=resolve;})]);wakePolicy=null;
@@ -3245,7 +3289,7 @@ export async function setup(ctx) {
         activePlayback={chatId:source.chatId,messageId:source.messageId,content:source.content,passage:seg.passageIndex ?? playIdx,chunk:seg.chunkIndex ?? 0};
         const offset=resumePending && source.resume.passage===activePlayback.passage && source.resume.chunk===activePlayback.chunk?source.resume.seconds:0;resumePending=false;
         const paused=pauseNext;pauseNext=false;
-        const marker=bedIndex(segments,playIdx);followBed(segments[marker]?.ambience,()=>loadBed(marker));
+        for(const kind in beds){const marker=bedIndex(segments,playIdx,kind);followBed(segments[marker]?.[kind],()=>loadBed(marker),kind);}
         try{await playBlob(blob,ctrl.signal,seg.speaker,offset,snapshot.normalizeLoudness,paused);}
         catch(error){
           if(seg.kind!=='sfx' || ctrl.signal.aborted || token!==revision)throw error;
@@ -3258,7 +3302,7 @@ export async function setup(ctx) {
       await saveQueue;
       if(saveError)status(`Audio could not be saved: ${saveError}`,true);
       return {blobs,segments,warnings:[...warnings]};
-    })().finally(()=>{if(token===revision)followBed();});
+    })().finally(()=>{if(token===revision)fadeOutBeds();});
 
     // Observe failures immediately while the next planning section is pending.
     playbackPromise.catch(()=>{failed=true;});
@@ -3339,19 +3383,19 @@ export async function setup(ctx) {
       generationPolicyChanged=()=>{if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=Boolean(currentAudio?.paused);skipAudio?.();}};
       for(let index=0;index<recording.blobs.length;) {
         const blob=recording.blobs[index];
-        if(!blob || speakerExcluded(recording.segments[index].speaker) || recording.segments[index].kind==='sfx' && config.enableSfx===false || recording.segments[index].kind==='ambience'){index++;continue;}
+        if(!blob || speakerExcluded(recording.segments[index].speaker) || recording.segments[index].kind==='sfx' && config.enableSfx===false || isBed(recording.segments[index])){index++;continue;}
         if(token!==revision || ctrl.signal.aborted)throw abortError();
         status(`Replaying ${index+1}/${recording.blobs.length}: ${recording.segments[index].speaker}`);
         const segment=recording.segments[index];
         let nextIndex=index+1;
         advancePlayback=(direction=1)=>{if(!skipAudio || ctrl.signal.aborted || token!==revision)return;const passage=segment.passageIndex ?? index;if(direction<0){let start=index;while(start>0 && (recording.segments[start-1].passageIndex ?? start-1)===passage)start--;nextIndex=Math.max(0,start-1);const previous=recording.segments[nextIndex].passageIndex ?? nextIndex;while(nextIndex>0 && (recording.segments[nextIndex-1].passageIndex ?? nextIndex-1)===previous)nextIndex--;}else while(nextIndex<recording.segments.length && (recording.segments[nextIndex].passageIndex ?? nextIndex)===passage)nextIndex++;pauseNext=Boolean(currentAudio?.paused);skipAudio();};
         activePlayback={chatId:targetChat,messageId,content:recording.content,passage:segment.passageIndex ?? index,chunk:segment.chunkIndex ?? 0};
-        const marker=bedIndex(recording.segments,index),bedBlob=config.enableAmbience!==false && recording.blobs[marker];followBed(bedBlob && recording.segments[marker].ambience,async()=>bedBlob);
+        for(const kind in beds){const marker=bedIndex(recording.segments,index,kind),bedBlob=bedEnabled(kind) && recording.blobs[marker];followBed(bedBlob && recording.segments[marker][kind],async()=>bedBlob,kind);}
         const paused=pauseNext;pauseNext=false;await playBlob(blob,ctrl.signal,recording.segments[index].speaker,0,config.normalizeLoudness,paused);
         index=nextIndex;const next=recording.segments[index];activePlayback={...activePlayback,passage:next?.passageIndex ?? (activePlayback.passage+1),chunk:next?.chunkIndex ?? 0,complete:index===recording.blobs.length};savePosition(0);activePlayback=null;
       }
       if(token===revision)status('Replay finished.');
-    } finally {if(token===revision){followBed();activePlayback=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();controller=null;setBusy(false);}}
+    } finally {if(token===revision){fadeOutBeds();activePlayback=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();controller=null;setBusy(false);}}
   }
   async function playMessage(messageId) {
     if(controller && messagePlaybackId===messageId){stop();return;}
@@ -3772,12 +3816,14 @@ export async function setup(ctx) {
 
   $('enableSfx').addEventListener('change',syncSfxPlayback);
   $('enableAmbience').addEventListener('change',syncAmbiencePlayback);
+  $('enableMusic').addEventListener('change',syncMusicPlayback);
   $('freesoundApiKey').addEventListener('input',()=>showFoleyStatus());
 
   const foleyCache = new Map();
   // The story moment lets the backend's Decision model pick among Freesound's results.
   async function fetchFoleyAudio(seg, snapshot, signal) {
     signal.throwIfAborted();
+    if(seg.kind==='music')return fetchMusicTrack(seg, snapshot, signal);
     const sfx = seg[seg.kind];
     const query = sfx.query || 'thump';
     const filter = sfx.filter || 'duration:[0.2 TO 4]';
@@ -3804,6 +3850,17 @@ export async function setup(ctx) {
     foleyCache.set(key,blob);
     if(foleyCache.size>64)foleyCache.delete(foleyCache.keys().next().value);
     return blob;
+  }
+
+  // Incompetech sends no CORS headers, so the track streams from its URL instead of a cached blob.
+  async function fetchMusicTrack(seg, snapshot, signal) {
+    const key=foleyKey(seg.music);
+    if(foleyCache.has(key))return foleyCache.get(key);
+    const {feels,genres,keywords}=seg.music;
+    const track=await rpc('music',{feels,genres,keywords,moment:seg.moment,decisionConnection:snapshot.decisionConnection,jevApiKey:snapshot.jevApiKey,jevEndpoint:snapshot.jevEndpoint},signal,20000);
+    signal.throwIfAborted();
+    foleyCache.set(key,track);
+    return track;
   }
 
   async function synthesizeSegment(seg,snapshot,apiKey,signal) {
@@ -3967,7 +4024,7 @@ const paragraphAudioCache = new Map();
         // Prefetch upcoming paragraph in background for 0ms transition latency
         if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
           void loadParagraphCues(nextText, snapshot, '', ctrl.signal).catch(() => {}).then(() => {
-            const first = planAndBatchParagraph(nextText, snapshot, true).find(batch => batch.kind !== 'ambience');
+            const first = planAndBatchParagraph(nextText, snapshot, true).find(batch => !isBed(batch));
             if (!ctrl.signal.aborted && first && !playbackExcluded(first)) {
               getCachedOrSynthesize(first, snapshot, apiKey, ctrl.signal).catch(() => {});
             }
@@ -3979,10 +4036,10 @@ const paragraphAudioCache = new Map();
           const batch = batches[i];
           if(playbackExcluded(batch))continue;
           // The bed keeps running after this paragraph until another bed, a stop entry, stop() or cancellation.
-          if(batch.kind==='ambience'){followBed(batch.ambience,bedSignal=>getCachedOrSynthesize(batch,snapshot,apiKey,bedSignal).catch(error=>{if(!bedSignal.aborted)warnFoley(error);throw error;}));continue;}
+          if(isBed(batch)){followBed(batch[batch.kind],bedSignal=>getCachedOrSynthesize(batch,snapshot,apiKey,bedSignal).catch(error=>{if(!bedSignal.aborted)warnFoley(error);throw error;}),batch.kind);continue;}
 
           // Pipeline next batch synthesis concurrently with current batch playback
-          if (snapshot.prefetch>0 && i + 1 < batches.length && !playbackExcluded(batches[i+1]) && batches[i+1].kind!=='ambience') {
+          if (snapshot.prefetch>0 && i + 1 < batches.length && !playbackExcluded(batches[i+1]) && !isBed(batches[i+1])) {
             getCachedOrSynthesize(batches[i + 1], snapshot, apiKey, ctrl.signal).catch(() => {});
           }
 
