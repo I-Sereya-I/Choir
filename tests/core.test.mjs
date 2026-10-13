@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
+import {speechPanel} from './fixtures/speech-panel.mjs';
 import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,reconcileCardCast} from '../src/core.js';
 import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
 
@@ -11,6 +12,46 @@ test('ignored tags skip nested, attributed, mixed-case and unfinished blocks wit
   assert.equal(transcriptFromMessage('Safe. <summary>Never finished','summary'),'Safe.');
   assert.equal(transcriptFromMessage('<summary>Entirely ignored.</summary>','summary'),'');
   assert.equal(transcriptFromMessage('Read <story>this.</story>','other'),'Read this.');
+});
+
+test('ignored entries accept exact classes and IDs, optionally scoped to a tag',()=>{
+  assert.deepEqual(ignoredTagNames('Summary, <private-note>, .UI-note, #Panel-ID, div.ui-note, aside#sidebar, .ui-note, invalid.*, div[hidden], .one.two'),['summary','private-note','.ui-note','#panel-id','div.ui-note','aside#sidebar']);
+  const source=`Before. <div class="note extra" title="a > b">Hidden. <div>Nested.</div></div> <p class="note">Read this.</p> <aside id='sidebar'>Hidden too.</aside> <span class=not-note>After.</span>`;
+  assert.equal(transcriptFromMessage(source,'div.note, #sidebar').replace(/\s+/g,' '),'Before. Read this. After.');
+  assert.equal(transcriptFromMessage(source,'.NOTE, aside#SIDEBAR').replace(/\s+/g,' '),'Before. After.');
+  assert.equal(transcriptFromMessage('Read. <div class="note">An unfinished excluded block','.note'),'Read.');
+  assert.equal(transcriptFromMessage('<div id=sidebar/><p>Read.</p>','#sidebar'),'Read.');
+});
+
+test('complete radio-tabbed panels are removed automatically with their notification and status chrome',()=>{
+  assert.equal(transcriptFromMessage(speechPanel),'');
+  for(const wrapper of ['Before. '+speechPanel+' After.',`<div class="story"><p>Before.</p>${speechPanel}<p>After.</p></div>`]){
+    assert.equal(transcriptFromMessage(wrapper).replace(/\s+/g,' '),'Before. After.');
+  }
+  assert.equal(transcriptFromMessage(`<div><p>Before.</p>${speechPanel}${speechPanel}<p>After.</p></div>`).replace(/\s+/g,' '),'Before. After.');
+});
+
+test('ARIA tabbed panels are filtered as complete components while surrounding HTML prose survives',()=>{
+  const panel='<section class="browser-panel"><div role="tablist"><button role="tab" aria-controls="one">One</button><button role="tab" aria-controls="two">Two</button></div><div role="tabpanel" id="one">Interface article.</div><div role="tabpanel" id="two">Another article.</div></section>';
+  assert.equal(transcriptFromMessage(`<article><p>He opened the page.</p>${panel}<div>"Hello," she said.</div></article>`).replace(/\s+/g,' '),'He opened the page. "Hello," she said.');
+});
+
+test('interface controls, hidden text and SVG labels do not enter the speech transcript',()=>{
+  const widgets=['<button>Next page</button>','<select><option>Choose a tab</option></select>','<textarea>UI draft</textarea>','<svg><title>Battery</title><text>84%</text></svg>','<div hidden>Hidden panel</div>','<div aria-hidden="true">Decorative text</div>','<div style="color: red; display: none !important;">Invisible text</div>','<div role="toolbar"><button>Save</button>Toolbar label</div>'];
+  for(const widget of widgets)assert.equal(transcriptFromMessage('Before. '+widget+' After.').replace(/\s+/g,' '),'Before. After.');
+  assert.equal(transcriptFromMessage('Before. <style>.x::after { content: "<div>not HTML</div>"; }</style> After.').replace(/\s+/g,' '),'Before. After.');
+});
+
+test('styled story layouts, literal UI descriptions and incomplete tab markup are retained conservatively',()=>{
+  const story='<div style="background: navy; border: 1px solid blue"><p>She tapped the browser tab.</p><div class="tab-content">"Wait," he said.</div><span>Then he closed the window.</span></div>';
+  assert.equal(transcriptFromMessage(story).replace(/\s+/g,' '),'She tapped the browser tab."Wait," he said.Then he closed the window.');
+  const incomplete=speechPanel.slice(0,speechPanel.lastIndexOf('</div>'))+'<p>The story continues outside the incomplete widget.</p>';
+  assert.ok(transcriptFromMessage(incomplete).includes('The story continues outside the incomplete widget.'));
+  assert.equal(transcriptFromMessage('<div class="kb-content-wrap">Ordinary narration.</div>'),'Ordinary narration.');
+  assert.equal(transcriptFromMessage('<div data-class="hud">Actual story.</div>'),'Actual story.');
+  const mixed=speechPanel.replace('  <style>','Phone screen description. <style>');
+  const surrounding=`<div style="background: navy"><p>Story before.</p>${mixed}<p>Story after.</p></div>`;
+  assert.ok(transcriptFromMessage(surrounding).includes('Story before.'));assert.ok(transcriptFromMessage(surrounding).includes('Story after.'));
 });
 
 test('multiple card characters keep separate profiles even when the second begins beyond the description budget',()=>{

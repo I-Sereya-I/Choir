@@ -5,6 +5,7 @@ import {JSDOM} from 'jsdom';
 import {IDBFactory} from 'fake-indexeddb';
 import {setup} from '../dist/frontend.js';
 import {validatePlan,speechSourceUnits,planningSections,transcriptFromMessage} from '../src/core.js';
+import {speechPanel} from './fixtures/speech-panel.mjs';
 
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 const until=async(predicate)=>{for(let i=0;i<250;i++){if(predicate())return;await tick();}throw Error('Timed out waiting for regression state');};
@@ -344,6 +345,39 @@ test('legacy defaults migrate cast choices and cannot replace newer global prefe
   h.store.set('settings:global',{chunk:8000,enableMusic:true});h.state.active='chat-new';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');
   assert.equal(h.$('chunk').value,'8000');assert.equal(h.$('enableMusic').checked,true);assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="NPC casting"]').value,'skip');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');
   captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));assert.equal(h.store.get('settings:captured-defaults').version,2);assert.equal(h.store.get('settings:captured-defaults').preferences,undefined);
+ }finally{await h.close();}
+});
+
+test('automatic HTML panel filtering reaches LLM and Jev input, context, TTS and Cue without ignoring story divs',async()=>{
+ const h=await harness();try{
+  h.message.content=`<div><p>At dawn.</p>${speechPanel}<p>"Hello." "Wait."</p></div>`;
+  h.state.messages=[{id:'previous',name:'Mira',content:`Earlier. ${speechPanel}`,is_user:false},h.message];
+  assert.equal(h.$('ignoredTags').value,'');await h.plan();
+  const input=h.requests.find(request=>request.action==='plan').input;
+  assert.equal(input.transcript.replace(/\s+/g,' '),'At dawn. "Hello." "Wait."');assert.ok(!input.context.includes('UI message'));assert.ok(!input.context.includes('First panel'));
+  await h.play();assert.ok(h.synthesis.length>0);assert.ok(h.synthesis.every(request=>!/UI message|panel content|notification|Battery|84%/.test(request.text)));
+  const bridge=globalThis.__CHOIR_API__,generated=h.synthesis.length;
+  assert.deepEqual(bridge.planParagraph(speechPanel).segments,[]);await bridge.playParagraph({text:speechPanel});assert.equal(h.synthesis.length,generated);
+  await bridge.playParagraph({text:'<div class="kb-content-wrap">Ordinary narration.</div>'});assert.ok(h.synthesis.at(-1).text.includes('Ordinary narration'));
+  h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+  await h.click('latest',text=>text.includes('The object cannot be cloned'));
+  const jev=h.requests.find(request=>request.action==='planJev').input;assert.ok(!jev.transcript.includes('panel content'));assert.ok(!jev.context.includes('UI message'));assert.ok(jev.transcript.includes('Hello'));
+ }finally{await h.close();}
+});
+
+test('precise class and ID exclusions replace old panel attribution and audio while keeping reusable story passages',async()=>{
+ const h=await harness();try{
+  h.message.content='At dawn. UI message that must not be spoken. "Hello." "Wait."';await h.plan();await h.play();
+  const old=h.synthesis.length,plans=h.requests.filter(request=>request.action==='plan').length;
+  h.message.content='At dawn. <aside class="bespoke-note">UI message that must not be spoken.</aside> "Hello." "Wait."';
+  for(const [key,saved] of h.store)if(key.startsWith('plan:'))saved.content=h.message.content;
+  h.$('ignoredTags').value='.bespoke-note, #phone-status';h.$('ignoredTags').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  h.state.messages=[{id:'previous',name:'Mira',is_user:false,content:'Earlier. <div id="phone-status">UI context.</div>'},h.message];
+  await h.play();assert.equal(h.requests.filter(request=>request.action==='plan').length,plans+1);
+  assert.ok(h.synthesis.slice(old).every(request=>!request.text.includes('UI message')));assert.ok(!h.requests.filter(request=>request.action==='plan').at(-1).input.context.includes('UI context'));
+  assert.equal(h.synthesis.filter(request=>request.text.includes('Hello')).length,1);assert.equal(h.synthesis.filter(request=>request.text.includes('Wait')).length,1);
+  const generated=h.synthesis.length;await h.reload();await h.play();assert.equal(h.synthesis.length,generated);assert.equal(h.$('ignoredTags').value,'.bespoke-note, #phone-status');
+  const bridge=globalThis.__CHOIR_API__;await bridge.playParagraph({text:'<aside class="bespoke-note">Ignore this paragraph.</aside>'});assert.equal(h.synthesis.length,generated);
  }finally{await h.close();}
 });
 

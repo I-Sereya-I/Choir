@@ -140,29 +140,84 @@ function normalizeVoiceCatalogue(catalogue) {
 
 function ignoredTagNames(value) {
   const entries=Array.isArray(value)?value:String(value || '').split(/[\s,;]+/);
-  return [...new Set(entries.map(tag=>String(tag).trim().replace(/^<\/?|\/?>$/g,'').toLowerCase()).filter(tag=>/^[a-z][\w:-]*$/.test(tag)))].slice(0,100);
+  return [...new Set(entries.map(tag=>String(tag).trim().replace(/^<\/?|\/?>$/g,'').toLowerCase()).filter(tag=>/^(?:[a-z][\w:-]*(?:[.#][\w:-]+)?|[.#][\w:-]+)$/.test(tag)))].slice(0,100);
+}
+
+function speechMarkupRanges(text,ignoredTags) {
+  // Use the same DOM-independent filter in the frontend, backend and Cue.
+  const tags=/<\/?([a-z][\w:-]*)\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+  const selectors=ignoredTagNames(ignoredTags).map(entry=>{
+    const selector=/^([a-z][\w:-]*)?([.#])([\w:-]+)$/.exec(entry);
+    return selector?{tag:selector[1],attribute:selector[2]==='.'?'class':'id',value:selector[3]}:{tag:entry};
+  });
+  const metadata=/^(?:think|thinking|reasoning|analysis|redacted_thinking|tracker|stats|status|state|details|script|style|svg|canvas|input|button|select|textarea|option|progress|meter|nav|form|dialog|(?:loom|tool|function|ext_tracker)(?:[_-][\w-]+)?)$/i;
+  const voidTags=new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+  const root={children:[]},stack=[root],nodes=[];let match;
+  while((match=tags.exec(text))) {
+    const closing=match[0].startsWith('</'),selfClosing=/\/\s*>$/.test(match[0]),tag=match[1].toLowerCase();
+    if(closing){
+      let index=stack.length-1;while(index>0 && stack[index].tag!==tag)index--;
+      if(index>0){
+        for(let inner=index+1;inner<stack.length;inner++)stack[inner].end=match.index;
+        stack[index].end=tags.lastIndex;stack[index].closed=true;stack.length=index;
+      }
+      continue;
+    }
+    const attrs=Object.create(null);
+    const attributePattern=/([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;let attribute;
+    const attributeText=match[0].slice(match[1].length+1,-1);
+    while((attribute=attributePattern.exec(attributeText)))attrs[attribute[1].toLowerCase()]=(attribute[2] ?? attribute[3] ?? attribute[4] ?? '').toLowerCase();
+    const node={tag,attrs,start:match.index,openEnd:tags.lastIndex,end:text.length,closed:false,children:[]};
+    nodes.push(node);stack.at(-1).children.push(node);
+    const classes=(attrs.class || '').split(/\s+/);
+    node.ignored=metadata.test(tag) || selectors.some(selector=>(!selector.tag || selector.tag===tag) && (!selector.attribute || (selector.attribute==='class'?classes.includes(selector.value):attrs.id===selector.value))) ||
+      /\b(?:tracker|stats|status-panel|hud)\b/i.test(`${attrs.class || ''} ${attrs.id || ''}`) ||
+      /^(?:status|alert|navigation|toolbar|menu|menubar|dialog|alertdialog|progressbar)$/.test(attrs.role || '') ||
+      Object.hasOwn(attrs,'hidden') || attrs['aria-hidden']==='true' || /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\s*(?:!important\s*)?(?:;|$)/i.test(attrs.style || '');
+    if(selfClosing || voidTags.has(tag)){node.end=tags.lastIndex;node.closed=true;}
+    else if(tag==='style' || tag==='script'){
+      // CSS and JavaScript can contain strings that look like HTML tags.
+      const end=new RegExp(`</${tag}\\s*>`,'gi');end.lastIndex=tags.lastIndex;
+      const found=end.exec(text);node.end=found?end.lastIndex:text.length;node.closed=Boolean(found);tags.lastIndex=node.end;
+    }else stack.push(node);
+  }
+
+  // Recognize a complete tabbed UI surface, rather than treating every div as UI.
+  // The smallest complete component wins, so a story wrapper around it survives.
+  for(let index=nodes.length-1;index>=0;index--){
+    const node=nodes[index],{attrs}=node,identity=`${attrs.class || ''} ${attrs.id || ''}`;
+    const stats={tabs:attrs.role==='tab'?1:0,panels:attrs.role==='tabpanel' || /(?:^|[\s_-])tab(?:bed)?[-_](?:content|panel)(?:$|[\s_-])/.test(identity)?1:0,groups:new Map(),labels:new Set(),hasPanel:false};
+    if(node.tag==='input' && attrs.type==='radio' && attrs.name && attrs.id)stats.groups.set(attrs.name,new Set([attrs.id]));
+    if(node.tag==='label' && attrs.for)stats.labels.add(attrs.for);
+    for(const child of node.children){
+      stats.tabs+=child.stats.tabs;stats.panels+=child.stats.panels;stats.hasPanel ||= child.stats.hasPanel;
+      for(const label of child.stats.labels)stats.labels.add(label);
+      for(const [group,ids] of child.stats.groups){if(!stats.groups.has(group))stats.groups.set(group,new Set());for(const id of ids)stats.groups.get(group).add(id);}
+    }
+    const tabs=stats.tabs>=2 && stats.panels>=1 || stats.panels>=2 && [...stats.groups.values()].some(ids=>[...ids].filter(id=>stats.labels.has(id)).length>=2);
+    const surface=node.children.some(child=>child.tag==='style') || /(?:^|;)\s*(?:background(?:-color)?|border(?:-[\w-]+)?|box-shadow)\s*:/.test(attrs.style || '') || /(?:^|[\s_-])(?:widget|panel|browser|phone|device|dashboard)(?:$|[\s_-])/.test(identity);
+    let directText='',cursor=node.openEnd;
+    const separateParts=node.children.filter(child=>child.stats.tabs || child.stats.panels || child.stats.groups.size).length>=2;
+    if(tabs && surface && separateParts && node.closed && !stats.hasPanel && /^(?:div|section|article|aside)$/.test(node.tag)){
+      for(const child of node.children){directText+=text.slice(cursor,child.start);cursor=child.end;}
+      directText+=text.slice(cursor,text.lastIndexOf('</',node.end-1));
+      if(!directText.replace(/&nbsp;|&#160;/gi,' ').trim()){node.ignored=true;stats.hasPanel=true;}
+    }
+    node.stats=stats;
+  }
+  const ranges=[];
+  for(const node of nodes.filter(node=>node.ignored)){
+    const previous=ranges.at(-1);
+    if(previous && node.start<=previous[1])previous[1]=Math.max(previous[1],node.end);
+    else ranges.push([node.start,node.end]);
+  }
+  return ranges;
 }
 
 function transcriptFromMessage(value, ignoredTags=[]) {
   // Remove complete metadata panels before unwrapping ordinary story markup.
   let text=String(value || '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/<!--[\s\S]*?(?:-->|$)/g,' ');
-  const tags=/<\/?([a-z][\w:-]*)\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
-  const ignored=new Set(ignoredTagNames(ignoredTags));
-  const metadata=/^(?:think|thinking|reasoning|analysis|redacted_thinking|tracker|stats|status|state|details|script|style|(?:loom|tool|function|ext_tracker)(?:[_-][\w-]+)?)$/i;
-  const ranges=[];let block=null,match;
-  while((match=tags.exec(text))) {
-    const closing=match[0].startsWith('</'),selfClosing=/\/\s*>$/.test(match[0]),tag=match[1].toLowerCase();
-    if(block) {
-      if(tag===block.tag) {
-        if(closing)block.depth--;else if(!selfClosing)block.depth++;
-        if(!block.depth){ranges.push([block.start,tags.lastIndex]);block=null;}
-      }
-    } else if(!closing && (ignored.has(tag) || metadata.test(tag) || /\b(?:class|id)\s*=\s*(?:"[^"]*\b(?:tracker|stats|status-panel|hud)\b[^\"]*"|'[^']*\b(?:tracker|stats|status-panel|hud)\b[^']*'|(?:tracker|stats|status-panel|hud)\b)/i.test(match[0]))) {
-      if(selfClosing)ranges.push([match.index,tags.lastIndex]);
-      else block={tag,start:match.index,depth:1};
-    }
-  }
-  if(block)ranges.push([block.start,text.length]);
+  const ranges=speechMarkupRanges(text,ignoredTags);
   for(const [start,end] of ranges.reverse())text=text.slice(0,start)+' '+text.slice(end);
 
     const hudKeys = 'Time|Date|Location|Place|Setting|Costume|Outfit|Clothing|Posture|Position|' +
@@ -1244,7 +1299,8 @@ export async function setup(ctx) {
     </div>
 
     <p style="font-size:.85em;opacity:.8">Speech &amp; Planner settings save automatically and apply to every chat.</p>
-    <label>Ignored tags<textarea data-et="ignoredTags" rows="2" placeholder="summary, inventory, private-notes"></textarea></label>
+    <label>Ignored tags<textarea data-et="ignoredTags" rows="2" placeholder="summary, .panel-class, #panel-id"></textarea></label>
+    <small>Tags, .classes, or #IDs. Tabbed panels and interface controls are skipped automatically; ordinary story HTML is kept.</small>
     <p style="font-size:.85em;opacity:.75">Skip everything inside these tags when reading. Enter tag names separated by commas or new lines, for example summary skips &lt;summary&gt;…&lt;/summary&gt;.</p>
 
     <details>
@@ -3633,7 +3689,7 @@ export async function setup(ctx) {
       if(!sameSpeech(ctx.messages.getContent(messageId),recording.content))throw new Error('The message changed since recording. Plan and play the current reply.');
       if(mergedCardRecording(recording))throw new Error('This recording combines several card characters into one voice. Plan and play the message again to separate them.');
       if(aliasedLeadRecording(recording))throw new Error('This recording treats a lead character alias as a separate speaker. Plan and play the message again to use the lead voice.');
-      if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to remove trackers or update the persona name.');
+      if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to apply the current filters or persona name.');
       mixerPlaybackSegments=recording.segments;renderMixer();
       let pauseNext=false;
       generationPolicyChanged=()=>{if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=Boolean(currentAudio?.paused);skipAudio?.();}};

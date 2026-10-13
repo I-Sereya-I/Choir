@@ -291,7 +291,8 @@ export async function setup(ctx) {
     </div>
 
     <p style="font-size:.85em;opacity:.8">Speech &amp; Planner settings save automatically and apply to every chat.</p>
-    <label>Ignored tags<textarea data-et="ignoredTags" rows="2" placeholder="summary, inventory, private-notes"></textarea></label>
+    <label>Ignored tags<textarea data-et="ignoredTags" rows="2" placeholder="summary, .panel-class, #panel-id"></textarea></label>
+    <small>Tags, .classes, or #IDs. Tabbed panels and interface controls are skipped automatically; ordinary story HTML is kept.</small>
     <p style="font-size:.85em;opacity:.75">Skip everything inside these tags when reading. Enter tag names separated by commas or new lines, for example summary skips &lt;summary&gt;…&lt;/summary&gt;.</p>
 
     <details>
@@ -2680,7 +2681,7 @@ export async function setup(ctx) {
       if(!sameSpeech(ctx.messages.getContent(messageId),recording.content))throw new Error('The message changed since recording. Plan and play the current reply.');
       if(mergedCardRecording(recording))throw new Error('This recording combines several card characters into one voice. Plan and play the message again to separate them.');
       if(aliasedLeadRecording(recording))throw new Error('This recording treats a lead character alias as a separate speaker. Plan and play the message again to use the lead voice.');
-      if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to remove trackers or update the persona name.');
+      if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to apply the current filters or persona name.');
       mixerPlaybackSegments=recording.segments;renderMixer();
       let pauseNext=false;
       generationPolicyChanged=()=>{if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=Boolean(currentAudio?.paused);skipAudio?.();}};
