@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 const require=createRequire(process.env.CHOIR_BROWSER_MODULES?path.join(process.env.CHOIR_BROWSER_MODULES,'package.json'):import.meta.url);
 const {chromium}=require('playwright');
 const errors=[];
-const html=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Choir integration fixture</title><style>@media(max-width:600px){body>div{display:block!important;padding:12px!important}article{display:none}main{width:auto!important}}</style></head><body style="margin:0;background:#141923;color:#e5e9f0;font:16px system-ui;color-scheme:dark"><div style="display:grid;grid-template-columns:1fr 680px;gap:24px;padding:32px"><article><h1>Lumiverse · Choir</h1><p>The hall fell silent.</p><p>“Welcome.”</p><p>A new story begins.</p><nav aria-label="Chat toolbar"><span id="chat-actions"></span></nav><footer></footer></article><main style="border:1px solid #ffffff30;border-radius:16px"></main></div><script type="module">
+const html=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Choir integration fixture</title><style>@media(max-width:800px){body>div{display:block!important;padding:12px!important}article{display:none}main{width:auto!important}}</style></head><body style="margin:0;background:#141923;color:#e5e9f0;font:16px system-ui;color-scheme:dark"><div style="display:grid;grid-template-columns:1fr 680px;gap:24px;padding:32px"><article><h1>Lumiverse · Choir</h1><p>The hall fell silent.</p><p>“Welcome.”</p><p>A new story begins.</p><nav aria-label="Chat toolbar"><span id="chat-actions"></span></nav><footer></footer></article><main style="border:1px solid #ffffff30;border-radius:16px"></main></div><script type="module">
 import {setup} from '/dist/frontend.js';import {validatePlan,speechSourceUnits} from '/src/core.js';
 const store=new Map(),events=new Map(),root=document.querySelector('main'),footer=document.querySelector('footer');let backend;window.calls=[];window.plans=0;window.gains=[];window.audios=[];window.foleySearches=0;window.foleyDownloads=0;const RealAudio=window.Audio;window.Audio=function(url){const audio=new RealAudio(url);window.audios.push(audio);return audio;};
 const realPlay=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){if(this.loop && window.rejectAmbience)return Promise.reject(new DOMException('Playback requires a user gesture','NotAllowedError'));return realPlay.call(this);};
@@ -69,7 +69,7 @@ try{
   await boostPage.evaluate(()=>{window.fixtureMessage.content='The page snapped under her thumb. "Welcome."';window.boostDecodes=0;const decode=AudioContext.prototype.decodeAudioData;AudioContext.prototype.decodeAudioData=function(...args){window.boostDecodes++;return decode.apply(this,args);};});
   await boostPage.getByRole('button',{name:'Open Choir voice mixer',exact:true}).press('Enter');await boostPage.getByRole('button',{name:'Plan latest reply',exact:true}).click();await boostPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await boostPage.getByRole('button',{name:'Channel levels',exact:true}).click();
-  for(const name of ['Narrator','Mira','SFX','Ambience']){const entry=boostPage.getByRole('spinbutton',{name:`${name} volume percent`,exact:true,includeHidden:true});assert.equal(await entry.inputValue(),'100');assert.equal(await entry.getAttribute('max'),'300');await boostPage.getByRole('slider',{name:`${name} volume`,exact:true}).press('End');assert.equal(await entry.inputValue(),'300');}
+  for(const name of ['Narrator','Mira','SFX','Ambience']){await boostPage.getByRole('tab',{name:['SFX','Ambience'].includes(name)?'Scene audio':'Main cast',exact:true}).click();const entry=boostPage.getByRole('spinbutton',{name:`${name} volume percent`,exact:true,includeHidden:true});assert.equal(await entry.inputValue(),'100');assert.equal(await entry.getAttribute('max'),'300');await boostPage.getByRole('slider',{name:`${name} volume`,exact:true}).press('End');assert.equal(await entry.inputValue(),'300');}
   const boostMaster=boostPage.getByRole('slider',{name:'Master volume',exact:true});assert.equal(await boostMaster.getAttribute('max'),'1');await boostMaster.press('End');assert.equal(await boostMaster.getAttribute('aria-valuetext'),'100 percent');
   await boostPage.locator('[data-choir-action="playback"]').click();await boostPage.waitForFunction(()=>window.gains.length===1 && window.audios[0].paused===false && !document.querySelector('[data-choir-action="playback"]').disabled);
   await boostPage.locator('[data-choir-action="playback"]').click();assert.equal(await boostPage.evaluate(()=>window.gains[0].gain.value),3);await boostMaster.press('Home');await boostMaster.press('ArrowRight');assert.ok(Math.abs(await boostPage.evaluate(()=>window.gains[0].gain.value)-0.03)<0.000001);await boostMaster.press('End');
@@ -121,27 +121,31 @@ try{
   assert.equal(await page.getByRole('slider',{name:'Ambience volume',exact:true}).isVisible(),false);
   if(process.env.CHOIR_LEVELS_COLLAPSED_SCREENSHOT)await page.locator('[data-choir-mixer]').screenshot({path:process.env.CHOIR_LEVELS_COLLAPSED_SCREENSHOT});
   await levelsToggle.press('Enter');assert.equal(await levelsToggle.getAttribute('aria-expanded'),'true');
-  const ambienceSwitch=page.getByRole('button',{name:'Ambient sound',exact:true});assert.equal(await ambienceSwitch.innerText(),'Ambience On');
-  await ambienceSwitch.press('Space');assert.equal(await ambienceSwitch.getAttribute('aria-pressed'),'false');assert.equal(await page.locator('[data-et="enableAmbience"]').isChecked(),false);assert.equal(await page.locator('.cm-channel[data-kind="ambience"]').count(),0);
+  assert.deepEqual(await page.locator('.cm-channel-tab').allTextContents(),['Main cast','NPCs','Scene audio']);await page.getByRole('tab',{name:'Scene audio',exact:true}).click();
+  const ambienceSwitch=page.getByRole('button',{name:'Ambient sound',exact:true});assert.equal(await ambienceSwitch.innerText(),'Ambience');
+  await ambienceSwitch.press('Space');assert.equal(await ambienceSwitch.getAttribute('aria-pressed'),'false');assert.equal(await page.locator('[data-et="enableAmbience"]').isChecked(),false);assert.equal(await page.getByRole('slider',{name:'Ambience volume',exact:true}).isVisible(),true);
   await page.locator('[data-et="enableAmbience"]').check();assert.equal(await ambienceSwitch.getAttribute('aria-pressed'),'true');assert.equal(await page.getByRole('slider',{name:'Ambience volume',exact:true}).isVisible(),true);
   const effectsLevel=page.getByRole('slider',{name:'SFX volume',exact:true});await effectsLevel.press('Home');await effectsLevel.press('ArrowRight');assert.equal(await effectsLevel.getAttribute('aria-valuetext'),'1 percent');await effectsLevel.press('End');assert.equal(await effectsLevel.getAttribute('aria-valuetext'),'300 percent');await effectsLevel.evaluate(node=>{node.value='1';node.dispatchEvent(new Event('input'));node.dispatchEvent(new Event('change'));});
   await levelsToggle.press('Space');assert.equal(await levelsToggle.getAttribute('aria-expanded'),'false');assert.equal(await effectsLevel.isVisible(),false);assert.equal(await page.getByRole('slider',{name:'Master volume',exact:true}).isVisible(),true);
   await levelsToggle.press('Space');await page.waitForFunction(()=>window.fixtureStore.get('ui:mixer').levelsCollapsed===false);
+  const musicSwitch=page.getByRole('button',{name:'Background music',exact:true}),musicLevel=page.getByRole('slider',{name:'Music volume',exact:true});assert.equal(await musicSwitch.innerText(),'Music');assert.equal(await musicSwitch.getAttribute('aria-pressed'),'false');assert.equal(await musicLevel.isVisible(),true);assert.equal(await musicLevel.getAttribute('max'),'3');
+  const offColor=await musicSwitch.evaluate(node=>getComputedStyle(node).backgroundColor);await musicSwitch.click();assert.equal(await musicSwitch.getAttribute('aria-pressed'),'true');assert.equal(await page.locator('[data-et="enableMusic"]').isChecked(),true);assert.notEqual(await musicSwitch.evaluate(node=>getComputedStyle(node).backgroundColor),offColor);await musicSwitch.click();assert.equal(await musicSwitch.getAttribute('aria-pressed'),'false');
+  await page.getByRole('tab',{name:'Main cast',exact:true}).click();
   assert.equal(await page.locator('.cm-channel[data-kind="voice"]').count(),0);assert.equal(await page.getByText('Plan the latest reply to see its voices.',{exact:true}).isVisible(),true);
   const planLatest=page.getByRole('button',{name:'Plan latest reply',exact:true});assert.equal(await planLatest.isEnabled(),true);assert.equal(await page.getByRole('button',{name:'Play latest reply',exact:true}).isEnabled(),true);
-  const sfxSwitch=page.getByRole('button',{name:'Sound effects',exact:true});assert.equal(await sfxSwitch.innerText(),'SFX On');assert.equal(await sfxSwitch.locator('..').getAttribute('class'),'cm-auto-plan');
+  const sfxSwitch=page.getByRole('button',{name:'Sound effects',exact:true});assert.equal(await sfxSwitch.innerText(),'SFX');assert.equal(await sfxSwitch.locator('..').getAttribute('class'),'cm-auto-plan');
   await sfxSwitch.press('Space');assert.equal(await sfxSwitch.getAttribute('aria-pressed'),'false');assert.equal(await page.locator('[data-et="enableSfx"]').isChecked(),false);await sfxSwitch.press('Space');assert.equal(await sfxSwitch.getAttribute('aria-pressed'),'true');
   const autoPlanSwitch=page.getByRole('button',{name:'Auto-plan new replies',exact:true});
   assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'true');
   await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').autoPlan===true);await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');
   const autoPlaySwitch=page.getByRole('button',{name:'Auto-play new replies',exact:true}),autoPlaySetting=page.getByRole('checkbox',{name:'Auto-play new replies',exact:true});
-  assert.equal(await autoPlaySwitch.innerText(),'Auto-play Off');assert.equal(await autoPlaySwitch.getAttribute('aria-pressed'),'false');
+  assert.equal(await autoPlaySwitch.innerText(),'Auto-play');assert.equal(await autoPlaySwitch.getAttribute('aria-pressed'),'false');
   await autoPlaySwitch.click();assert.equal(await autoPlaySetting.isChecked(),true);assert.equal(await autoPlaySwitch.getAttribute('aria-pressed'),'true');assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');
   await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').auto===true);
   await autoPlaySwitch.press('Space');assert.equal(await autoPlaySetting.isChecked(),false);assert.equal(await autoPlaySwitch.getAttribute('aria-pressed'),'false');
-  await autoPlaySetting.check();assert.equal(await autoPlaySwitch.innerText(),'Auto-play On');
+  await autoPlaySetting.check();assert.equal(await autoPlaySwitch.innerText(),'Auto-play');
   if(process.env.CHOIR_AUTOMATION_SCREENSHOT)await page.locator('.cm-auto-plan').screenshot({path:process.env.CHOIR_AUTOMATION_SCREENSHOT});
-  await autoPlaySetting.uncheck();assert.equal(await autoPlaySwitch.innerText(),'Auto-play Off');
+  await autoPlaySetting.uncheck();assert.equal(await autoPlaySwitch.innerText(),'Auto-play');
   await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').auto===false);assert.equal(await page.evaluate(()=>window.calls.length),0);
   const chatShortcut=page.getByRole('navigation',{name:'Chat toolbar'}).getByRole('button');
   assert.equal(await chatShortcut.count(),0);
@@ -165,6 +169,7 @@ try{
   await page.locator('[data-et="showAutoPlanAction"]').uncheck();assert.equal(await chatShortcut.count(),0);
   const master=page.getByRole('slider',{name:'Master volume',exact:true});await master.press('Home');await master.press('ArrowRight');
   assert.equal(await master.getAttribute('aria-valuetext'),'1 percent');assert.equal(await page.locator('.cm-master .cm-percent').innerText(),'1%');await master.press('End');
+  const desktopPercent=page.getByRole('spinbutton',{name:'Master volume percent',exact:true});assert.equal(await desktopPercent.isVisible(),true);assert.ok((await master.boundingBox()).height>=36);await desktopPercent.fill('72');assert.equal(await master.inputValue(),'0.72');await master.dblclick();assert.equal(await desktopPercent.inputValue(),'100');
   await planLatest.click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   assert.equal(await page.evaluate(()=>window.audios.length),0);assert.deepEqual(await page.locator('.cm-channel[data-kind="voice"]').evaluateAll(nodes=>nodes.map(node=>node.dataset.speaker)),['Narrator','Mira']);
   const planBounds=await planLatest.boundingBox(),previousBounds=await page.getByRole('button',{name:'Previous spoken block',exact:true}).boundingBox();assert.ok(planBounds.x+planBounds.width<=previousBounds.x);
@@ -204,6 +209,7 @@ try{
   await mixer.locator('.cm-header').click({position:{x:150,y:12}});
   if(process.env.CHOIR_SCREENSHOT)await page.screenshot({path:process.env.CHOIR_SCREENSHOT,fullPage:true});
   if(process.env.CHOIR_MIXER_SCREENSHOT)await mixer.screenshot({path:process.env.CHOIR_MIXER_SCREENSHOT});
+  if(process.env.CHOIR_SCENE_SCREENSHOT){await mixer.getByRole('tab',{name:'Scene audio',exact:true}).click();await mixer.screenshot({path:process.env.CHOIR_SCENE_SCREENSHOT});await mixer.getByRole('tab',{name:'Main cast',exact:true}).click();}
   assert.equal(await drawerStop.isEnabled(),true);await drawerStop.click();assert.equal(await drawerStop.isDisabled(),true);
   await page.locator('[data-et="connectionMode"]').selectOption('one',{force:true});await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('One TTS now'));
   assert.equal(await cast.locator('[data-choir-route]').evaluateAll(nodes=>nodes.every(node=>node.parentElement.hidden)),true);
@@ -220,10 +226,10 @@ try{
   await page.setViewportSize({width:320,height:420});await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
   const panel=await mixer.boundingBox();assert.ok(panel.x>=0 && panel.y>=0 && panel.x+panel.width<=320 && panel.y+panel.height<=420);
   assert.equal(await mixer.evaluate(node=>node.scrollWidth<=node.clientWidth+1 && node.scrollHeight<=node.clientHeight+1),true,JSON.stringify(await mixer.evaluate(node=>({width:node.clientWidth,height:node.clientHeight,scrollWidth:node.scrollWidth,scrollHeight:node.scrollHeight,parts:[...node.querySelectorAll('.cm-body,.cm-levels,.cm-levels-body,.cm-channel-tabs,.cm-channels,.cm-legend')].map(part=>({class:part.className,height:part.clientHeight,scrollHeight:part.scrollHeight}))}))));
-  const channels=mixer.locator('.cm-channels');assert.equal(await channels.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);assert.equal(await mixer.locator('.cm-channel-tabs').evaluate(node=>node.scrollWidth>node.clientWidth),true);assert.equal(await mixer.locator('.cm-channel:visible').count(),1);
+  const channels=mixer.locator('.cm-channels');assert.equal(await channels.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);assert.equal(await mixer.locator('.cm-channel-tabs').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);assert.equal(await mixer.locator('.cm-channel:visible').count(),20);
   assert.equal(await mixer.locator('[data-speaker="SFX"]').count(),1);assert.equal(await sfxSwitch.isVisible(),true);
   const switches=await mixer.locator('.cm-auto-plan button').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {left:rect.left,right:rect.right,top:rect.top};}));assert.ok(switches.every((rect,index)=>!index || rect.left>=switches[index-1].right || rect.top>switches[index-1].top));
-  await mixer.getByRole('tab',{name:'A character with a very long name that must fit without hiding controls',exact:true}).click();const longRow=mixer.locator('[data-speaker="A character with a very long name that must fit without hiding controls"]');await longRow.scrollIntoViewIfNeeded();
+  await mixer.getByRole('tab',{name:'Main cast',exact:true}).click();const longRow=mixer.locator('[data-speaker="A character with a very long name that must fit without hiding controls"]');await longRow.scrollIntoViewIfNeeded();
   assert.equal(await longRow.locator('.cm-channel-name').evaluate(node=>node.scrollWidth>node.clientWidth),true);
   const toggle=longRow.getByRole('button',{name:'A character with a very long name that must fit without hiding controls silent',exact:true});await toggle.press('Space');
   assert.equal(await toggle.getAttribute('aria-pressed'),'true');assert.equal(await page.evaluate(()=>document.activeElement.getAttribute('aria-label')),'A character with a very long name that must fit without hiding controls silent');
@@ -242,13 +248,13 @@ try{
   await page.locator('[data-choir-action="playback"]').click();
   await page.waitForFunction(()=>document.querySelector('.cm-speaker').textContent==='Speaking: SFX' && document.querySelector('[data-choir-mixer]').dataset.playState==='playing');
   await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>window.audios.at(-1).paused);
-  const sfxGain=await page.evaluate(()=>window.gains.at(-1).gain.value);await sfxSwitch.click();assert.equal(await sfxSwitch.innerText(),'SFX Off');assert.equal(await sfxSetting.isChecked(),false);
+  const sfxGain=await page.evaluate(()=>window.gains.at(-1).gain.value);await sfxSwitch.click();assert.equal(await sfxSwitch.innerText(),'SFX');assert.equal(await sfxSetting.isChecked(),false);
   await page.waitForFunction(()=>document.querySelector('.cm-speaker').textContent==='Speaking: Narrator' && document.querySelector('[data-choir-action="playback"]').getAttribute('aria-label')==='Resume Choir audio');
   assert.equal(await mixer.getByRole('slider',{name:'Narrator volume',exact:true}).isEnabled(),true);
   await page.locator('[data-choir-action="playback"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
   assert.equal(await page.evaluate(()=>window.foleySearches),1);assert.equal(await page.evaluate(()=>window.foleyDownloads),1);
   const foleyGains=await page.evaluate(start=>window.gains.slice(start).map(g=>g.gain.value),gainStart);assert.equal(foleyGains.length,3);assert.ok(Math.abs(sfxGain/foleyGains[0]-0.45)<0.001);
-  await sfxSetting.check();assert.equal(await sfxSwitch.innerText(),'SFX On');
+  await sfxSetting.check();assert.equal(await sfxSwitch.innerText(),'SFX');
   const companion=await page.evaluate(()=>window.__CHOIR_API__.playParagraph({text:window.fixtureMessage.content}));assert.equal(companion.played,3);
   assert.equal(await page.evaluate(()=>window.foleySearches),1);assert.equal(await page.evaluate(()=>window.foleyDownloads),1);assert.equal(await page.locator('[data-et="sfxStatus"]').isVisible(),false);
   await page.getByText('Advanced Settings',{exact:true}).click();
@@ -274,7 +280,7 @@ try{
   await page.waitForFunction(()=>window.audios.some(audio=>audio.loop && !audio.paused && audio.currentTime>0 && audio.volume>0));
   assert.equal(await page.evaluate(()=>window.bedDownloads),1);
   await page.locator('[data-choir-action="playback"]').click();
-  const ambienceVolume=page.getByRole('slider',{name:'Ambience volume',exact:true});assert.equal(await ambienceVolume.getAttribute('max'),'3');
+  await page.getByRole('tab',{name:'Scene audio',exact:true}).click();const ambienceVolume=page.getByRole('slider',{name:'Ambience volume',exact:true});assert.equal(await ambienceVolume.getAttribute('max'),'3');
   await ambienceVolume.focus();await ambienceVolume.press('End');assert.equal(await ambienceVolume.getAttribute('aria-valuetext'),'300 percent');
   await page.waitForFunction(()=>window.audios.filter(audio=>audio.loop).at(-1).volume===0.75 && window.fixtureStore.get('ui:mixer').ambience===3);
   assert.equal(await ambienceVolume.evaluate(node=>node.style.getPropertyValue('--choir-level')),'100%');
@@ -360,25 +366,34 @@ try{
   await touch.getByRole('button',{name:'Plan latest reply',exact:true}).tap();await touch.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   await touch.getByRole('button',{name:'Channel levels',exact:true}).tap();await touch.getByRole('spinbutton',{name:'Narrator volume percent',exact:true}).fill('25');
   await touch.getByRole('button',{name:'Narrator silent',exact:true}).tap();assert.equal(await touch.getByRole('button',{name:'Narrator silent',exact:true}).getAttribute('aria-pressed'),'true');assert.equal(await touch.getByRole('spinbutton',{name:'Narrator volume percent',exact:true}).inputValue(),'25');
-  assert.equal(await touchMixer.locator('.cm-channel:visible').count(),1);await touch.getByRole('tab',{name:'Mira',exact:true}).tap();
+  assert.equal(await touchMixer.locator('.cm-channel:visible').count(),2);
   await touch.getByRole('button',{name:'Mira no voice',exact:true}).tap();assert.equal(await touch.getByRole('button',{name:'Mira no voice',exact:true}).getAttribute('aria-pressed'),'true');
-  await touch.getByRole('tab',{name:'SFX',exact:true}).tap();await touch.getByRole('spinbutton',{name:'SFX volume percent',exact:true}).fill('43');await touch.getByRole('tab',{name:'Ambience',exact:true}).tap();await touch.getByRole('spinbutton',{name:'Ambience volume percent',exact:true}).fill('32');
+  await touch.getByRole('tab',{name:'Scene audio',exact:true}).tap();await touch.getByRole('spinbutton',{name:'SFX volume percent',exact:true}).fill('43');await touch.getByRole('spinbutton',{name:'Ambience volume percent',exact:true}).fill('32');await touch.getByRole('spinbutton',{name:'Music volume percent',exact:true}).fill('175');
   await touch.waitForFunction(()=>window.fixtureStore.get('ui:mixer').sfx===0.43 && window.fixtureStore.get('ui:mixer').ambience===0.32);
   const touchAmbience=touch.getByRole('spinbutton',{name:'Ambience volume percent',exact:true});
   await touchAmbience.fill('300');assert.equal(await touchAmbience.getAttribute('max'),'300');
   await touch.waitForFunction(()=>window.fixtureStore.get('ui:mixer').ambience===3);
   assert.equal(await touch.getByRole('button',{name:'Increase Ambience volume',exact:true}).isDisabled(),true);
   await touch.getByRole('button',{name:'Decrease Ambience volume',exact:true}).tap();assert.equal(await touchAmbience.inputValue(),'295');
-  for(const name of ['Narrator','Mira','SFX']){await touch.getByRole('tab',{name,exact:true}).tap();const entry=touch.getByRole('spinbutton',{name:`${name} volume percent`,exact:true});assert.equal(await entry.getAttribute('max'),'300');await entry.fill('300');assert.equal(await entry.inputValue(),'300');assert.equal(await touch.getByRole('button',{name:`Increase ${name} volume`,exact:true}).isDisabled(),true);}
-  await masterPercent.fill('300');assert.equal(await masterPercent.inputValue(),'100');await masterPercent.fill('37');await touch.getByRole('tab',{name:'Ambience',exact:true}).tap();
+  for(const name of ['Narrator','Mira','SFX']){await touch.getByRole('tab',{name:name==='SFX'?'Scene audio':'Main cast',exact:true}).tap();const entry=touch.getByRole('spinbutton',{name:`${name} volume percent`,exact:true});assert.equal(await entry.getAttribute('max'),'300');await entry.fill('300');assert.equal(await entry.inputValue(),'300');assert.equal(await touch.getByRole('button',{name:`Increase ${name} volume`,exact:true}).isDisabled(),true);}
+  await masterPercent.fill('300');assert.equal(await masterPercent.inputValue(),'100');await masterPercent.fill('37');await touch.getByRole('tab',{name:'Scene audio',exact:true}).tap();
   await touch.getByRole('button',{name:'Collapse Choir voice mixer',exact:true}).tap();await touch.getByRole('button',{name:'Set default',exact:true}).tap();const touchDefaults=touch.getByRole('dialog',{name:'Set default',exact:true});assert.equal(await touchDefaults.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   await touchDefaults.getByRole('tab',{name:'Lead cast',exact:true}).tap();assert.equal(await touchDefaults.getByRole('combobox',{name:'Default {{user}} voice',exact:true}).isVisible(),true);if(process.env.CHOIR_DEFAULT_TOUCH_SCREENSHOT)await touchDefaults.screenshot({path:process.env.CHOIR_DEFAULT_TOUCH_SCREENSHOT});await touchDefaults.getByRole('button',{name:'Cancel',exact:true}).tap();await touch.getByRole('button',{name:'Open Choir voice mixer',exact:true}).tap();
   const volumeTargets=await touchMixer.locator('.cm-volume-steps button:visible,.cm-toggle:visible,.cm-channel-tab').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {width:rect.width,height:rect.height};}));assert.ok(volumeTargets.every(rect=>rect.width>=44 && rect.height>=44));
   assert.equal(await touchMixer.locator('.cm-channel-controls:visible').evaluateAll(nodes=>nodes.every(node=>node.scrollWidth<=node.clientWidth+1)),true);
-  await touch.getByRole('button',{name:'Ambient sound',exact:true}).tap();assert.equal(await touch.getByRole('tab',{name:'Ambience',exact:true}).count(),0);assert.equal(await touchMixer.locator('.cm-channel:visible').count(),1);await touch.getByRole('button',{name:'Ambient sound',exact:true}).tap();
-  await touch.getByRole('tab',{name:'Mira',exact:true}).tap();await touch.getByRole('tab',{name:'Mira',exact:true}).press('ArrowLeft');assert.equal(await touch.getByRole('tab',{name:'Narrator',exact:true}).getAttribute('aria-selected'),'true');
-  await touch.evaluate(()=>document.activeElement.blur());await touchMixer.locator('.cm-channels').evaluate(node=>node.scrollTop=0);
+  await touch.getByRole('button',{name:'Ambient sound',exact:true}).tap();assert.equal(await touchMixer.locator('.cm-channel:visible').count(),3);assert.equal(await touch.getByRole('spinbutton',{name:'Music volume percent',exact:true}).inputValue(),'175');await touch.getByRole('button',{name:'Ambient sound',exact:true}).tap();
+  await touch.getByRole('tab',{name:'NPCs',exact:true}).tap();assert.equal(await touchMixer.locator('.cm-channel:visible').count(),0);assert.equal(await touch.getByText('No NPC voices in this reply.',{exact:true}).isVisible(),true);await touch.getByRole('tab',{name:'NPCs',exact:true}).press('ArrowLeft');assert.equal(await touch.getByRole('tab',{name:'Main cast',exact:true}).getAttribute('aria-selected'),'true');
+  await touch.evaluate(()=>document.activeElement.blur());await touchMixer.locator('.cm-levels-body').evaluate(node=>node.scrollTop=0);
   if(process.env.CHOIR_TOUCH_MIXER_SCREENSHOT)await touchMixer.screenshot({path:process.env.CHOIR_TOUCH_MIXER_SCREENSHOT});
+  await touch.getByRole('tab',{name:'Scene audio',exact:true}).tap();await touchMixer.locator('.cm-levels-body').evaluate(node=>node.scrollTop=0);
+  for(const viewport of [{width:320,height:640},{width:390,height:844},{width:640,height:360}]){
+    await touch.setViewportSize(viewport);const bounds=await touchMixer.boundingBox();assert.ok(bounds.x>=0 && bounds.y>=0 && bounds.x+bounds.width<=viewport.width && bounds.y+bounds.height<=viewport.height);assert.equal(await touchMixer.evaluate(node=>node.scrollWidth<=node.clientWidth+1 && node.scrollHeight<=node.clientHeight+1),true);
+    await touch.getByRole('tab',{name:'Main cast',exact:true}).tap();await touch.getByRole('tab',{name:'Scene audio',exact:true}).tap();
+    const entry=touch.getByRole('spinbutton',{name:'Music volume percent',exact:true});await entry.fill('180');assert.equal(await entry.inputValue(),'180');
+    if(viewport.height>=640){await touchMixer.locator('.cm-levels-body').evaluate(node=>node.scrollTop=0);const musicBounds=await entry.boundingBox(),panelBounds=await touchMixer.boundingBox();assert.ok(musicBounds.y>=panelBounds.y && musicBounds.y+musicBounds.height<=panelBounds.y+panelBounds.height,'All scene audio levels should fit a portrait phone.');}
+  }
+  await touch.setViewportSize({width:320,height:640});await touchMixer.locator('.cm-levels-body').evaluate(node=>node.scrollTop=0);await touch.evaluate(()=>document.activeElement.blur());
+  if(process.env.CHOIR_TOUCH_SCENE_SCREENSHOT)await touchMixer.screenshot({path:process.env.CHOIR_TOUCH_SCENE_SCREENSHOT});
   assert.equal(await touch.locator('[data-choir-mixer]').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);await touch.evaluate(()=>window.cleanup());await touch.close();
   assert.deepEqual(errors,[]);console.log('PASS: Chrome speech continues after cached SFX with parallel prefetch and a delayed TTS response, real looping ambience, background playback errors and cached retry, pending companion sound-choice cancellation, shared drawer errors, captured default setup and application, Fish voice ID entry and preview, Plan latest without audio, main Play latest, current-plan voice filtering, SFX switch synced with drawer and Cue, paused SFX skipping, queued Auto-plan/Auto-play, keyboard controls, narrow and touch layouts, long voice lists, saved preferences, transport, seeking, Freesound cache, loudness, teardown.');
 }finally{await browser?.close();await new Promise(resolve=>server.close(resolve));}

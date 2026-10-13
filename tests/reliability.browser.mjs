@@ -399,20 +399,20 @@ test('replaying an older speech plan never waits for a new sound-effect LLM requ
  }finally{await h.close();}
 });
 
-test('SFX mixer switch hides its level when off, stops live effects, applies to Cue and persists after reload',async()=>{
+test('SFX mixer switch retains its level when off, stops live effects, applies to Cue and persists after reload',async()=>{
  const h=await harness({master:0.5,channels:{SFX:{volume:0.1,mute:true}}});try{
   const level=(actual,expected)=>assert.ok(Math.abs(actual-expected)<0.000001,`Expected volume ${expected}, got ${actual}`);
   h.$('showMixer').click();const mixer=document.querySelector('[data-choir-mixer]'),sfx=()=>document.querySelector('[data-choir-mixer] [data-choir-action="sfx"]');
-  assert.equal(mixer.querySelector('[aria-label="SFX volume"]').value,'1');assert.equal(sfx().parentElement.className,'cm-auto-plan');assert.equal(sfx().textContent,'SFX On');
+  assert.equal(mixer.querySelector('[aria-label="SFX volume"]').value,'1');assert.equal(sfx().parentElement.className,'cm-auto-plan');assert.equal(sfx().textContent,'SFX');
   await configureFoley(h);h.message.content='The page snapped under her thumb.';await h.plan();h.state.blockAudio=true;h.$('play').click();
   await until(()=>h.audios.length===1 && !h.audios[0].paused);const narrator=h.audios[0];assert.equal(narrator.volume,0.5);narrator.onended();
   await until(()=>h.audios.length===2 && !h.audios[1].paused);const effect=h.audios[1];level(effect.volume,0.225);
   const sfxVolume=mixer.querySelector('[aria-label="SFX volume"]');sfxVolume.value='0.4';sfxVolume.dispatchEvent(new h.dom.window.Event('input'));sfxVolume.dispatchEvent(new h.dom.window.Event('change'));level(effect.volume,0.09);assert.equal(narrator.volume,0.5);
-  h.state.blockAudio=false;sfx().click();assert.equal(sfx().textContent,'SFX Off');assert.equal(sfx().getAttribute('aria-pressed'),'false');assert.equal(h.$('enableSfx').checked,false);assert.equal(mixer.querySelector('[data-kind="sfx"]'),null);
+  h.state.blockAudio=false;sfx().click();assert.equal(sfx().textContent,'SFX');assert.equal(sfx().getAttribute('aria-pressed'),'false');assert.equal(h.$('enableSfx').checked,false);assert.equal(mixer.querySelector('[data-kind="sfx"]').dataset.enabled,'false');
   await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(effect.paused,true);assert.equal(h.audios.at(-1).volume,0.5);
-  assert.equal(mixer.querySelector('[aria-label="Narrator volume"]').value,'1');await until(()=>h.store.get('chat:chat-a').enableSfx===false);await h.reload();assert.equal(sfx().textContent,'SFX Off');
+  assert.equal(mixer.querySelector('[aria-label="Narrator volume"]').value,'1');await until(()=>h.store.get('chat:chat-a').enableSfx===false);await h.reload();assert.equal(sfx().textContent,'SFX');
   const off=await globalThis.__CHOIR_API__.playParagraph({text:h.message.content});assert.equal(off.played,1);assert.equal(await playedFoley(h),1);
-  h.$('enableSfx').checked=true;h.$('enableSfx').dispatchEvent(new h.dom.window.Event('change'));assert.equal(sfx().textContent,'SFX On');
+  h.$('enableSfx').checked=true;h.$('enableSfx').dispatchEvent(new h.dom.window.Event('change'));assert.equal(sfx().textContent,'SFX');
   assert.equal(document.querySelector('[aria-label="SFX volume"]').value,'0.4');
   const cueStart=h.audios.length;const on=await globalThis.__CHOIR_API__.playParagraph({text:h.message.content});assert.equal(on.played,3);level(h.audios[cueStart+1].volume,0.09);assert.equal(h.audios[cueStart].volume,0.5);
   const generated=h.synthesis.length,searched=h.requests.filter(request=>request.action==='freesound').length;await h.play();assert.equal(h.synthesis.length,generated);assert.equal(h.requests.filter(request=>request.action==='freesound').length,searched);
@@ -510,10 +510,11 @@ test('volume buttons and percent entry change live playback, clamp values, toler
   const type=(name,value)=>{const input=number(name);input.value=value;input.dispatchEvent(new h.dom.window.Event('input'));};
   find('Decrease Master volume').click();assert.equal(number('Master').value,'95');assert.equal(h.audios[0].volume,0.95);
   type('Master','37');assert.equal(range('Master').value,'0.37');assert.equal(h.audios[0].volume,0.37);
+  range('Master').dispatchEvent(new h.dom.window.MouseEvent('dblclick'));assert.equal(number('Master').value,'100');assert.equal(h.audios[0].volume,1);type('Master','37');
   type('Master','');assert.equal(h.audios[0].volume,0.37);number('Master').dispatchEvent(new h.dom.window.Event('blur'));assert.equal(number('Master').value,'37');
   type('Master','150');assert.equal(number('Master').value,'100');assert.equal(find('Increase Master volume').disabled,true);
   type('Master','-4');assert.equal(number('Master').value,'0');assert.equal(find('Decrease Master volume').disabled,true);assert.equal(h.audios[0].volume,0);
-  type('Master','80');type('Narrator','25');assert.equal(h.audios[0].volume,0.2);type('SFX','43');type('Ambience','61');assert.equal(h.audios[0].volume,0.2);
+  type('Master','80');type('Narrator','25');assert.equal(h.audios[0].volume,0.2);range('Narrator').dispatchEvent(new h.dom.window.MouseEvent('dblclick'));assert.equal(number('Narrator').value,'100');assert.equal(h.audios[0].volume,0.8);type('Narrator','25');type('SFX','43');type('Ambience','61');assert.equal(h.audios[0].volume,0.2);
   find('Increase SFX volume').click();assert.equal(number('SFX').value,'48');
   const desktop=range('Ambience');desktop.value='0.32';desktop.dispatchEvent(new h.dom.window.Event('input'));desktop.dispatchEvent(new h.dom.window.Event('change'));assert.equal(number('Ambience').value,'32');
   await until(()=>h.store.get('ui:mixer')?.ambience===0.32 && h.store.get('ui:mixer')?.sfx===0.48);h.$('stop').click();await h.reload();
@@ -571,44 +572,50 @@ test('compact mute and skip icons remain distinct, accessible and reversible wit
  }finally{await h.close();}
 });
 
-test('mobile channel tabs show one panel, keep selection through playback and reload, and retain independent levels',async()=>{
- const h=await harness(undefined,true);try{
+test('grouped channel tabs separate leads, NPCs and scene audio on desktop and mobile and retain independent levels',async()=>{
+ for(const mobile of [false,true]){
+ const h=await harness(undefined,mobile);try{
   h.$('showMixer').click();await h.plan();document.querySelector('[aria-label="Channel levels"]').click();
   const tabs=()=>[...document.querySelectorAll('.cm-channel-tab')],tab=name=>tabs().find(item=>item.textContent===name),visible=()=>[...document.querySelectorAll('.cm-channel')].filter(row=>!row.hidden);
-  assert.deepEqual(tabs().map(item=>item.textContent),['Narrator','Mira','Guard','SFX','Ambience']);assert.deepEqual(visible().map(row=>row.dataset.speaker),['Narrator']);
-  tab('Mira').click();assert.equal(tab('Mira').getAttribute('aria-selected'),'true');assert.equal(visible().length,1);assert.equal(visible()[0].id,tab('Mira').getAttribute('aria-controls'));assert.equal(visible()[0].getAttribute('aria-labelledby'),tab('Mira').id);
+  assert.deepEqual(tabs().map(item=>item.textContent),['Main cast','NPCs','Scene audio']);assert.deepEqual(visible().map(row=>row.dataset.speaker),['Narrator','Mira']);
+  const panel=document.querySelector('[role="tabpanel"]');assert.equal(panel.id,tab('Main cast').getAttribute('aria-controls'));assert.equal(panel.getAttribute('aria-labelledby'),tab('Main cast').id);
   const percent=document.querySelector('[aria-label="Mira volume percent"]');percent.value='42';percent.dispatchEvent(new h.dom.window.Event('input'));document.querySelector('[aria-label="Mira silent"]').click();
-  assert.deepEqual(visible().map(row=>row.dataset.speaker),['Mira']);assert.equal(document.querySelector('[aria-label="Mira volume percent"]').value,'42');
-  h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios[0]?.paused===false);assert.deepEqual(visible().map(row=>row.dataset.speaker),['Mira']);assert.equal(h.audios[0].volume,1);h.$('stop').click();
-  await until(()=>h.store.get('ui:mixer')?.channelTab==='voice:Mira');await h.reload();assert.deepEqual(visible().map(row=>row.dataset.speaker),['Mira']);assert.equal(document.querySelector('[aria-label="Mira silent"]').getAttribute('aria-pressed'),'true');
-  tab('SFX').click();const effects=document.querySelector('[aria-label="SFX volume percent"]');effects.value='31';effects.dispatchEvent(new h.dom.window.Event('input'));
-  tab('Mira').click();assert.equal(document.querySelector('[aria-label="Mira volume percent"]').value,'42');assert.equal(document.querySelector('[aria-label="SFX volume percent"]').value,'31');
+  tab('NPCs').click();assert.deepEqual(visible().map(row=>row.dataset.speaker),['Guard']);assert.equal(panel.getAttribute('aria-labelledby'),tab('NPCs').id);
+  h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios[0]?.paused===false);assert.deepEqual(visible().map(row=>row.dataset.speaker),['Guard']);assert.equal(h.audios[0].volume,1);h.$('stop').click();
+  await until(()=>h.store.get('ui:mixer')?.channelGroup==='npcs');await h.reload();assert.deepEqual(visible().map(row=>row.dataset.speaker),['Guard']);assert.equal(document.querySelector('[aria-label="Mira silent"]').getAttribute('aria-pressed'),'true');
+  tab('Scene audio').click();assert.deepEqual(visible().map(row=>row.dataset.speaker),['SFX','Ambience','Music']);assert.equal(document.querySelector('[data-kind="music"]').dataset.enabled,'false');
+  const effects=document.querySelector('[aria-label="SFX volume percent"]');effects.value='31';effects.dispatchEvent(new h.dom.window.Event('input'));
+  const music=document.querySelector('[aria-label="Music volume percent"]');music.value='230';music.dispatchEvent(new h.dom.window.Event('input'));await until(()=>h.store.get('ui:mixer')?.music===2.3);
+  tab('Main cast').click();assert.equal(document.querySelector('[aria-label="Mira volume percent"]').value,'42');assert.equal(document.querySelector('[aria-label="SFX volume percent"]').value,'31');
+  await h.reload();assert.equal(document.querySelector('[aria-label="Music volume percent"]').value,'230');
  }finally{await h.close();}
+ }
 });
 
-test('mobile tabs support arrow keys and safe fallback when a selected sound or voice disappears, and resize back to a list',async()=>{
- const h=await harness(undefined,true);try{
+test('group tabs support arrow keys, migrate legacy selection and keep empty groups and disabled sounds accessible',async()=>{
+ const h=await harness({channelTab:'voice:Guard'},true);try{
   await h.plan();const tabs=()=>[...document.querySelectorAll('.cm-channel-tab')],selected=()=>tabs().find(tab=>tab.getAttribute('aria-selected')==='true'),visible=()=>[...document.querySelectorAll('.cm-channel')].filter(row=>!row.hidden);
-  selected().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));assert.equal(selected().textContent,'Mira');assert.equal(document.activeElement,selected());
-  selected().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'End',bubbles:true}));assert.equal(selected().textContent,'Ambience');assert.equal(tabs().filter(tab=>tab.tabIndex===0).length,1);
-  h.$('ambience').click();assert.ok(!tabs().some(tab=>tab.textContent==='Ambience'));assert.equal(selected().textContent,'Narrator');assert.equal(visible().length,1);
-  tabs().find(tab=>tab.textContent==='SFX').click();h.$('sfx').click();assert.ok(!tabs().some(tab=>tab.textContent==='SFX'));assert.equal(selected().textContent,'Narrator');
-  tabs().find(tab=>tab.textContent==='Mira').click();h.message.content='Only narration remains.';await h.plan();assert.equal(selected().textContent,'Narrator');assert.equal(visible().length,1);
-  h.setMobile(false);assert.equal(document.querySelector('.cm-channel-tabs').hidden,true);assert.equal(document.querySelector('[role="tabpanel"]'),null);assert.equal(visible().length,1);
-  h.message.content='At dawn. "Hello." "Wait."';await h.plan();assert.equal(visible().length,3);h.setMobile(true);assert.equal(document.querySelector('.cm-channel-tabs').hidden,false);assert.equal(visible().length,1);
+  assert.equal(selected().textContent,'NPCs');
+  selected().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));assert.equal(selected().textContent,'Scene audio');assert.equal(document.activeElement,selected());
+  selected().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Home',bubbles:true}));assert.equal(selected().textContent,'Main cast');
+  selected().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'End',bubbles:true}));assert.equal(selected().textContent,'Scene audio');assert.equal(tabs().filter(tab=>tab.tabIndex===0).length,1);
+  h.$('ambience').click();h.$('sfx').click();assert.equal(selected().textContent,'Scene audio');assert.equal(visible().length,3);assert.equal(document.querySelector('[data-kind="ambience"]').dataset.enabled,'false');
+  tabs().find(tab=>tab.textContent==='NPCs').click();h.message.content='Only narration remains.';await h.plan();assert.equal(selected().textContent,'NPCs');assert.equal(visible().length,0);assert.match(document.querySelector('[role="tabpanel"]').textContent,/No NPC voices in this reply/);
+  h.setMobile(false);assert.equal(document.querySelector('.cm-channel-tabs').hidden,false);assert.ok(document.querySelector('[role="tabpanel"]'));assert.equal(selected().textContent,'NPCs');
+  h.message.content='At dawn. "Hello." "Wait."';await h.plan();assert.deepEqual(visible().map(row=>row.dataset.speaker),['Guard']);h.setMobile(true);assert.equal(visible().length,1);
  }finally{await h.close();}
 });
 
-test('Channel levels collapse independently, persist their state and hide disabled sound levels while retaining voice controls',async()=>{
+test('Channel levels collapse independently, persist their state and retain disabled sound levels and voice controls',async()=>{
  const h=await harness();try{
   h.$('showMixer').click();const mixer=()=>document.querySelector('[data-choir-mixer]'),menu=()=>mixer().querySelector('[aria-label="Channel levels"]'),body=()=>mixer().querySelector('.cm-levels-body');
   assert.equal(menu().getAttribute('aria-expanded'),'false');assert.equal(body().hidden,true);assert.equal(mixer().querySelector('[aria-label="Master volume"]').closest('.cm-levels-body'),null);
   menu().click();assert.equal(menu().getAttribute('aria-expanded'),'true');assert.equal(body().hidden,false);await until(()=>h.store.get('ui:mixer')?.levelsCollapsed===false);
-  await h.plan();assert.deepEqual([...mixer().querySelectorAll('.cm-channel')].map(row=>row.dataset.speaker),['Narrator','Mira','Guard','SFX','Ambience']);
-  h.$('ambience').click();assert.equal(h.$('ambience').textContent,'Ambience Off');assert.equal(h.$('ambience').getAttribute('aria-pressed'),'false');assert.equal(h.$('enableAmbience').checked,false);assert.equal(mixer().querySelector('[data-kind="ambience"]'),null);
-  h.$('sfx').click();assert.equal(mixer().querySelector('[data-kind="sfx"]'),null);assert.equal(mixer().querySelectorAll('.cm-channel[data-kind="voice"]').length,3);assert.equal(menu().getAttribute('aria-expanded'),'true');
-  await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(menu().getAttribute('aria-expanded'),'true');assert.equal(body().hidden,false);assert.equal(h.$('ambience').textContent,'Ambience Off');assert.equal(mixer().querySelector('[data-kind="ambience"]'),null);
-  await toggle(h,'enableAmbience',true);assert.equal(h.$('ambience').textContent,'Ambience On');assert.equal(mixer().querySelector('[aria-label="Ambience volume"]').value,'1');
+  await h.plan();assert.deepEqual([...mixer().querySelectorAll('.cm-channel')].map(row=>row.dataset.speaker),['Narrator','Mira','Guard','SFX','Ambience','Music']);
+  h.$('ambience').click();assert.equal(h.$('ambience').textContent,'Ambience');assert.equal(h.$('ambience').getAttribute('aria-pressed'),'false');assert.equal(h.$('enableAmbience').checked,false);assert.equal(mixer().querySelector('[data-kind="ambience"]').dataset.enabled,'false');
+  h.$('sfx').click();assert.equal(mixer().querySelector('[data-kind="sfx"]').dataset.enabled,'false');assert.equal(mixer().querySelectorAll('.cm-channel[data-kind="voice"]').length,3);assert.equal(menu().getAttribute('aria-expanded'),'true');
+  await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(menu().getAttribute('aria-expanded'),'true');assert.equal(body().hidden,false);assert.equal(h.$('ambience').textContent,'Ambience');assert.equal(mixer().querySelector('[data-kind="ambience"]').dataset.enabled,'false');
+  await toggle(h,'enableAmbience',true);assert.equal(h.$('ambience').textContent,'Ambience');assert.equal(mixer().querySelector('[aria-label="Ambience volume"]').value,'1');
   menu().click();await until(()=>h.store.get('ui:mixer')?.levelsCollapsed===true);await h.reload();assert.equal(body().hidden,true);assert.equal(menu().getAttribute('aria-expanded'),'false');
  }finally{await h.close();}
 });
@@ -617,9 +624,9 @@ test('mixer Ambience toggle stops the carried loop, keeps speech playing and rem
  const h=await harness();try{
   await configureFoley(h);const bridge=globalThis.__CHOIR_API__;h.state.blockAudio=true;
   const paragraph=bridge.playParagraph({text:'Rain drummed on the roof.'});await until(()=>beds(h).length===1 && !beds(h)[0].paused && voices(h).length===1 && !voices(h)[0].paused);
-  h.$('ambience').click();assert.equal(beds(h)[0].paused,true);assert.equal(voices(h)[0].paused,false);assert.equal(document.querySelector('[data-kind="ambience"]'),null);
+  h.$('ambience').click();assert.equal(beds(h)[0].paused,true);assert.equal(voices(h)[0].paused,false);assert.equal(document.querySelector('[data-kind="ambience"]').dataset.enabled,'false');
   h.state.blockAudio=false;voices(h)[0].onended();assert.equal((await paragraph).played,1);await until(()=>h.store.get('chat:chat-a').enableAmbience===false);
-  await h.reload();assert.equal(h.$('ambience').textContent,'Ambience Off');assert.equal(document.querySelector('[aria-label="Ambience volume"]'),null);
+  await h.reload();assert.equal(h.$('ambience').textContent,'Ambience');assert.equal(document.querySelector('[aria-label="Ambience volume"]').value,'1');
  }finally{await h.close();}
 });
 
@@ -731,8 +738,8 @@ test('Ambience slider sets bed level live without touching speech and persists a
 
 test('a music marker streams the chosen incompetech track under speech with its credit and follows the Music slider and pause',async()=>{
  const h=await harness();try{
-  h.$('showMixer').click();assert.equal(document.querySelector('[aria-label="Music volume"]'),null);
-  await toggle(h,'enableMusic',true);h.message.content=scene;await h.plan();
+  h.$('showMixer').click();assert.equal(document.querySelector('[aria-label="Music volume"]').value,'1');assert.equal(h.$('music').getAttribute('aria-pressed'),'false');
+  h.$('music').click();assert.equal(h.$('enableMusic').checked,true);assert.equal(h.$('music').getAttribute('aria-pressed'),'true');await until(()=>h.$('saveState').textContent==='Saved automatically');h.message.content=scene;await h.plan();
   assert.equal(h.requests.find(request=>request.action==='sfx').input.music,true);
   h.state.blockAudio=true;h.$('play').click();
   await until(()=>beds(h).length===1 && beds(h)[0].volume===0.2);const music=beds(h)[0];
@@ -743,7 +750,8 @@ test('a music marker streams the chosen incompetech track under speech with its 
   volume.value='2';volume.dispatchEvent(new h.dom.window.Event('input'));volume.dispatchEvent(new h.dom.window.Event('change'));
   assert.ok(Math.abs(music.volume-0.4)<0.000001);assert.equal(voices(h)[0].volume,1);await until(()=>h.store.get('ui:mixer')?.music===2);
   h.$('pause').click();assert.equal(music.paused,true);h.$('pause').click();assert.equal(music.paused,false);
-  h.$('stop').click();assert.equal(music.paused,true);assert.equal(h.$('musicCredit').hidden,true);assert.equal(music.src,undefined);assert.equal(music.loads,1);
+  h.$('music').click();assert.equal(music.paused,true);assert.equal(voices(h)[0].paused,false);assert.equal(h.$('musicCredit').hidden,true);assert.equal(document.querySelector('[aria-label="Music volume"]').value,'2');assert.equal(music.src,undefined);assert.equal(music.loads,1);
+  h.$('stop').click();h.$('music').click();await until(()=>h.store.get('chat:chat-a').enableMusic===true);
   const musicRequests=()=>h.requests.filter(request=>request.action==='music').length;
   h.state.blockAudio=false;h.state.bedPlayError=true;await h.play();assert.match(h.$('sfxStatus').textContent,/Music skipped \(Dark, Soundtrack\): Browser blocked background audio/);
   h.state.bedPlayError=false;h.state.bedDecodeError=true;await h.play();assert.equal(musicRequests(),1);await until(()=>/Music skipped \(Dark, Soundtrack\): Browser could not play the incompetech track/.test(h.$('sfxStatus').textContent));
@@ -898,13 +906,13 @@ test('Auto-plan toolbar visibility and mixer state stay synchronized through rel
     assert.equal(h.toolbar.childElementCount,0);
     h.$('showAutoPlanAction').checked=true;h.$('showAutoPlanAction').dispatchEvent(new h.dom.window.Event('change'));
     await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan Off');
-    const shortcut=h.toolbar.querySelector('button');assert.ok(shortcut);assert.equal(shortcut.textContent,'Auto-plan Off');assert.equal(shortcut.getAttribute('aria-pressed'),'false');
-    shortcut.click();assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan On');assert.equal(shortcut.textContent,'Auto-plan On');assert.equal(shortcut.getAttribute('aria-pressed'),'true');
+    const shortcut=h.toolbar.querySelector('button');assert.ok(shortcut);assert.equal(shortcut.textContent,'Auto-plan');assert.equal(shortcut.getAttribute('aria-pressed'),'false');
+    shortcut.click();assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan On');assert.equal(shortcut.textContent,'Auto-plan');assert.equal(shortcut.getAttribute('aria-pressed'),'true');
     await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();
     assert.equal(h.$('showAutoPlanAction').checked,true);assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan On');
     assert.equal(h.toolbar.childElementCount,1);assert.equal(h.toolbar.querySelector('button').getAttribute('aria-pressed'),'true');
     h.$('auto-plan').click();assert.equal(h.toolbarActions.get('choir_auto_plan').label,'Auto-plan Off');
-    assert.equal(h.toolbar.querySelector('button').textContent,'Auto-plan Off');assert.equal(h.toolbar.querySelector('button').getAttribute('aria-pressed'),'false');
+    assert.equal(h.toolbar.querySelector('button').textContent,'Auto-plan');assert.equal(h.toolbar.querySelector('button').getAttribute('aria-pressed'),'false');
     await h.toolbarActions.get('choir_auto_plan').click();assert.equal(h.toolbar.querySelector('button').getAttribute('aria-pressed'),'true');assert.equal(h.toolbar.childElementCount,1);
     await until(()=>h.$('saveState').textContent==='Saved automatically');
     h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Connection preferences restored');
@@ -1007,8 +1015,8 @@ test('automatic planning ignores unsuitable events and duplicate events during a
 
 test('mixer Auto-play toggle syncs with settings, persists, and plays even when Auto-plan is off',async()=>{
   const h=await harness();try{
-    assert.equal(h.$('auto-play').textContent,'Auto-play Off');assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');
-    h.$('auto-play').click();assert.equal(h.$('auto').checked,true);assert.equal(h.$('auto-play').textContent,'Auto-play On');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'false');
+    assert.equal(h.$('auto-play').textContent,'Auto-play');assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');
+    h.$('auto-play').click();assert.equal(h.$('auto').checked,true);assert.equal(h.$('auto-play').textContent,'Auto-play');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'false');
     await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.store.get('chat:chat-a').auto,true);assert.equal(h.synthesis.length,0);
     await h.reload();assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'true');assert.equal(h.$('auto').checked,true);
     h.$('auto').checked=false;h.$('auto').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');
@@ -1016,7 +1024,7 @@ test('mixer Auto-play toggle syncs with settings, persists, and plays even when 
     h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content});
     await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'false');assert.ok(h.synthesis.length>0);
     h.$('auto-plan').click();h.$('auto-play').click();assert.equal(h.$('auto').checked,false);assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');
-    await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(h.$('auto-play').textContent,'Auto-play Off');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');
+    await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(h.$('auto-play').textContent,'Auto-play');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');
   }finally{await h.close();}
 });
 
