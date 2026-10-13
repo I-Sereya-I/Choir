@@ -1039,3 +1039,24 @@ test('community search drops tag-stuffed voices that also carry the opposite gen
     assert.equal((await h.result()).message.result.segments.find(segment=>segment.speaker==='Mira').voice,expected);
   }
 });
+
+test('Jev keeps Decision speakers when emotion answers are rejected and splits large replies into 256-question evaluations',async()=>{
+  const calls=[];
+  const decisions={evaluate:async input=>{
+    const ids=Object.keys(input.questions);calls.push(ids);
+    if(ids[0].startsWith('emotion_'))throw Error('Provider probabilities do not sum to 1 for emotion_83');
+    return {answers:Object.fromEntries(ids.map(id=>[id,{choice:'Alice'}]))};
+  }};
+  const h=await harness(null,null,null,null,null,decisions);
+  const transcript=Array.from({length:300},(_,i)=>`"Line ${i}."`).join(' ');
+  h.send('planJev',{transcript,config:{...config,fixed:[...config.fixed,{speaker:'Alice',voice:'Kore',style:''}]}});
+  const result=(await h.result()).message;
+  assert.equal(result.error,undefined);
+  assert.ok(result.result.segments.every(segment=>segment.speaker==='Alice' && !segment.style));
+  assert.deepEqual(calls.map(ids=>[ids[0],ids.length]),[['speaker_0',256],['speaker_256',44],['emotion_0',256]]);
+});
+test('a planner stopped by its provider names the stop reason instead of only the JSON error',async()=>{
+  const h=await harness(null,null,'google_vertex',null,async function*(){yield {type:'token',token:'{"segments":[{"speaker":"Narrator"'};yield {type:'done',content:'{"segments":[{"speaker":"Narrator"',finish_reason:'SAFETY'};});
+  h.send('plan',{transcript:'Hello.',config});
+  assert.match((await h.result()).message.error,/Planner failed twice: The planner stopped early \(SAFETY\)\. Planner returned no complete JSON speech plan/);
+});

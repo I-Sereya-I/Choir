@@ -1066,20 +1066,31 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
 
   if (dialogueUnits.length > 0) {
     if (hasSpindleDecisions) {
-      const questions = {};
       // Each question carries its line in place: a bare quote such as "Robots?" cannot be attributed on its own.
       const passage = u => `${transcript.slice(Math.max(0, u.start - 300), u.start)}[[${u.text}]]${transcript.slice(u.end, u.end + 300)}`;
-      const criteria = Object.fromEntries(choices.map(c => [c.name, c.description]));
-      dialogueUnits.forEach((u, i) => {
-        if (choices.length) {
-          questions[`speaker_${i}`] = {
-            type: 'choice',
-            instructions: `Which character speaks the line marked [[ ]] in this passage: "${passage(u)}"?`,
-            criteria
-          };
+      const state = { transcript, ...(context ? { context } : {}), characters: cast };
+      // Lumiverse accepts at most 256 questions per evaluation.
+      const ask = async (name, question) => {
+        const answers = {};
+        for (let start = 0; start < dialogueUnits.length; start += 256) {
+          const questions = Object.fromEntries(dialogueUnits.slice(start, start + 256).map((u, i) => [`${name}_${start + i}`, question(u)]));
+          Object.assign(answers, (await spindle.decisions.evaluate({
+            userId: userId || undefined,
+            connection_id: decisionConnection || config.decisionConnection || undefined,
+            state,
+            questions
+          }, { signal })).answers);
         }
-        if (config.useStyle !== false) {
-          questions[`emotion_${i}`] = {
+        return dialogueUnits.map((_, i) => answers[`${name}_${i}`]?.choice);
+      };
+      const criteria = Object.fromEntries(choices.map(c => [c.name, c.description]));
+      speakerChoices = choices.length
+        ? (await ask('speaker', u => ({ type: 'choice', instructions: `Which character speaks the line marked [[ ]] in this passage: "${passage(u)}"?`, criteria }))).map(choice => choice || UNLISTED_SPEAKER)
+        : dialogueUnits.map(() => UNLISTED_SPEAKER);
+      if (config.useStyle !== false) {
+        // Delivery styles are optional: a rejected emotion answer must not discard the speakers.
+        try {
+          emotionChoices = await ask('emotion', u => ({
             type: 'choice',
             instructions: `What is the emotional delivery style of the line marked [[ ]] in this passage: "${passage(u)}"?`,
             criteria: {
@@ -1090,28 +1101,11 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
               sad: 'Sad or sorrowful',
               sigh: 'Sighing or weary'
             }
-          };
+          }));
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          emotionChoices = [];
         }
-      });
-      if (Object.keys(questions).length > 0) {
-        const evalResult = await spindle.decisions.evaluate({
-          userId: userId || undefined,
-          connection_id: decisionConnection || config.decisionConnection || undefined,
-          state: {
-            transcript,
-            ...(context ? { context } : {}),
-            characters: cast
-          },
-          questions
-        }, { signal });
-        for (let i = 0; i < dialogueUnits.length; i++) {
-          speakerChoices[i] = evalResult.answers?.[`speaker_${i}`]?.choice || UNLISTED_SPEAKER;
-          if (config.useStyle !== false) {
-            emotionChoices[i] = evalResult.answers?.[`emotion_${i}`]?.choice || 'neutral';
-          }
-        }
-      } else {
-        speakerChoices = dialogueUnits.map(() => UNLISTED_SPEAKER);
       }
     } else {
       const items = dialogueUnits.map(u => {
@@ -1368,7 +1362,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.6-staging.4',ready:true}});return;
+      send({result:{version:'1.1.6-staging.5',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);
@@ -1535,8 +1529,10 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
           const plan = validatePlan(resolvePlanReferences(raw,input.transcript,config),input.transcript,config);
           send({result:{...plan,...(communityVoices.size?{communityVoices:[...communityVoices.values()]}:{}),...(jevFailure?{warning:jevFailure.message}:{})}}); return;
         } catch (error) {
-          const truncated=/length|max_tokens|max_output_tokens/i.test(result.finish_reason || '');
-          failure = truncated ? new Error('The planner response was cut off by its output limit. Increase the planner output budget or plan a shorter reply.') : error;
+          const reason=String(result.finish_reason || ''),truncated=/length|max_tokens|max_output_tokens/i.test(reason);
+          // A provider stop such as SAFETY or OTHER explains an unfinished plan better than the JSON error.
+          failure = truncated ? new Error('The planner response was cut off by its output limit. Increase the planner output budget or plan a shorter reply.')
+            : reason && !/^(?:stop|end_turn|stop_sequence)$/i.test(reason) ? new Error(`The planner stopped early (${reason}). ${error.message}`) : error;
           maxTokens=Math.min(32768,maxTokens*2);
           messages.push({role:'assistant',content:String(result.content || '').slice(0,50000)},
             {role:'user',content:`Your plan failed validation: ${failure.message}. Return a corrected complete JSON plan using unit_ids. Include every source unit ID exactly once in order. Do not copy or rewrite transcript text.`});

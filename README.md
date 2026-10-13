@@ -4,16 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.4-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.5-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-293%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-295%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
 
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.6-staging.4** separates automatic planning from automatic playback: Auto-play only uses available plans, and each switch can cancel its own automatic work. Decorated single-character card titles stay tied to their lead identity, so a title such as **Kellin Beckett || Toxic Fans** cannot create an extra NPC beside **Kellin Beckett**. Existing duplicate entries are removed when opening the chat, lead voices are retained, and old plans use the canonical lead name. **Loop music until next cue** keeps a chosen track playing between replies until it is replaced. **Speech & Planner** preferences remain global. Edits save automatically and apply when opening any existing or new chat. Cast defaults now live beside **Lead Cast** and **NPC Cast**. An **Ignored tags** field skips custom tagged content throughout planning, playback, cached recordings and Cue reading. Cards that define several named characters in separate headings or XML sections create independent lead voices and send each person’s own profile to Jev and the LLM planner. The compact mixer, background music and playback/cache features described below remain available.
+This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.6-staging.5** keeps Jev speaker attribution when a Decision provider rejects its optional delivery-style answers, splits long replies into Decision requests of at most 256 questions, and names the provider's stop reason, such as a safety filter, when the LLM planner stops before finishing its plan. Automatic planning stays separate from automatic playback: Auto-play only uses available plans, and each switch can cancel its own automatic work. Decorated single-character card titles stay tied to their lead identity, so a title such as **Kellin Beckett || Toxic Fans** cannot create an extra NPC beside **Kellin Beckett**. Existing duplicate entries are removed when opening the chat, lead voices are retained, and old plans use the canonical lead name. **Loop music until next cue** keeps a chosen track playing between replies until it is replaced. **Speech & Planner** preferences remain global. Edits save automatically and apply when opening any existing or new chat. Cast defaults now live beside **Lead Cast** and **NPC Cast**. An **Ignored tags** field skips custom tagged content throughout planning, playback, cached recordings and Cue reading. Cards that define several named characters in separate headings or XML sections create independent lead voices and send each person’s own profile to Jev and the LLM planner. The compact mixer, background music and playback/cache features described below remain available.
 
 
 ## Overview
