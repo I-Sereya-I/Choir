@@ -1444,7 +1444,9 @@ export async function setup(ctx) {
   const fadeOutBeds=()=>{for(const kind in beds)followBed(null,null,kind);};
   // The bed in effect at a batch comes from the closest marker of its kind before it.
   const bedIndex=(batches,index,kind)=>{while(index>=0 && batches[index].kind!==kind)index--;return index;};
-  function stopBeds(kind){for(const layer of [...Object.values(beds),...fadingBeds])if(layer && (!kind || layer.kind===kind))dropBed(layer);for(const name in beds)if(!kind || name===kind)beds[name]=null;if(!kind)bedsPaused=false;showMusicCredit();}
+  // Cue bed loads outlive the paragraph hand-off and end only with a real stop.
+  let bedPrefetch=new AbortController();
+  function stopBeds(kind){if(!kind){bedPrefetch.abort();bedPrefetch=new AbortController();}for(const layer of [...Object.values(beds),...fadingBeds])if(layer && (!kind || layer.kind===kind))dropBed(layer);for(const name in beds)if(!kind || name===kind)beds[name]=null;if(!kind)bedsPaused=false;showMusicCredit();}
   function pauseBeds(paused){bedsPaused=paused;for(const layer of [...Object.values(beds),...fadingBeds])if(layer?.audio){if(paused)layer.audio.pause();else playBed(layer);}}
   function positionMixer(){
     const collapsed=Boolean(mixerState.collapsed);
@@ -3273,7 +3275,8 @@ export async function setup(ctx) {
 
     function push(newSegments,total) {
       if(total)totalExpected=total;
-      for(const s of newSegments)segments.push(s);
+      // Beds load as soon as they are known, so a new bed is ready when its marker plays.
+      for(const s of newSegments){segments.push(s);if(isBed(s) && !s[s.kind].stop && !playbackExcluded(s))loadBed(segments.length-1).catch(()=>{});}
       if(!initialized && segments.length){initialized=true;if(source.resume){const start=segments.findIndex(segment=>segment.passageIndex>source.resume.passage || (segment.passageIndex===source.resume.passage && segment.chunkIndex>=(source.resume.chunk || 0)));playIdx=start<0?segments.length:start;nextToSynthesize=playIdx;}}
       pump();
       wakePlayback?.();
@@ -4045,13 +4048,17 @@ const paragraphAudioCache = new Map();
         const apiKey = $('key')?.value?.trim() || '';
         let played=0;const warnings=new Set(cueWarning?[cueWarning]:[]);showFoleyStatus(cueWarning?`SFX skipped: ${cueWarning}. Speech continues.`:missingFoleyKey(snapshot),Boolean(cueWarning));
         const warnFoley=error=>{warnings.add(error.message);showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
+        // followBed later picks these loads up from paragraphAudioCache.
+        const prefetchBeds=list=>{for(const batch of list)if(isBed(batch) && !batch[batch.kind].stop && !playbackExcluded(batch))getCachedOrSynthesize(batch,snapshot,apiKey,bedPrefetch.signal).catch(()=>{});};
+        prefetchBeds(batches);
 
         // Prefetch upcoming paragraph in background for 0ms transition latency
         if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
           // The current paragraph's music has not started yet, so name it directly.
           const carried = lastMusic(paragraphCues.get(paragraphSegments(text, snapshot, speaker).cleanPara)?.music);
           void loadParagraphCues(nextText, snapshot, '', ctrl.signal, carried).catch(() => {}).then(() => {
-            const first = planAndBatchParagraph(nextText, snapshot, true).find(batch => !isBed(batch));
+            const next = planAndBatchParagraph(nextText, snapshot, true), first = next.find(batch => !isBed(batch));
+            if (token === revision) prefetchBeds(next);
             if (!ctrl.signal.aborted && first && !playbackExcluded(first)) {
               getCachedOrSynthesize(first, snapshot, apiKey, ctrl.signal).catch(() => {});
             }

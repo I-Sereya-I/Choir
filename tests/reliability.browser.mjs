@@ -778,6 +778,26 @@ test('a loading replacement track keeps the old one credited and announced until
  }finally{await h.close();}
 });
 
+test('the chat player starts loading every bed when it is planned, before its marker plays',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);h.message.content=scene;await h.plan();h.state.blockAudio=true;h.$('play').click();
+  await until(()=>h.state.bedFetches.length===2);assert.equal(voices(h).length,1);assert.equal(h.synthesis.length,1);
+  assert.deepEqual(h.state.bedFetches.map(url=>new URL(url).searchParams.get('q')),['rain','tavern crowd']);
+ }finally{await h.close();}
+});
+
+test('Cue loads the next paragraph bed early and the hand-off reuses that load',async()=>{
+ const h=await harness();let first;try{
+  await configureFoley(h);h.store.set('chat:chat-a',{...h.store.get('chat:chat-a'),prefetch:1});await h.reload();
+  const bridge=globalThis.__CHOIR_API__;h.state.blockAudio=true;
+  first=bridge.playParagraph({text:'Night fell.',nextText:'Rain drummed on the roof.'}).catch(error=>error);
+  await until(()=>h.state.bedFetches.length===1 && voices(h).length===1);assert.equal(beds(h).length,0);
+  h.state.blockAudio=false;await bridge.playParagraph({text:'Rain drummed on the roof.'});assert.equal((await first).name,'AbortError');
+  await until(()=>beds(h).length===1 && !beds(h)[0].paused);
+  assert.equal(h.state.bedFetches.length,1);assert.equal(h.requests.filter(request=>request.action==='freesound').length,1);
+ }finally{await h.close();await first;}
+});
+
 test('Cue prefetch names the music chosen for the current paragraph before it starts',async()=>{
  const h=await harness();try{
   await toggle(h,'enableMusic',true);h.store.set('chat:chat-a',{...h.store.get('chat:chat-a'),prefetch:1});await h.reload();
