@@ -492,7 +492,7 @@ export async function setup(ctx) {
   channelsTitle.onclick=()=>{mixerState.levelsCollapsed=!mixerState.levelsCollapsed;showChannelLevels();positionMixer();persistMixer();};showChannelLevels();
   const autoPlanRow=document.createElement('div');autoPlanRow.className='cm-auto-plan';
   const mixerAutoPlan=document.createElement('button');mixerAutoPlan.type='button';mixerAutoPlan.dataset.choirAction='auto-plan';mixerAutoPlan.setAttribute('aria-label','Auto-plan new replies');mixerAutoPlan.onclick=()=>run(toggleAutoPlan);
-  const mixerAutoPlay=document.createElement('button');mixerAutoPlay.type='button';mixerAutoPlay.dataset.choirAction='auto-play';mixerAutoPlay.setAttribute('aria-label','Auto-play new replies');mixerAutoPlay.title='Automatically plan and play new assistant replies with the selected engine and cast voices.';mixerAutoPlay.onclick=()=>run(toggleAutoPlay);
+  const mixerAutoPlay=document.createElement('button');mixerAutoPlay.type='button';mixerAutoPlay.dataset.choirAction='auto-play';mixerAutoPlay.setAttribute('aria-label','Auto-play new replies');mixerAutoPlay.onclick=()=>run(toggleAutoPlay);
   const mixerSfx=document.createElement('button');mixerSfx.type='button';mixerSfx.dataset.choirAction='sfx';mixerSfx.setAttribute('aria-label','Sound effects');mixerSfx.title='Enable or disable Freesound effects in Choir and Cue. Speech continues separately.';mixerSfx.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableSfx').checked=!$('enableSfx').checked;scheduleSettingsSave();syncSfxPlayback();});
   const mixerAmbience=document.createElement('button');mixerAmbience.type='button';mixerAmbience.dataset.choirAction='ambience';mixerAmbience.setAttribute('aria-label','Ambient sound');mixerAmbience.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableAmbience').checked=!$('enableAmbience').checked;scheduleSettingsSave();syncAmbiencePlayback();});
   const mixerMusic=document.createElement('button');mixerMusic.type='button';mixerMusic.dataset.choirAction='music';mixerMusic.setAttribute('aria-label','Background music');mixerMusic.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableMusic').checked=!$('enableMusic').checked;scheduleSettingsSave();syncMusicPlayback();});
@@ -509,7 +509,7 @@ export async function setup(ctx) {
     mixerSfx.textContent='SFX';mixerSfx.setAttribute('aria-pressed',String(config?.enableSfx!==false));mixerSfx.disabled=!chatId;
     mixerAmbience.textContent='Ambience';mixerAmbience.setAttribute('aria-pressed',String(config?.enableAmbience!==false));mixerAmbience.disabled=!chatId;
     mixerMusic.textContent='Music';mixerMusic.setAttribute('aria-pressed',String(config?.enableMusic===true));mixerMusic.disabled=!chatId;
-    for(const button of [mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic])button.title=`${button.textContent} is ${button.getAttribute('aria-pressed')==='true'?'on':'off'}. ${button===mixerAutoPlan?'Plan new replies without starting speech.':button===mixerAutoPlay?'Plan and play new replies automatically.':button===mixerSfx?'Play scene sound effects.':button===mixerAmbience?'Loop scene ambience under speech.':'Play background music under speech. Replan an existing reply to add music.'}`;
+    for(const button of [mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic])button.title=`${button.textContent} is ${button.getAttribute('aria-pressed')==='true'?'on':'off'}. ${button===mixerAutoPlan?'Create plans for new replies. Jev and LLM planning can incur costs. Auto-play controls speech separately.':button===mixerAutoPlay?'Play available plans automatically. Enable Auto-plan too to plan new replies.':button===mixerSfx?'Play scene sound effects.':button===mixerAmbience?'Loop scene ambience under speech.':'Play background music under speech. Replan an existing reply to add music.'}`;
     toolbarAutoPlan.querySelector('span').textContent=mixerAutoPlan.textContent;toolbarAutoPlan.title=mixerAutoPlan.title;
     toolbarAutoPlan.setAttribute('aria-label',mixerAutoPlan.textContent);toolbarAutoPlan.setAttribute('aria-pressed',String(Boolean(config?.autoPlan)));toolbarAutoPlan.disabled=!chatId;
     if(config?.showAutoPlanAction){
@@ -964,6 +964,10 @@ export async function setup(ctx) {
     if(candidate.ignoredTags!==config.ignoredTags){stop(false);clearPlan();paragraphCues.clear();renderMessages();}
     config=candidate;pendingSettings={chatId,value:structuredClone(config),edit:++settingsEdit};
     if(!config.autoPlan && !config.auto)cancelAutoReplies();
+    if(autoReplyActive?.token===revision){
+      if(autoReplyActive.phase==='planning' && !config.autoPlan){stop(false,false,Boolean(config.auto));status('Automatic planning stopped.');}
+      else if(['restore','playback'].includes(autoReplyActive.phase) && !config.auto){stop(false);status('Automatic playback stopped.');}
+    }
     renderMixer();
     saveState('Saving…');clearTimeout(autosaveTimer);autosaveTimer=setTimeout(()=>void flushSettings().catch(()=>{}),250);
     return true;
@@ -1714,7 +1718,7 @@ export async function setup(ctx) {
   function setBusy(value) {
     busy=value;
     if(!value)scheduleAutoReplies();
-    for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','connectionMode','apply','auto'])if($(name))$(name).disabled=value;
+    for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','connectionMode','apply'])if($(name))$(name).disabled=value;
     for (const name of ['model','planner','plannerMode','decisionConnection','fishVoiceSource','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','testTts','importCast'])if($(name))$(name).disabled=value;
     updateTransport();
     if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
@@ -2017,6 +2021,7 @@ export async function setup(ctx) {
         if(autoPlay){controller=null;setBusy(false);await play();}
         return;
       }
+      if(ctrl.signal.aborted || token!==revision || targetChat!==chatId || disposed)return;
       const stripBase=segments=>segments.map(s=>{
         const actor=[...snapshot.fixed,...snapshot.npcs].find(v=>normalizeName(v.speaker)===normalizeName(s.speaker));
         const prefix=actor?.style?`${actor.style}. `:'';
@@ -2520,6 +2525,8 @@ export async function setup(ctx) {
     return {push,finish,playbackPromise};
   }
   async function play(options={}) {
+    const automatic=options.automaticReply;
+    if(automatic && (autoReplyActive!==automatic || automatic.token!==revision || !config.auto))return;
     if(!plan || !planSource)throw new Error('Plan a message first.');
     if(chatId!==planSource.chatId || !sameSpeech(ctx.messages.getContent(planSource.messageId),planSource.content)) {
       clearPlan();throw new Error('Message or swipe changed. Generate a fresh plan.');
@@ -2528,6 +2535,7 @@ export async function setup(ctx) {
     if(planAttribution){
       const cast=casting(config);
       if(resolvePlannerMode(config)==='llm' && needsVoiceSelection(planAttribution,cast)){
+        if(automatic){status('Auto-play skipped: plan this reply to choose its voices.');return;}
         const source={...planSource};
         const operation=prepare(source.messageId,false,undefined,true),token=revision;
         await operation;
@@ -2543,6 +2551,7 @@ export async function setup(ctx) {
       }
     }
     stop(false,false,true);const token=revision;const ctrl=new AbortController();controller=ctrl;
+    if(automatic)automatic.token=token;
     const snapshot=structuredClone(capture());
     // Playback uses saved choices. Optional LLM work belongs to an explicit plan,
     // so old recordings and failed effect choices cannot hold up replay.
@@ -2989,8 +2998,24 @@ export async function setup(ctx) {
       else status('Waiting for the completed reply to appear in chat…');
       scheduleAutoReplies();updateTransport();return;
     }
-    autoReplyQueue.delete(reply.messageId);autoReplyActive=reply;
-    try{await prepare(reply.messageId,Boolean(config.auto));}
+    autoReplyQueue.delete(reply.messageId);autoReplyActive=reply;reply.token=revision;
+    const current=()=>!disposed && autoReplyActive===reply && reply.chatId===chatId && reply.token===revision;
+    try{
+      if(config.autoPlan){
+        reply.phase='planning';
+        const operation=prepare(reply.messageId);reply.token=revision;await operation;
+      }else{
+        reply.phase='restore';setBusy(true);
+        try{
+          if(!await restoreSavedPlan(reply.messageId)){
+            if(current())status('Auto-play skipped: no available plan. Enable Auto-plan or plan this reply manually.');
+            return;
+          }
+        }finally{if(current())setBusy(false);}
+      }
+      if(!current() || !config.auto || planSource?.messageId!==reply.messageId)return;
+      reply.phase='playback';await play({automaticReply:reply});
+    }
     finally{autoReplyActive=null;scheduleAutoReplies();}
   }
   function queueAutoReply(payload,needsCanonical=false){

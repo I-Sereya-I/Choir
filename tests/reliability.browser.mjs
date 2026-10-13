@@ -144,7 +144,7 @@ async function harness(mixerPreferences,mobile=false){
   const plan=async()=>{$('latest').click();await tick();await until(()=>!$('latest').disabled && ($('status').textContent.startsWith('Ready:') || $('status').textContent.includes('Saved attribution')));};
   const play=async()=>{footer.querySelector('button').click();await tick();await until(()=>$('status').textContent.includes('Playback finished'));};
   const reload=async()=>{cleanup();cleanup=await setup(ctx);};
-  return {dom,state,store,requests,synthesis,audios,audioBlobs,message,events,subscriptions,toolbarActions,connections,root,footer,toolbar,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
+  return {ctx,dom,state,store,requests,synthesis,audios,audioBlobs,message,events,subscriptions,toolbarActions,connections,root,footer,toolbar,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
     setMobile(matches){channelLayout.matches=matches;for(const listener of layoutListeners)listener();},
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
     async close(){cleanup();await tick();URL.createObjectURL=createObjectURL;Object.assign(globalThis,original);dom.window.close();}};
@@ -574,10 +574,10 @@ test('Stop cancels Freesound search and preview downloads and late results canno
  }
 });
 
-test('automatic streamed Choir playback and Cue share SFX while muted narration stays silent',async()=>{
+test('automatic Choir playback and Cue share SFX while muted narration stays silent',async()=>{
  const h=await harness();try{
   await configureFoley(h);h.message.content='The page snapped under her thumb. "Hello." A quiet room. '.repeat(4);
-  globalThis.__CHOIR_API__.setNarratorMuted(true);h.$('auto').checked=true;h.$('auto').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  globalThis.__CHOIR_API__.setNarratorMuted(true);h.$('auto-plan').click();h.$('auto').checked=true;h.$('auto').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
   h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content});await until(()=>h.$('status').textContent.includes('Playback finished') && !h.$('latest').disabled);
   assert.equal(await playedFoley(h),4);assert.equal(h.requests.filter(request=>request.action==='freesound').length,1);assert.ok(h.synthesis.every(request=>request.text.includes('Hello')));
   const bridge=globalThis.__CHOIR_API__,before=h.requests.filter(request=>request.action==='freesound').length,played=await playedFoley(h);
@@ -1126,7 +1126,7 @@ test('Auto-plan toolbar visibility and mixer state stay synchronized through rel
 test('WebSocket completion metadata cannot make Auto-plan or Auto-play wait for an already published reply',async()=>{
  for(const mode of ['auto-plan','auto-play']){
   const h=await harness();try{
-   h.$(mode).click();
+   h.$('auto-plan').click();if(mode==='auto-play')h.$('auto-play').click();
    const event={generationId:`websocket-${mode}`,chatId:'chat-a',messageId:h.message.id,content:h.message.content};
    const metadata={stateRevision:{epoch:'server-session',sequence:42},runtimeMutationId:'saved-reply'};
    // Lumiverse forwards the WebSocket callback's second argument to extensions.
@@ -1143,7 +1143,7 @@ test('WebSocket completion metadata cannot make Auto-plan or Auto-play wait for 
 test('automatic planning recovers missed completion events and waits for the saved swipe before planning',async()=>{
  for(const playing of [false,true]){
   const h=await harness();try{
-   h.$(playing?'auto-play':'auto-plan').click();
+   h.$('auto-plan').click();if(playing)h.$('auto-play').click();
    const original=h.message.content,completed='The saved reply arrived. "Hello."';
    h.state.savedMessages=[{...h.message,content:completed,swipes:[original,completed],swipe_id:1}];
    const event={generationId:'metrics-fallback',chatId:'chat-a',messageId:h.message.id,swipeId:1};
@@ -1209,7 +1209,7 @@ test('automatic planning ignores unsuitable events and duplicate events during a
   }finally{await h.close();}
 });
 
-test('mixer Auto-play toggle syncs with settings, persists, and plays even when Auto-plan is off',async()=>{
+test('mixer Auto-play persists independently and only plays available plans with Auto-plan off',async()=>{
   const h=await harness();try{
     assert.equal(h.$('auto-play').textContent,'Auto-play');assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');
     h.$('auto-play').click();assert.equal(h.$('auto').checked,true);assert.equal(h.$('auto-play').textContent,'Auto-play');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'false');
@@ -1218,16 +1218,122 @@ test('mixer Auto-play toggle syncs with settings, persists, and plays even when 
     h.$('auto').checked=false;h.$('auto').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');
     h.$('auto').checked=true;h.$('auto').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'true');
     h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content});
-    await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'false');assert.ok(h.synthesis.length>0);
+    await until(()=>h.$('status').textContent.includes('Auto-play skipped'));assert.equal(h.requests.length,0);assert.equal(h.synthesis.length,0);
+    await h.plan();const plans=h.requests.filter(request=>request.action==='plan').length;
+    h.events.get('GENERATION_ENDED')({generationId:'already-planned',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+    await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'false');assert.ok(h.synthesis.length>0);assert.equal(h.requests.filter(request=>request.action==='plan').length,plans);
+    h.message.content='An unplanned regenerated reply.';const synthesis=h.synthesis.length;
+    h.events.get('GENERATION_ENDED')({generationId:'unplanned-swipe',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+    await until(()=>h.$('status').textContent.includes('Auto-play skipped'));assert.equal(h.requests.filter(request=>request.action==='plan').length,plans);assert.equal(h.synthesis.length,synthesis);
     h.$('auto-plan').click();h.$('auto-play').click();assert.equal(h.$('auto').checked,false);assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');
     await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(h.$('auto-play').textContent,'Auto-play');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');
   }finally{await h.close();}
 });
 
+test('Auto-play alone skips saved attribution that still needs an LLM voice choice',async()=>{
+ const h=await harness();try{
+  await h.plan();const plans=h.requests.filter(request=>request.action==='plan').length;
+  h.store.get('chat:chat-a').fixed[2].voice='';await h.reload();h.$('auto-play').click();
+  h.events.get('GENERATION_ENDED')({generationId:'needs-new-voice',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+  await until(()=>h.$('status').textContent.includes('Auto-play skipped'));
+  assert.equal(h.requests.filter(request=>request.action==='plan').length,plans);assert.equal(h.synthesis.length,0);
+ }finally{await h.close();}
+});
+
+test('turning Auto-plan off cancels its pending planner even with Auto-play left on',async()=>{
+ for(const playing of [false,true]){
+  const h=await harness();try{
+   h.$('auto-plan').click();if(playing)h.$('auto-play').click();h.state.held=true;
+   h.events.get('GENERATION_ENDED')({generationId:'held-automatic-plan',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   await until(()=>h.requests.some(request=>request.action==='plan'));const pending=h.requests.find(request=>request.action==='plan');
+   h.$('auto-plan').click();await until(()=>!h.$('latest').disabled);
+   assert.equal(h.$('auto-play').getAttribute('aria-pressed'),String(playing));assert.ok(h.requests.some(request=>request.action==='cancel' && request.id===pending.id));
+   h.state.held=false;h.releaseHeld();await tick();assert.equal(h.synthesis.length,0);assert.equal(h.$('preview').childElementCount,0);
+   h.message.content='A later unplanned reply.';h.events.get('GENERATION_ENDED')({generationId:'after-plan-off',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   if(playing)await until(()=>h.$('status').textContent.includes('Auto-play skipped'));else await new Promise(resolve=>setTimeout(resolve,150));
+   assert.equal(h.requests.filter(request=>request.action==='plan').length,1);assert.equal(h.synthesis.length,0);
+  }finally{await h.close();}
+ }
+});
+
+test('turning Auto-play off during planning leaves Auto-plan running and prevents subsequent speech',async()=>{
+ for(const control of ['mixer','drawer']){
+  const h=await harness();try{
+   h.$('auto-plan').click();h.$('auto-play').click();h.state.held=true;
+   h.events.get('GENERATION_ENDED')({generationId:'planning-before-play-off',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   await until(()=>h.requests.some(request=>request.action==='plan'));const pending=h.requests.find(request=>request.action==='plan');
+   assert.equal(h.$('auto').disabled,false);
+   if(control==='mixer')h.$('auto-play').click();else{h.$('auto').checked=false;h.$('auto').dispatchEvent(new h.dom.window.Event('change'));}
+   assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');assert.ok(!h.requests.some(request=>request.action==='cancel' && request.id===pending.id));
+   h.state.held=false;h.releaseHeld();await until(()=>h.$('status').textContent.startsWith('Ready:') && !h.$('latest').disabled);
+   assert.ok([...h.store.keys()].some(key=>key.startsWith('plan:')));assert.equal(h.synthesis.length,0);
+   h.message.content='The next reply is planned silently.';h.events.get('GENERATION_ENDED')({generationId:'silent-after-play-off',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   await until(()=>h.requests.filter(request=>request.action==='plan').length===2 && !h.$('latest').disabled);assert.equal(h.synthesis.length,0);
+  }finally{await h.close();}
+ }
+});
+
+test('turning Auto-play off cancels automatic speech generation and active audio without disabling Auto-plan',async()=>{
+ for(const stage of ['synthesis','audio']){
+  const h=await harness();try{
+   h.message.content='An automatically spoken reply.';h.$('auto-plan').click();h.$('auto-play').click();
+   if(stage==='synthesis')h.state.holdSynthesisAt=1;else h.state.blockAudio=true;
+   h.events.get('GENERATION_ENDED')({generationId:`stop-auto-${stage}`,chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   await until(()=>stage==='synthesis'?h.state.releaseSynthesis:h.audios.some(audio=>!audio.paused));
+   h.$('auto-play').click();await until(()=>!h.$('latest').disabled);
+   assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');assert.ok(h.audios.every(audio=>audio.paused));
+   if(stage==='synthesis'){assert.equal(h.state.aborted,1);h.state.releaseSynthesis();h.state.holdSynthesisAt=null;}
+   const synthesis=h.synthesis.length;h.state.blockAudio=false;await tick();assert.equal(h.synthesis.length,synthesis);
+   h.message.content='A following reply is planned silently.';h.events.get('GENERATION_ENDED')({generationId:`after-auto-${stage}`,chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   await until(()=>h.requests.filter(request=>request.action==='plan').length===2 && !h.$('latest').disabled);assert.equal(h.synthesis.length,synthesis);
+  }finally{await h.close();}
+ }
+});
+
+test('turning Auto-plan off during automatic playback keeps that available plan playing',async()=>{
+ const h=await harness();try{
+  h.message.content='An already planned reply.';h.$('auto-plan').click();h.$('auto-play').click();h.state.blockAudio=true;
+  h.events.get('GENERATION_ENDED')({generationId:'playing-available-plan',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+  await until(()=>h.audios.some(audio=>!audio.paused));const audio=h.audios.find(audio=>!audio.paused);
+  h.$('auto-plan').click();assert.equal(audio.paused,false);assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'true');
+  h.state.blockAudio=false;audio.onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  const synthesis=h.synthesis.length;h.message.content='A new unplanned reply.';h.events.get('GENERATION_ENDED')({generationId:'unplanned-after-speech',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+  await until(()=>h.$('status').textContent.includes('Auto-play skipped'));assert.equal(h.requests.filter(request=>request.action==='plan').length,1);assert.equal(h.synthesis.length,synthesis);
+ }finally{await h.close();}
+});
+
+test('automation switches do not cancel manually requested planning or playback',async()=>{
+ const h=await harness();try{
+  h.$('auto-plan').click();h.$('auto-play').click();h.state.held=true;h.$('latest').click();
+  await until(()=>h.requests.some(request=>request.action==='plan'));const pending=h.requests.find(request=>request.action==='plan');
+  h.$('auto-plan').click();h.$('auto-play').click();assert.ok(!h.requests.some(request=>request.action==='cancel' && request.id===pending.id));
+  h.state.held=false;h.releaseHeld();await until(()=>h.$('status').textContent.startsWith('Ready:') && !h.$('latest').disabled);
+  h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.some(audio=>!audio.paused));const audio=h.audios.find(audio=>!audio.paused);
+  h.$('auto-play').click();h.$('auto-play').click();assert.equal(audio.paused,false);h.$('stop').click();assert.equal(audio.paused,true);
+ }finally{await h.close();}
+});
+
+test('automation disabled during saved-plan lookup cannot start late local planning or playback',async()=>{
+ for(const stage of ['planning','restore']){
+  const h=await harness();let holding=true;const held=[];
+  try{
+   h.message.content='A simple narrated reply.';
+   if(stage==='restore')await h.plan();else{h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));h.$('auto-plan').click();}
+   h.$('auto-play').click();const plans=h.requests.filter(request=>request.action==='plan').length,get=h.ctx.settings.get;
+   h.ctx.settings.get=async key=>{if(holding && key.startsWith('plan:'))await new Promise(resolve=>held.push(resolve));return get(key);};
+   h.events.get('GENERATION_ENDED')({generationId:`delayed-lookup-${stage}`,chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   await until(()=>held.length>0 && h.$('latest').disabled);h.$(stage==='planning'?'auto-plan':'auto-play').click();
+   assert.equal(h.$('latest').disabled,false);holding=false;for(const release of held.splice(0))release();await new Promise(resolve=>setTimeout(resolve,150));
+   assert.equal(h.requests.filter(request=>request.action==='plan').length,plans);assert.equal(h.synthesis.length,0);
+   if(stage==='planning'){assert.equal(h.$('preview').childElementCount,0);assert.ok(![...h.store.keys()].some(key=>key.startsWith('plan:')));}
+  }finally{holding=false;for(const release of held)release();await h.close();}
+ }
+});
+
 test('Auto-plan and Auto-play wait for message publication after the host completion event, including same-ID regeneration',async()=>{
  for(const mode of ['auto-plan','auto-play'])for(const existing of [false,true]){
   const h=await harness();try{
-   h.$(mode).click();const finalContent='A completed assistant reply.';h.state.messages=existing?[{...h.message,content:'Previous swipe.'}]:[];
+   h.$('auto-plan').click();if(mode==='auto-play')h.$('auto-play').click();const finalContent='A completed assistant reply.';h.state.messages=existing?[{...h.message,content:'Previous swipe.'}]:[];
    const event={generationId:`generated-${mode}-${existing}`,chatId:'chat-a',messageId:h.message.id,content:finalContent};h.events.get('GENERATION_ENDED')(event,{stateRevision:{epoch:'server-session',sequence:42}});
    await new Promise(resolve=>setTimeout(resolve,150));assert.equal(h.requests.length,0,'Do not plan an unpublished reply');assert.equal(h.audios.length,0);
    h.message.content=finalContent;h.state.messages=[h.message];h.subscriptions.get('chat.messageCount')();
@@ -1242,7 +1348,7 @@ test('new reply automation queues behind active planning, playback or Cue instea
  for(const activity of ['planning','playback','Cue']){
   const h=await harness();try{
    const playing=activity!=='planning';let companion;
-   h.message.content='First reply.';h.$(playing?'auto-play':'auto-plan').click();
+   h.message.content='First reply.';h.$('auto-plan').click();if(playing)h.$('auto-play').click();
    if(playing){h.state.blockAudio=true;if(activity==='Cue')companion=globalThis.__CHOIR_API__.playParagraph({text:h.message.content});else{await h.plan();h.$('play').click();}await until(()=>h.audios.length===1 && !h.audios[0].paused);}
    else{h.state.held=true;h.$('latest').click();await until(()=>h.requests.some(request=>request.action==='plan'));}
    const initialPlans=activity==='Cue'?0:1,next={id:'message-next',name:'Mira',is_user:false,content:'Second reply.'};h.state.messages=[h.message,next];h.events.get('GENERATION_ENDED')({generationId:'next-generation',chatId:'chat-a',messageId:next.id,content:next.content});await new Promise(resolve=>setTimeout(resolve,150));assert.equal(h.requests.filter(request=>request.action==='plan').length,initialPlans);

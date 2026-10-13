@@ -320,15 +320,24 @@ try{
   await page.waitForFunction(()=>window.audios.filter(audio=>audio.loop).every(audio=>audio.paused));
   for(const mode of ['auto-plan','auto-play']){
     const start=await page.evaluate(()=>({plans:window.plans,calls:window.calls.length,audios:window.audios.length}));
-    await (mode==='auto-plan'?autoPlanSwitch:autoPlaySwitch).click();
+    await autoPlanSwitch.click();if(mode==='auto-play')await autoPlaySwitch.click();
     const event={generationId:`chrome-${mode}`,chatId:'fixture',messageId:'reply',content:`A completed ${mode} reply appeared in chat.`};
     await page.evaluate(payload=>{window.fixtureEvents.get('GENERATION_ENDED')(payload,{stateRevision:{epoch:'chrome-fixture',sequence:42}});setTimeout(()=>window.fixtureMessage.content=payload.content,300);},event);
     await page.waitForTimeout(150);assert.equal(await page.evaluate(()=>window.plans),start.plans);assert.equal(await page.evaluate(()=>window.audios.length),start.audios);
     await page.waitForFunction(({mode,start})=>window.plans===start.plans+1 && document.querySelector('[data-et="status"]').textContent.includes(mode==='auto-play'?'Playback finished':'Ready:') && !document.querySelector('[data-et="latest"]').disabled,{mode,start});
     assert.equal(await page.evaluate(()=>window.calls.length),start.calls+(mode==='auto-play'?1:0));assert.equal(await page.evaluate(()=>window.audios.length),start.audios+(mode==='auto-play'?1:0));
     await page.evaluate(payload=>window.fixtureEvents.get('GENERATION_ENDED')(payload,{stateRevision:{epoch:'chrome-fixture',sequence:42}}),event);await page.waitForTimeout(150);assert.equal(await page.evaluate(()=>window.plans),start.plans+1);assert.equal(await page.evaluate(()=>window.audios.length),start.audios+(mode==='auto-play'?1:0));
-    await (mode==='auto-plan'?autoPlanSwitch:autoPlaySwitch).click();
+    if(mode==='auto-play')await autoPlaySwitch.click();await autoPlanSwitch.click();
   }
+  const autoPlayOnly=await page.evaluate(()=>({plans:window.plans,calls:window.calls.length,audios:window.audios.length}));
+  await autoPlaySwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');
+  await page.evaluate(()=>window.fixtureEvents.get('GENERATION_ENDED')({generationId:'chrome-saved-plan-only',chatId:'fixture',messageId:'reply',content:window.fixtureMessage.content}));
+  await page.waitForFunction(start=>window.audios.length===start.audios+1 && document.querySelector('[data-et="status"]').textContent.includes('Playback finished'),autoPlayOnly);
+  assert.equal(await page.evaluate(()=>window.plans),autoPlayOnly.plans);assert.equal(await page.evaluate(()=>window.calls.length),autoPlayOnly.calls);
+  await page.evaluate(()=>{window.fixtureMessage.content='An unplanned reply should stay silent.';window.fixtureEvents.get('GENERATION_ENDED')({generationId:'chrome-no-plan',chatId:'fixture',messageId:'reply',content:window.fixtureMessage.content});});
+  await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Auto-play skipped'));
+  assert.equal(await page.evaluate(()=>window.plans),autoPlayOnly.plans);assert.equal(await page.evaluate(()=>window.calls.length),autoPlayOnly.calls);assert.equal(await page.evaluate(()=>window.audios.length),autoPlayOnly.audios+1);
+  await autoPlaySwitch.click();
   await cast.getByRole('button',{name:'Edit Mira',exact:true}).click();
   const fishCard=cast.locator('.et-card').nth(2);await fishCard.locator('[data-choir-route]').selectOption('native:c');
   await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Speaker TTS connection selected'));
