@@ -1411,7 +1411,8 @@ test('Settings changes (checkboxes and dropdowns) auto-persist globally and acro
     // Verify global settings store was updated
     const globalSaved = store.get('settings:global');
     assert.ok(globalSaved, 'Global settings should be saved');
-    assert.equal(globalSaved.muteNarrator, true);
+    assert.equal(globalSaved.muteNarrator, undefined);
+    assert.equal(store.get('chat:chat-1').muteNarrator,true);
     assert.equal(globalSaved.useFastClassifier, true);
     assert.equal(globalSaved.plannerMode, 'heuristic');
 
@@ -1437,7 +1438,7 @@ test('Settings changes (checkboxes and dropdowns) auto-persist globally and acro
 
     // User's choices must be preserved!
     assert.equal($2('muteNarrator'), null);
-    assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(), true, 'companion narrator preference should survive a new chat / reload');
+    assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(), false, 'narrator exclusion belongs to this chat cast');
     assert.equal($2('useFastClassifier').checked, true, 'useFastClassifier should be preserved in new chat / reload');
     assert.equal($2('plannerMode').value, 'heuristic');
 

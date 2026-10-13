@@ -1,4 +1,4 @@
-import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, transcriptFromMessage, planningSections, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset } from './core.js';
+import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, transcriptFromMessage, planningSections, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset } from './core.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
 const ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
@@ -60,8 +60,9 @@ export async function setup(ctx) {
     .choir-auto-plan-action:disabled{opacity:.45;cursor:default}
     .choir-auto-plan-action:focus-visible{outline:2px solid currentColor;outline-offset:2px}
     .ensemble-tts h3{font-size:0.95em;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;opacity:0.85;margin:20px 0 8px}
-    .ensemble-tts .et-section-header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:20px 0 8px}
+    .ensemble-tts .et-section-header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin:20px 0 8px}
     .ensemble-tts .et-section-header h3{margin:0}
+    .ensemble-tts .et-section-header .et-btn-group{flex-wrap:wrap}
     .ensemble-tts label{display:grid;gap:4px;font-size:0.85em;font-weight:500}
     .ensemble-tts input,.ensemble-tts select,.ensemble-tts textarea{width:100%;box-sizing:border-box;background:rgba(128,128,128,0.06);color:inherit;border:1px solid rgba(128,128,128,0.3);border-radius:6px;padding:7px 10px;font:inherit;font-size:0.95em;transition:border-color 0.15s ease}
     .ensemble-tts input:focus,.ensemble-tts select:focus,.ensemble-tts textarea:focus{outline:none;border-color:rgba(128,128,128,0.6)}
@@ -75,7 +76,6 @@ export async function setup(ctx) {
     .et-default-dialog [hidden]{display:none!important}
     .et-default-dialog [role="tabpanel"]{display:grid;gap:12px}
     .et-npc-policy{display:grid;gap:10px;margin:10px 0}
-    .et-default-dialog [role="tabpanel"][data-panel="speech"]{grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr))}
     .ensemble-tts select option{background:Canvas;color:CanvasText}
     .ensemble-tts textarea{resize:vertical;min-height:80px}
     .ensemble-tts button{background:rgba(128,128,128,0.12);color:inherit;border:1px solid rgba(128,128,128,0.3);border-radius:6px;padding:6px 12px;cursor:pointer;font:inherit;font-size:0.9em;font-weight:500;display:inline-flex;align-items:center;justify-content:center;gap:6px;transition:background 0.15s ease,opacity 0.15s ease}
@@ -232,16 +232,16 @@ export async function setup(ctx) {
     </div>
     <div class="et-section-header">
       <h3>Lead Cast</h3>
-      <button data-et="add" class="et-btn-subtle">+ Add character</button>
+      <div class="et-btn-group"><button data-et="captureDefaults" class="et-btn-subtle" disabled>Set default</button><button data-et="applyDefaults" class="et-btn-subtle" disabled>Apply default</button><button data-et="add" class="et-btn-subtle">+ Add character</button></div>
     </div>
     <div data-et="fixed"></div>
 
     <div class="et-section-header">
       <h3>NPC Cast</h3>
-      <button data-et="reset" class="et-btn-subtle">Reset NPCs</button>
+      <div class="et-btn-group"><button data-et="captureNpcDefaults" class="et-btn-subtle" disabled>Set default</button><button data-et="applyNpcDefaults" class="et-btn-subtle" disabled>Apply default</button><button data-et="reset" class="et-btn-subtle">Reset NPCs</button></div>
     </div>
     <details><summary>NPC voice settings</summary><div data-et="npcPolicyRoot" class="et-npc-policy"></div></details>
-    <div data-et="npcs"></div>
+    <div data-et="npcs"></div><p data-et="defaultStatus" role="status" aria-live="polite" style="font-size:.85em;opacity:.8"></p>
 
     <div class="et-section-header">
       <h3>Speech & Planner</h3>
@@ -286,13 +286,9 @@ export async function setup(ctx) {
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
 
-    <div data-et="defaultSetup" style="margin-top:14px">
-      <div class="et-row" style="flex-wrap:wrap">
-        <button data-et="captureDefaults" class="et-btn-subtle" disabled>Set default</button>
-        <button data-et="applyDefaults" class="et-btn-subtle" disabled>Apply default to this chat</button>
-      </div>
-      <p data-et="defaultStatus" role="status" aria-live="polite" style="font-size:.85em;opacity:.8">No default captured yet. New chats use your latest preferences.</p>
-    </div>
+    <p style="font-size:.85em;opacity:.8">Speech &amp; Planner settings save automatically and apply to every chat.</p>
+    <label>Ignored tags<textarea data-et="ignoredTags" rows="2" placeholder="summary, inventory, private-notes"></textarea></label>
+    <p style="font-size:.85em;opacity:.75">Skip everything inside these tags when reading. Enter tag names separated by commas or new lines, for example summary skips &lt;summary&gt;…&lt;/summary&gt;.</p>
 
     <details>
       <summary>Advanced Settings</summary>
@@ -430,7 +426,7 @@ export async function setup(ctx) {
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
   const defaults = () => ({mode:'native',model:'gemini-3.8-flash-tts',planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
-    extraVoices:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
+    extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
       {speaker:'Character',voice:'',style:''} ]});
@@ -821,20 +817,21 @@ export async function setup(ctx) {
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
   const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
-  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','npcPolicy','fishVoiceSource','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','enableAmbience','enableMusic','freesoundApiKey'];
+  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','freesoundApiKey'];
   const defaultVoiceFields=['voice','route','gender','style','accent','excluded'];
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   let closeDefaultEditor;
   unsubs.push(()=>closeDefaultEditor?.());
   const preferenceSnapshot=value=>Object.fromEntries(preferenceFields.filter(name=>value && Object.hasOwn(value,name)).map(name=>[name,structuredClone(value[name])]));
   function refreshDefaultControls(){
-    $('captureDefaults').disabled=busy || defaultOperation || !chatId || !castRows.length;
-    $('applyDefaults').disabled=busy || defaultOperation || !chatId || !castRows.length || !capturedDefaults;
+    for(const name of ['captureDefaults','captureNpcDefaults'])$(name).disabled=busy || defaultOperation || !chatId || !castRows.length;
+    $('applyDefaults').disabled=busy || defaultOperation || !chatId || !castRows.length || !capturedDefaults?.leadVoices;
+    $('applyNpcDefaults').disabled=busy || defaultOperation || !chatId || !castRows.length || !capturedDefaults?.npcPolicy;
   }
-  function withDefaultSetup(value,preset){
-    const candidate={...value,...preferenceSnapshot(preset.preferences)};
-    if(Array.isArray(preset.leadVoices)){
-      candidate.fixed=value.fixed.map((actor,index)=>({...actor,...Object.fromEntries(defaultVoiceFields.filter(name=>preset.leadVoices[index] && Object.hasOwn(preset.leadVoices[index],name)).map(name=>[name,preset.leadVoices[index][name]]))}));
+  function withDefaultSetup(value,preset,group){
+    const candidate={...value,...(!group || group==='npc'?preset.npcPolicy?{npcPolicy:structuredClone(preset.npcPolicy)}:{}:{})};
+    if(group!=='npc' && Array.isArray(preset.leadVoices)){
+      candidate.fixed=value.fixed.map((actor,index)=>({...actor,...Object.fromEntries(defaultVoiceFields.filter(name=>preset.leadVoices[Math.min(index,2)] && Object.hasOwn(preset.leadVoices[Math.min(index,2)],name)).map(name=>[name,preset.leadVoices[Math.min(index,2)][name]]))}));
       if(candidate.connectionMode==='one')candidate.singleVoices={...value.singleVoices,[scope(candidate)]:{...value.singleVoices?.[scope(candidate)],...Object.fromEntries(candidate.fixed.slice(0,3).map(actor=>[actor.speaker,actor.voice || '']))}};
     }
     return candidate;
@@ -874,7 +871,7 @@ export async function setup(ctx) {
     pool.onchange=()=>{policy.voices=[...pool.selectedOptions].map(item=>item.value);onChange(read());};
     return {refresh,read};
   }
-  function openDefaultEditor(useCurrent=false){
+  function openDefaultEditor(group='lead',useCurrent=false){
     closeDefaultEditor?.();
     const current=capture(),draft=structuredClone(useCurrent || !capturedDefaults?current:withDefaultSetup(current,capturedDefaults));
     if(useCurrent || !capturedDefaults)draft.fixed=casting(current).fixed;
@@ -882,26 +879,17 @@ export async function setup(ctx) {
     const overlay=document.createElement('div');overlay.className='et-default-overlay';
     const dialog=document.createElement('div');dialog.className='ensemble-tts et-default-dialog';dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');dialog.setAttribute('aria-label','Set default');
     const heading=document.createElement('h2');heading.textContent='Set default';
-    const intro=document.createElement('p');intro.style.fontSize='.85em';intro.textContent='New chats start with this setup. Every chat saves its own changes. Saving here leaves existing chats unchanged.';
+    const intro=document.createElement('p');intro.style.fontSize='.85em';intro.textContent='New chats start with these cast voices. Existing casts keep their choices until you apply a default. Speech & Planner settings are shared automatically.';
     const tabs=document.createElement('div');tabs.className='et-default-tabs';tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Default settings');
     const body=document.createElement('div');body.className='et-default-body';const panels=[];const buttons=[];
-    for(const [key,title] of [['speech','Speech & Planner'],['lead','Lead cast'],['npc','NPC cast']]){
+    for(const [key,title] of [['lead','Lead cast'],['npc','NPC cast']]){
       const panel=document.createElement('div');panel.dataset.panel=key;panel.setAttribute('role','tabpanel');panel.id=`choir-default-${key}`;
       const button=document.createElement('button');button.type='button';button.textContent=title;button.id=`choir-default-tab-${key}`;button.setAttribute('role','tab');button.setAttribute('aria-controls',panel.id);panel.setAttribute('aria-labelledby',button.id);
       tabs.append(button);body.append(panel);panels.push(panel);buttons.push(button);
     }
     const select=index=>{panels.forEach((panel,i)=>panel.hidden=i!==index);buttons.forEach((button,i)=>{button.setAttribute('aria-selected',String(i===index));button.tabIndex=i===index?0:-1;});};
-    buttons.forEach((button,index)=>{button.onclick=()=>select(index);button.onkeydown=event=>{const next=event.key==='ArrowRight'?(index+1)%3:event.key==='ArrowLeft'?(index+2)%3:null;if(next!==null){event.preventDefault();select(next);buttons[next].focus();}};});select(0);
-    const fields={};
-    const specs=[['connectionMode','Voice connections'],['mode','Default TTS provider'],['connection','Lumiverse connection'],['model','Gemini model'],['styleParam','Style handling'],['plannerMode','Planner engine'],['planner','Planner LLM connection'],['decisionConnection','Decision connection'],['fishVoiceSource','Fish voices the planner picks from'],['auto','Auto-play new replies'],['autoPlan','Auto-plan new replies'],['showAutoPlanAction','Show Auto-plan in chat toolbar'],['enableSfx','Sound effects (Foley cues)'],['enableAmbience','Ambient sound'],['enableMusic','Background music'],['sectionButtons','Show section play buttons'],['enableMixer','Floating audio mixer'],['useStyle','Delivery styles'],['retention','Audio retention'],['concurrency','Concurrent TTS requests'],['chunk','Max characters per request'],['plannerTokens','Planner output tokens'],['prefetch','Prefetch passages'],['allowLlmFallback','Allow LLM fallback after Jev fails'],['normalizeLoudness','Match passage loudness'],['allowVoiceFallback','Allow Gemini custom voice fallback'],['apiBase','Lumiverse API base'],['freesoundApiKey','Freesound API key'],['autoDesignNPCs','Auto-design custom NPC voices']];
-    for(const [name,label] of specs){
-      const source=$(name),input=source?source.cloneNode(true):document.createElement('input');input.removeAttribute('data-et');input.removeAttribute('aria-describedby');input.disabled=false;input.dataset.defaultField=name;
-      if(name==='autoPlan')input.type='checkbox';
-      if(input.type==='checkbox')input.checked=Boolean(draft[name]);else input.value=draft[name] ?? '';
-      const wrap=defaultLabel(label,input);if(input.type==='checkbox')wrap.className='et-check';panels[0].append(wrap);fields[name]=input;
-    }
-    const route=()=>fields.mode.value==='gemini'?'gemini':`native:${fields.connection.value}`;
-    const readPreferences=()=>{for(const [name,input] of Object.entries(fields))draft[name]=input.type==='checkbox'?input.checked:['chunk','plannerTokens','prefetch','concurrency'].includes(name)?Number(input.value):input.value;draft.useJev=draft.plannerMode==='jev';draft.useFastClassifier=draft.plannerMode==='heuristic';};
+    buttons.forEach((button,index)=>{button.onclick=()=>select(index);button.onkeydown=event=>{const next=event.key==='ArrowRight'?(index+1)%2:event.key==='ArrowLeft'?(index+1)%2:null;if(next!==null){event.preventDefault();select(next);buttons[next].focus();}};});select(group==='npc'?1:0);
+    const route=()=>scope(current);
     const voiceRefreshes=[];
     for(const [index,name] of ['Narrator','{{user}}','{{char}}'].entries()){
       const actor=draft.fixed[index] || {speaker:name,voice:'',style:''};draft.fixed[index]=actor;
@@ -911,33 +899,29 @@ export async function setup(ctx) {
       fill(voiceCatalogues.get(connection.value || route()) || []);
       const refresh=async()=>{const token=++request;voice.disabled=true;try{const catalogue=await ensureCatalogue(connection.value || route());if(token===request && dialog.isConnected)fill(catalogue);}catch(error){if(token===request)feedback.textContent=error.message;}finally{if(token===request)voice.disabled=false;}};
       voiceRefreshes.push(refresh);
-      const shared=()=>{connection.disabled=fields.connectionMode.value==='one';if(connection.disabled){connection.value='';actor.route='';}};shared();
-      fields.connectionMode.addEventListener('change',()=>{shared();actor.voice='';void refresh();});
+      const shared=()=>{connection.disabled=current.connectionMode==='one';if(connection.disabled){connection.value='';actor.route='';}};shared();
       connection.onchange=()=>{actor.route=connection.value;actor.voice='';void refresh();};voice.onchange=()=>actor.voice=voice.value;
-      for(const input of [fields.connection,fields.mode])input.addEventListener('change',()=>{if(!connection.value){actor.voice='';void refresh();}});
-      section.append(title,defaultLabel(`Default ${name} connection`,connection),defaultLabel(`Default ${name} voice`,voice));panels[1].append(section);
+      section.append(title,defaultLabel(`Default ${name} connection`,connection),defaultLabel(`Default ${name} voice`,voice));panels[0].append(section);
     }
-    const npcEditor=npcPolicyEditor(panels[2],draft.npcPolicy,route,value=>draft.npcPolicy=value,'Default ',()=>fields.connectionMode.value==='one');
-    fields.connectionMode.addEventListener('change',()=>void npcEditor.refresh());
-    for(const input of [fields.connection,fields.mode])input.addEventListener('change',()=>void npcEditor.refresh());
+    const npcEditor=npcPolicyEditor(panels[1],draft.npcPolicy,route,value=>draft.npcPolicy=value,'Default ',()=>current.connectionMode==='one');
     const feedback=document.createElement('p');feedback.setAttribute('role','status');feedback.setAttribute('aria-live','polite');feedback.dataset.defaultFeedback='';feedback.style.fontSize='.85em';
     const actions=document.createElement('div');actions.className='et-default-actions';
     const fromChat=document.createElement('button'),cancel=document.createElement('button'),save=document.createElement('button');fromChat.textContent='Use current chat settings';cancel.textContent='Cancel';save.textContent='Save default';save.className='et-btn-primary';actions.append(fromChat,cancel,save);
     const targetChat=chatId,version=loadVersion,previousFocus=document.activeElement;
     const close=()=>{overlay.remove();if(closeDefaultEditor===close)closeDefaultEditor=null;if(previousFocus?.isConnected)previousFocus.focus();};closeDefaultEditor=close;
-    cancel.onclick=close;fromChat.onclick=()=>openDefaultEditor(true);overlay.onclick=event=>{if(event.target===overlay)close();};
+    cancel.onclick=close;fromChat.onclick=()=>openDefaultEditor(group,true);overlay.onclick=event=>{if(event.target===overlay)close();};
     dialog.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();close();}else if(event.key==='Tab'){const focusable=[...dialog.querySelectorAll('button,input,select')].filter(node=>!node.disabled && node.tabIndex>=0 && !node.closest('[hidden]')),first=focusable[0],last=focusable.at(-1);if(event.shiftKey && document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey && document.activeElement===last){event.preventDefault();first.focus();}}};
     save.onclick=()=>void(async()=>{
       save.disabled=true;fromChat.disabled=true;defaultOperation=true;refreshDefaultControls();feedback.textContent='Saving default…';$('defaultStatus').textContent='Saving default…';
       try{
-        readPreferences();draft.npcPolicy=npcEditor.read();
+        draft.npcPolicy=npcEditor.read();
         if(draft.connectionMode==='one')for(const actor of draft.fixed)actor.route=route();
         const candidate=structuredClone(draft);
         const routes=new Set([scope(candidate),...candidate.fixed.map(actor=>actor.route || scope(candidate)),...(['single','preferred','llm'].includes(candidate.npcPolicy?.mode)?[candidate.npcPolicy.route || scope(candidate)]:[])]);
         await Promise.all([...routes].map(route=>ensureCatalogue(route)));
         if(disposed || targetChat!==chatId || version!==loadVersion || !dialog.isConnected)return;
         validateSettings(candidate);
-        const preset={version:1,preferences:preferenceSnapshot(candidate),leadVoices:candidate.fixed.map(actor=>Object.fromEntries(defaultVoiceFields.filter(name=>Object.hasOwn(actor,name)).map(name=>[name,structuredClone(actor[name])]))) };
+        const preset={version:2,npcPolicy:structuredClone(candidate.npcPolicy),leadVoices:candidate.fixed.map(actor=>Object.fromEntries(defaultVoiceFields.filter(name=>Object.hasOwn(actor,name)).map(name=>[name,structuredClone(actor[name])]))) };
         await ctx.settings.set(CAPTURED_DEFAULTS_KEY,structuredClone(preset));capturedDefaults=preset;++defaultsRevision;
         if(!disposed){$('defaultStatus').textContent='Default saved. New chats use this setup; each chat keeps its own changes.';feedback.textContent='Default saved.';close();}
       }catch(error){if(!disposed){feedback.textContent=error.message;$('defaultStatus').textContent='Default save failed. Your previous default is retained.';}}
@@ -954,7 +938,7 @@ export async function setup(ctx) {
     const snapshot=structuredClone(withoutSecrets(value)),edit=settingsEdit;
     const write=async()=>{
       await ctx.settings.set(settingsKey(targetChat),snapshot);
-      if(inherit){await ctx.settings.set(GLOBAL_SETTINGS_KEY,Object.fromEntries(preferenceFields.map(name=>[name,snapshot[name]])));
+      if(inherit){await ctx.settings.set(GLOBAL_SETTINGS_KEY,preferenceSnapshot(snapshot));
         if(retentionPolicies.get(targetChat)!==snapshot.retention){try{await recordingStore('policy',recordingKey(targetChat,''),{retention:snapshot.retention});retentionPolicies.set(targetChat,snapshot.retention);}catch(error){if(chatId===targetChat)status(`Settings saved. Audio retention could not be applied: ${error.message}`,true);}}
       }
     };
@@ -968,6 +952,7 @@ export async function setup(ctx) {
       validateNumericSettings(candidate);
       for(const name of ['chunk','plannerTokens','prefetch'])if(!$(name).value.trim())throw new Error('Enter a value for '+$(name).parentElement.firstChild.textContent.trim()+'.');
     }catch(error){++settingsEdit;pendingSettings=null;clearTimeout(autosaveTimer);autosaveTimer=null;saveState('Not saved · check Advanced Settings',true);status(error.message,true);return false;}
+    if(candidate.ignoredTags!==config.ignoredTags){stop(false);clearPlan();paragraphCues.clear();renderMessages();}
     config=candidate;pendingSettings={chatId,value:structuredClone(config),edit:++settingsEdit};
     if(!config.autoPlan && !config.auto)cancelAutoReplies();
     renderMixer();
@@ -1570,7 +1555,7 @@ export async function setup(ctx) {
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,concurrency:Number($('concurrency').value),
       prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
-      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
+      extraVoices:$('extraVoices').value,ignoredTags:$('ignoredTags').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
   }
   function casting(c=config) {
     const routeActor=actor=>c.connectionMode==='one'?{...actor,route:scope(c),voice:singleVoice(actor,c)}:actor;
@@ -1698,7 +1683,7 @@ export async function setup(ctx) {
     }
   }
   function setFields() {
-    for(const name of ['mode','model','planner','connection','decisionConnection','fishVoiceSource','styleParam','apiBase','chunk','plannerTokens','extraVoices','retention'])if($(name))$(name).value=config[name] || '';
+    for(const name of ['mode','model','planner','connection','decisionConnection','fishVoiceSource','styleParam','apiBase','chunk','plannerTokens','extraVoices','ignoredTags','retention'])if($(name))$(name).value=config[name] || '';
     $('connectionMode').value=config.connectionMode;
     $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;
     $('showAutoPlanAction').checked=Boolean(config.showAutoPlanAction);
@@ -1818,13 +1803,12 @@ export async function setup(ctx) {
     const defaultRevision=defaultsRevision;
     const [globalSaved,saved,preset]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),id?ctx.settings.get(settingsKey(id)):null,ctx.settings.get(CAPTURED_DEFAULTS_KEY)]);
     if(disposed || version!==loadVersion)return;
-    if(defaultRevision===defaultsRevision)capturedDefaults=preset?.version===1 && preset.preferences && typeof preset.preferences==='object'?preset:null;
-    const preferences=capturedDefaults?.preferences || globalSaved || (!saved?await ctx.settings.get('settings:defaults'):null);
+    if(defaultRevision===defaultsRevision)capturedDefaults=[1,2].includes(preset?.version)?{version:2,...(Array.isArray(preset.leadVoices)?{leadVoices:preset.leadVoices}:{}),...(preset.npcPolicy || preset.preferences?.npcPolicy?{npcPolicy:preset.npcPolicy || preset.preferences.npcPolicy}:{})}:null;
+    const preferences={...preferenceSnapshot(preset?.preferences || await ctx.settings.get('settings:defaults')),...preferenceSnapshot(saved),...preferenceSnapshot(globalSaved)};
     if(disposed || version!==loadVersion)return;
     const legacyCast=!saved && !capturedDefaults && Array.isArray(globalSaved?.fixed)?globalSaved:null;
-    config={...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(legacyCast || {}),...(saved || {})};
-    const chatSettings=saved || legacyCast;
-    config.plannerMode=resolvePlannerMode(chatSettings && ['plannerMode','useJev','useFastClassifier'].some(name=>Object.hasOwn(chatSettings,name)) ? chatSettings : preferences || {});
+    config={...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(legacyCast || {}),...(saved || {}),...preferences};
+    config.plannerMode=resolvePlannerMode(preferences);
     config.useFastClassifier=config.plannerMode==='heuristic';config.useJev=config.plannerMode==='jev';
     if(!saved && !legacyCast && config.mode==='native')config.fixed[0].voice='';
     retentionPolicies.set(id,config.retention);
@@ -1835,14 +1819,14 @@ export async function setup(ctx) {
     if(!saved && !legacyCast && capturedDefaults)config=withDefaultSetup(config,capturedDefaults);
     setFields();await loadProviders();
     if(version!==loadVersion || disposed)return;
+    await refreshLeadNames(Boolean(saved));
+    if(version!==loadVersion || disposed)return;
     const previous=id?await ctx.settings.get(`activeplan:${id}`):null;
     if(version!==loadVersion || disposed)return;
     if(previous)await restoreSavedPlan(previous);
     if(version!==loadVersion || disposed)return;
-    await refreshLeadNames(Boolean(saved));
-    if(version!==loadVersion || disposed)return;
     saveState(saved?'Saved settings restored':capturedDefaults?'Default setup loaded':preferences?'Connection preferences restored':'Changes save automatically');
-    $('defaultStatus').textContent=capturedDefaults?'Captured default available. New chats use this setup.':'No default captured yet. New chats use your latest preferences.';
+    $('defaultStatus').textContent=capturedDefaults?'Cast defaults available for new chats.':'Set defaults beside Lead Cast or NPC Cast.';
     refreshDefaultControls();
     positionMixer();
     renderMessages();status(plan?'Saved speech plan restored.':id?'Ready. Set your persona name and choose voices. Changes save automatically.':'Open a chat to begin.');
@@ -1858,7 +1842,7 @@ export async function setup(ctx) {
     const targetChat=chatId,version=loadVersion,token=revision;
     const saved=await ctx.settings.get(await planKey(targetChat,messageId));
     if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return false;
-    if(!saved || !sameSpeech(saved.content,ctx.messages.getContent(messageId)) || !await recordingMatchesTranscript(saved,saved.content))return false;
+    if(!saved || mergedCardRecording(saved) || !sameSpeech(saved.content,ctx.messages.getContent(messageId)) || !await recordingMatchesTranscript(saved,saved.content))return false;
     if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return false;
     const cast=casting(config);
     // Attribution has no voice IDs. A blank selection needs a real LLM choice,
@@ -1937,10 +1921,17 @@ export async function setup(ctx) {
   // whenever the persona changes, because the persona may become known only after the chat opened.
   async function refreshLeadNames(save=true){
     if(!chatId || !config || busy)return;
-    const version=loadVersion,fixed=capture().fixed,characterId=leadPlaceholder(fixed,2) && ctx.getActiveChat().characterId;
+    const version=loadVersion,fixed=capture().fixed,characterId=ctx.getActiveChat().characterId;
     const [persona,character]=await Promise.all([leadPlaceholder(fixed,1)?activePersona():null,characterId?ctx.characters.get(characterId).catch(()=>null):null]);
     if(disposed || version!==loadVersion || busy)return;
     const value=capture();let renamed=false;
+    const roles=characterCardRoles(character || {});
+    if(roles.length){value.cardGroupName=character.name;config.cardGroupName=character.name;}
+    if(roles.length && (leadPlaceholder(value.fixed,2) || normalizeName(value.fixed[2]?.speaker)===normalizeName(character.name))){
+      const template=value.fixed[2],occupied=new Set(value.fixed.filter((_,index)=>index!==2).map(actor=>normalizeName(actor.speaker)));
+      const leads=roles.filter(role=>!occupied.has(normalizeName(role.name))).map((role,index)=>({...template,speaker:role.name,voice:index===0?template.voice:'',aliases:[],pronunciation:''}));
+      if(leads.length){value.fixed.splice(2,1,...leads);renamed=true;clearPlan();}
+    }
     for(const [index,profile] of [[1,persona],[2,character]]){
       const name=typeof profile?.name==='string'?profile.name.trim():'',previous=value.fixed[index]?.speaker;
       if(!name || !leadPlaceholder(value.fixed,index))continue;
@@ -1962,17 +1953,22 @@ export async function setup(ctx) {
     const characterId=ctx.getActiveChat().characterId;
     const [character,persona]=await Promise.all([characterId?ctx.characters.get(characterId).catch(()=>null):null,activePersona(signal)]);
     const text=(value,limit)=>typeof value==='string'?value.trim().slice(0,limit):'';
-    return [[cast.fixed[2]?.speaker,character,'character'],[cast.fixed[1]?.speaker,persona,'persona']].flatMap(([speaker,profile,role])=>!speaker || !profile?[]:[{
+    const roles=characterCardRoles(character || {});
+    const profiles=roles.length?roles.map(role=>[cast.fixed.find(actor=>normalizeName(actor.speaker)===normalizeName(role.name))?.speaker || role.name,{...character,name:role.name,description:role.description},'character']):[[cast.fixed[2]?.speaker,character,'character']];
+    return [...profiles,[cast.fixed[1]?.speaker,persona,'persona']].flatMap(([speaker,profile,role])=>!speaker || !profile?[]:[{
       speaker,name:text(profile.name,100),role,description:text(profile.description,8000),personality:text(profile.personality,2000),
       // Scenario cards often leave the description empty and introduce their characters in the scenario and greeting.
       ...(role==='character'?{scenario:text(profile.scenario,2000),firstMessage:text(profile.first_mes,1500)}:{})
     }]);
   }
   // Edits that only add images, trackers or other non-spoken markup keep a plan and its audio valid.
-  const spokenText=content=>transcriptFromMessage(content).replace(/\s+/g,' ').trim();
+  const spokenText=content=>transcriptFromMessage(content,config?.ignoredTags).replace(/\s+/g,' ').trim();
   const sameSpeech=(a,b)=>a===b || (a!=null && b!=null && spokenText(a)===spokenText(b));
+  function mergedCardRecording(recording){
+    return Boolean(config?.cardGroupName && config.fixed.length>3 && (recording.attribution?.segments || recording.segments || []).flatMap(segment=>segment.turns || [segment]).some(segment=>normalizeName(segment.speaker)===normalizeName(config.cardGroupName)));
+  }
   async function recordingMatchesTranscript(recording,content) {
-    let transcript=transcriptFromMessage(content);
+    let transcript=transcriptFromMessage(content,config?.ignoredTags);
     if(/\{\{\s*user\s*\}\}/i.test(transcript))transcript=replacePersonaMacro(transcript,await personaName());
     const saved=recording.transcript ?? recording.segments?.map(segment=>segment.text).join(' ');
     const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
@@ -1984,11 +1980,11 @@ export async function setup(ctx) {
     const token=revision, targetChat=chatId;
     const content=contentOverride ?? ctx.messages.getContent(messageId);
     if(content==null)throw new Error('Message is no longer available.');
-    let transcript=transcriptFromMessage(content);
+    let transcript=transcriptFromMessage(content,config?.ignoredTags);
     if(!transcript)throw new Error('This message contains no speakable text.');
     const snapshot=structuredClone(casting(config));
     let context=ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
-      .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content).slice(0,1000)}`).join('\n').slice(-4000);
+      .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content,config?.ignoredTags).slice(0,1000)}`).join('\n').slice(-4000);
     const ctrl=new AbortController();controller=ctrl;
     planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;
     setBusy(true);status('Checking Choir backend…');
@@ -2574,6 +2570,7 @@ export async function setup(ctx) {
       if(token!==revision || ctrl.signal.aborted)throw abortError();
       if(!recording)throw new Error('No saved audio for this message on this device. Plan and play it first.');
       if(!sameSpeech(ctx.messages.getContent(messageId),recording.content))throw new Error('The message changed since recording. Plan and play the current reply.');
+      if(mergedCardRecording(recording))throw new Error('This recording combines several card characters into one voice. Plan and play the message again to separate them.');
       if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to remove trackers or update the persona name.');
       mixerPlaybackSegments=recording.segments;renderMixer();
       let pauseNext=false;
@@ -2611,11 +2608,11 @@ export async function setup(ctx) {
       if(!valid())return;
       let recording;try{recording=await recordingStore('get',recordingKey(operation.chatId,messageId));}catch{}
       if(!valid())return;
-      if(recording && sameSpeech(recording.content,content) && await recordingMatchesTranscript(recording,content) && !(resolvePlannerMode(config)==='llm' && needsVoiceSelection({segments:(recording.segments || []).flatMap(segment=>segment.turns || [segment])},casting(config)))){
+      if(recording && !mergedCardRecording(recording) && sameSpeech(recording.content,content) && await recordingMatchesTranscript(recording,content) && !(resolvePlannerMode(config)==='llm' && needsVoiceSelection({segments:(recording.segments || []).flatMap(segment=>segment.turns || [segment])},casting(config)))){
         if(!valid())return;
         const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
         const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind).map(segment=>segment.text).join(' ');
-        if(canonical(recordedText)===canonical(recording.transcript || transcriptFromMessage(content)) && Array.from(recording.blobs || []).every(Boolean) && recording.blobs?.length===recording.segments?.length){await replayRecording(messageId);return;}
+        if(canonical(recordedText)===canonical(recording.transcript || transcriptFromMessage(content,config?.ignoredTags)) && Array.from(recording.blobs || []).every(Boolean) && recording.blobs?.length===recording.segments?.length){await replayRecording(messageId);return;}
       }
       if(valid())await prepare(messageId,true);
     } finally {if(messageOperation===operation)messageOperation=null;}
@@ -2690,7 +2687,7 @@ export async function setup(ctx) {
     for(const message of recent) {
       const row=document.createElement('div');row.className='et-card et-message';
       const name=document.createElement('span');name.style.cssText='overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:8px;font-size:0.9em';
-      name.textContent=`${message.name || (message.is_user?'You':'Character')} · ${transcriptFromMessage(message.content).slice(0,70)}`;
+      name.textContent=`${message.name || (message.is_user?'You':'Character')} · ${transcriptFromMessage(message.content,config?.ignoredTags).slice(0,70)}`;
       const actions=document.createElement('div');actions.className='et-btn-group';
       const button=document.createElement('button');button.type='button';button.className='et-btn-subtle';button.textContent='Plan';button.onclick=()=>run(()=>prepare(message.id,false,undefined,true));actions.append(button);
       const replay=document.createElement('button');replay.type='button';replay.className='et-btn-subtle';replay.textContent='Replay';replay.onclick=()=>run(()=>replayRecording(message.id));actions.append(replay);
@@ -2714,8 +2711,9 @@ export async function setup(ctx) {
     try{await action();}catch(error){if(error.name!=='AbortError')status(error.message,true);}finally{updateTransport();}
   }
   $('save').onclick=()=>run(save);
-  $('captureDefaults').onclick=()=>run(()=>{if(!defaultOperation && chatId)openDefaultEditor();});
-  $('applyDefaults').onclick=()=>run(async()=>{
+  $('captureDefaults').onclick=()=>run(()=>{if(!defaultOperation && chatId)openDefaultEditor('lead');});
+  $('captureNpcDefaults').onclick=()=>run(()=>{if(!defaultOperation && chatId)openDefaultEditor('npc');});
+  const applyCastDefault=group=>run(async()=>{
     if(defaultOperation)return;
     if(!chatId)throw new Error('Open a chat first.');
     if(!capturedDefaults)throw new Error('Capture a default setup first.');
@@ -2725,7 +2723,7 @@ export async function setup(ctx) {
       await flushSettings();if(disposed || targetChat!==chatId || version!==loadVersion)return;
       previous=capture();const messageId=planSource?.messageId;
       cancelAutoReplies();stop(false);token=revision;version=++loadVersion;setBusy(true);
-      config=withDefaultSetup(previous,preset);setFields();await loadProviders();
+      config=withDefaultSetup(previous,preset,group);setFields();await loadProviders();
       if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return;
       setBusy(true);
       validateSettings(config);saving=true;await persistConfig(targetChat,config,true);
@@ -2733,7 +2731,7 @@ export async function setup(ctx) {
       if(messageId && !await restoreSavedPlan(messageId))clearPlan();
       if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return;
       saveState('Saved automatically');$('defaultStatus').textContent='Default applied to this chat. New chats still use the captured setup.';
-      status('Default setup applied. You can change this chat’s voices and settings independently.');
+      status('Cast default applied. This chat saves its own voice choices.');
     }catch(error){
       if(!disposed && targetChat===chatId && version===loadVersion){
         if(previous && !saving){config=previous;setFields();await loadProviders().catch(()=>renderCast());}
@@ -2743,6 +2741,8 @@ export async function setup(ctx) {
       throw error;
     }finally{defaultOperation=false;if(!disposed){if(targetChat===chatId && version===loadVersion)setBusy(false);refreshDefaultControls();}}
   });
+  $('applyDefaults').onclick=()=>applyCastDefault('lead');
+  $('applyNpcDefaults').onclick=()=>applyCastDefault('npc');
   $('stop').onclick=()=>stop();
   $('testPlanner').onclick=()=>run(async()=>{
     stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);
@@ -2958,7 +2958,7 @@ export async function setup(ctx) {
         const raw=completed?.swipes?.[completed.swipe_id] ?? completed?.content;
         const eventMatches=typeof reply.content!=='string' || raw===reply.content ||
           reply.generationType==='continue' && typeof raw==='string' && raw.endsWith(reply.content) ||
-          typeof raw==='string' && transcriptFromMessage(raw)===transcriptFromMessage(reply.content);
+          typeof raw==='string' && transcriptFromMessage(raw,config?.ignoredTags)===transcriptFromMessage(reply.content,config?.ignoredTags);
         const swipeMatches=reply.swipeId==null || completed?.swipe_id===reply.swipeId;
         if(completed && !completed.is_user && !completed.extra?.is_system && typeof completed.content==='string' && completed.content.trim() && eventMatches && swipeMatches){
           reply.content=completed.content;reply.needsCanonical=false;reply.canonicalChecked=true;
@@ -3109,7 +3109,7 @@ const paragraphAudioCache = new Map();
 
   const paragraphCues = new Map();
   function paragraphSegments(rawText, snap, preferredSpeaker = '') {
-    const cleanPara = (transcriptFromMessage(rawText) || rawText).trim();
+    const cleanPara = transcriptFromMessage(rawText,snap.ignoredTags).trim();
     if (!cleanPara) return {segments: [], cleanPara, fromPlan: false};
 
     let segments = null;
@@ -3126,7 +3126,7 @@ const paragraphAudioCache = new Map();
     // 2. Otherwise plan the paragraph directly in 0ms without blocking on LLM RPC
     if (!segments) {
       let planResult = null;
-      if (config.useFastClassifier !== false) {
+      if (config.useFastClassifier !== false || snap.fixed.length>3) {
         try { planResult = fastClassifyPlan(cleanPara, { ...snap, speaker: preferredSpeaker }); } catch {}
       }
       if (!planResult) {
@@ -3138,6 +3138,8 @@ const paragraphAudioCache = new Map();
           ...Object.values(snap.casts || {}).flat()
         ];
         const explicitActor = preferredSpeaker ? allCast.find(a => normalizeName(a.speaker) === normalizeName(preferredSpeaker) && a.voice) : null;
+        // Several leads require explicit attribution. Do not route every quote to the first person.
+        if(snap.fixed.length>3 && !explicitActor && units.some(unit=>unit.kind==='dialogue'))throw new Error('Plan this message with Jev or LLM first to identify each character, or provide a named speaker.');
         const charActor = explicitActor || (snap.fixed[2]?.voice ? snap.fixed[2] : (snap.fixed[1]?.voice ? snap.fixed[1] : (snap.fixed[2] || snap.fixed[1] || snap.fixed[0])));
         planResult = {
           segments: units.map(u => ({

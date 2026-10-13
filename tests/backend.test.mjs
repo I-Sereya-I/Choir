@@ -4,6 +4,15 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const bundle=readFileSync(new URL('../dist/backend.js',import.meta.url),'utf8');
 const manifest=JSON.parse(readFileSync(new URL('../spindle.json',import.meta.url),'utf8'));
+
+test('Jev distinguishes two male leads from one card and reuses independent automatically selected voices',async()=>{
+  const cast={voices:[{id:'n'},{id:'y'},{id:'low',gender:'male'},{id:'bright',gender:'male'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Persona',voice:'y',style:''},{speaker:'Adrian',voice:'',gender:'male',style:''},{speaker:'Ethan',voice:'',gender:'male',style:''}],npcs:[],useStyle:false,npcPolicy:{mode:'skip'},characterProfiles:[{speaker:'Adrian',name:'Adrian',role:'character',description:'A male captain with a low voice.'},{speaker:'Ethan',name:'Ethan',role:'character',description:'A male teammate with a brighter voice.'}]};
+  let request;const decisions={evaluate:async input=>{request=input;return {answers:{speaker_0:{choice:'Adrian'},speaker_1:{choice:'Ethan'},speaker_2:{choice:'Ethan'}}};}};
+  const h=await harness(null,null,null,null,null,decisions);h.send('planJev',{transcript:'Adrian said, "Hello." Ethan replied, "Wait." Ethan added, "Stay."',config:cast});
+  const result=(await h.result()).message;assert.equal(result.error,undefined);assert.deepEqual([...result.result.segments.filter(segment=>segment.speaker!=='Narrator').map(segment=>[segment.speaker,segment.voice])],[['Adrian','low'],['Ethan','bright'],['Ethan','bright']]);
+  assert.match(request.questions.speaker_0.criteria.Adrian,/lead character/);assert.match(request.state.characters.find(character=>character.name==='Ethan').about,/brighter/);assert.equal(result.result.npcs.length,0);
+});
+
 const config={voices:[{id:'Charon'},{id:'Kore'}],fixed:[{speaker:'Narrator',voice:'Charon',style:''}],npcs:[],useStyle:true};
 const castConfig={...config,fixed:[...config.fixed,{speaker:'Mira',voice:'Kore',style:''}]};
 test('Gemini accepts speech beyond the old 2000-character cap when it fits the input budget',async()=>{
@@ -772,7 +781,7 @@ const scenarioTranscript = 'Jay unhooked the receiver. "Hello?" Saki flinched. "
 test('Jev offers the persona and a scenario card by who they are, with profiles in the state, on both Jev paths', async () => {
   const expected = {
     Persona: "Persona (also called Jay): the user's own character (persona).",
-    'Metamorphosis: Just the Way You Are!': "Metamorphosis: Just the Way You Are!: the character card's main character. If this name is a story or scenario title, it is the lead character that story is about.",
+    'Metamorphosis: Just the Way You Are!': "Metamorphosis: Just the Way You Are!: a lead character defined by the character card; use this person's own profile, and distinguish other people in the same card.",
     'Student 1': 'Student 1: a supporting character.',
     'Student 2': 'Student 2 (also called Kenta): a supporting character.',
     'Someone not listed': 'A speaker who matches none of the other choices, their names or descriptions.'

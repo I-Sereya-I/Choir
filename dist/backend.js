@@ -87,6 +87,25 @@ function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+// Multi-character cards commonly give each person a top-level heading or named XML section.
+// Require those explicit profiles before splitting a title: "War and Peace" is not a cast list.
+function characterCardRoles(card={}) {
+  const description=String(card.description || '');
+  const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const headings=[...description.matchAll(/^#[ \t]+([^#\n\r]{1,100})[ \t]*$/gm)].map(match=>({name:match[1].trim(),start:match.index,end:match.index+match[0].length}));
+  const title=String(card.name || '').split(/\s*\|\s*/)[0];
+  const names=title.split(/\s+(?:and|&|\+)\s+|,\s*/i).map(name=>name.trim()).filter(Boolean);
+  const candidates=names.length>1?names:headings.filter(heading=>new RegExp(`<${escape(heading.name)}(?:\\s|>)`,'i').test(description)).map(heading=>heading.name);
+  const roles=candidates.slice(0,20).flatMap(name=>{
+    const heading=headings.find(item=>normalizeName(item.name)===normalizeName(name));
+    const section=new RegExp(`<${escape(name)}\\b[^>]*>([\\s\\S]*?)<\\/${escape(name)}\\s*>`,'i').exec(description);
+    if(!heading && !section)return [];
+    const next=heading && headings.find(item=>item.start>heading.start);
+    return [{name,description:(section?.[1] || description.slice(heading.start,next?.start)).trim().slice(0,8000)}];
+  });
+  return new Set(roles.map(role=>normalizeName(role.name))).size===roles.length && roles.length>1?roles:[];
+}
+
 function normalizeVoiceCatalogue(catalogue) {
   return catalogue.map(voice=>{
     const supplied=voice.gender ?? voice.ssmlGender ?? voice.ssml_gender;
@@ -100,10 +119,16 @@ function normalizeVoiceCatalogue(catalogue) {
   });
 }
 
-function transcriptFromMessage(value) {
+function ignoredTagNames(value) {
+  const entries=Array.isArray(value)?value:String(value || '').split(/[\s,;]+/);
+  return [...new Set(entries.map(tag=>String(tag).trim().replace(/^<\/?|\/?>$/g,'').toLowerCase()).filter(tag=>/^[a-z][\w:-]*$/.test(tag)))].slice(0,100);
+}
+
+function transcriptFromMessage(value, ignoredTags=[]) {
   // Remove complete metadata panels before unwrapping ordinary story markup.
   let text=String(value || '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/<!--[\s\S]*?(?:-->|$)/g,' ');
-  const tags=/<\/?([a-z][\w-]*)\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+  const tags=/<\/?([a-z][\w:-]*)\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+  const ignored=new Set(ignoredTagNames(ignoredTags));
   const metadata=/^(?:think|thinking|reasoning|analysis|redacted_thinking|tracker|stats|status|state|details|script|style|(?:loom|tool|function|ext_tracker)(?:[_-][\w-]+)?)$/i;
   const ranges=[];let block=null,match;
   while((match=tags.exec(text))) {
@@ -113,7 +138,7 @@ function transcriptFromMessage(value) {
         if(closing)block.depth--;else if(!selfClosing)block.depth++;
         if(!block.depth){ranges.push([block.start,tags.lastIndex]);block=null;}
       }
-    } else if(!closing && (metadata.test(tag) || /\b(?:class|id)\s*=\s*(?:"[^"]*\b(?:tracker|stats|status-panel|hud)\b[^\"]*"|'[^']*\b(?:tracker|stats|status-panel|hud)\b[^']*'|(?:tracker|stats|status-panel|hud)\b)/i.test(match[0]))) {
+    } else if(!closing && (ignored.has(tag) || metadata.test(tag) || /\b(?:class|id)\s*=\s*(?:"[^"]*\b(?:tracker|stats|status-panel|hud)\b[^\"]*"|'[^']*\b(?:tracker|stats|status-panel|hud)\b[^']*'|(?:tracker|stats|status-panel|hud)\b)/i.test(match[0]))) {
       if(selfClosing)ranges.push([match.index,tags.lastIndex]);
       else block={tag,start:match.index,depth:1};
     }
@@ -963,7 +988,7 @@ function jevSpeakerCast(config) {
     if (!name || key === 'narrator' || cast.has(key)) continue;
     const profile = profiles.find(p => normalizeName(p.speaker) === key);
     const role = profile?.role === 'persona' ? "the user's own character (persona)"
-      : profile?.role === 'character' ? "the character card's main character. If this name is a story or scenario title, it is the lead character that story is about"
+      : profile?.role === 'character' ? "a lead character defined by the character card; use this person's own profile, and distinguish other people in the same card"
       : config.fixed.includes(actor) ? 'a main character' : 'a supporting character';
     const names = [...new Set([profile?.name, ...(actor.aliases || [])].filter(other => other?.trim() && normalizeName(other) !== key))];
     const about = [profile?.description, profile?.personality, profile?.scenario, profile?.firstMessage].filter(text => text?.trim()).join('\n').slice(0, 1500);
@@ -1003,7 +1028,7 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
     const route = actor.route || config.defaultRoute || '', name = normalizeName(actor.speaker);
     if (!config.communityRoutes?.[route] || (npc && config.npcPolicy && config.npcPolicy.mode !== 'llm')) return '';
     if (!chosen.has(name)) {
-      const answers = await decide({ transcript }, {
+      const answers = await decide({ transcript, characters: cast }, {
         gender: { type: 'choice', instructions: `Does ${actor.speaker} in this story have a feminine, masculine or neutral voice?`, criteria: { female: 'Feminine voice', male: 'Masculine voice', neutral: 'Neutral or androgynous voice' } },
         age: { type: 'choice', instructions: `How old does ${actor.speaker} in this story sound?`, criteria: { young: 'Young', 'middle-aged': 'Middle-aged', old: 'Old' } },
         language: { type: 'choice', instructions: 'Which language is this story written in?', criteria: FISH_LANGUAGES }
@@ -1138,8 +1163,12 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
       let voice = actor.voice || await communityVoice(actor, npc);
       if (!voice && config.voices?.length) {
         const route = actor.route || config.defaultRoute || '';
-        const match = config.voices.find(v => (v.route || '') === route && (!npc || config.npcPolicy?.mode!=='preferred' || config.npcPolicy.voices.includes(v.id)));
+        const available=config.voices.filter(v => (v.route || '') === route && (!npc || config.npcPolicy?.mode!=='preferred' || config.npcPolicy.voices.includes(v.id)));
+        const preferred=available.filter(v=>!actor.gender || actor.gender==='auto' || !v.gender || v.gender===actor.gender);
+        const pool=preferred.length?preferred:available;
+        const match=pool.find(v=>!used.has(v.id)) || pool[0];
         voice = match?.id || '';
+        actor.voice=voice;used.add(voice);
       }
       rawSegments.push({
         unit_ids: [u.id],
@@ -1320,7 +1349,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.5-staging.30',ready:true}});return;
+      send({result:{version:'1.1.6-staging.1',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);

@@ -1,8 +1,25 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {randomUuid,sha256Hex} from '../src/core.js';
+import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles} from '../src/core.js';
 import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
+
+test('ignored tags skip nested, attributed, mixed-case and unfinished blocks without dropping ordinary story markup',()=>{
+  assert.deepEqual(ignoredTagNames('Summary, <private-note>\nsummary; invalid.*'),['summary','private-note']);
+  const text='Before. <Summary title="a > b">Hidden. <summary>Nested.</summary><b>Also hidden.</b></Summary> <b>After.</b> <private-note/> End.';
+  assert.equal(transcriptFromMessage(text,'summary, private-note').replace(/\s+/g,' '),'Before. After. End.');
+  assert.equal(transcriptFromMessage('Safe. <summary>Never finished','summary'),'Safe.');
+  assert.equal(transcriptFromMessage('<summary>Entirely ignored.</summary>','summary'),'');
+  assert.equal(transcriptFromMessage('Read <story>this.</story>','other'),'Read this.');
+});
+
+test('multiple card characters keep separate profiles even when the second begins beyond the description budget',()=>{
+  const card={name:'Adrian and Ethan | Show and Tell',description:'<adrian>\n# Adrian\nA male captain. '+ 'Captain. '.repeat(1000)+'\n</adrian>\n<ethan>\n# Ethan\nA male teammate with a different voice.\n</ethan>'};
+  const roles=characterCardRoles(card);assert.deepEqual(roles.map(role=>role.name),['Adrian','Ethan']);assert.equal(roles[0].description.length,8000);assert.match(roles[1].description,/different voice/);assert.ok(!roles[1].description.includes('Captain.'));
+  assert.deepEqual(characterCardRoles({name:'War and Peace',description:'A story about many people.'}),[]);
+  assert.deepEqual(characterCardRoles({name:'Mira',description:'# Appearance\nTall.\n# Personality\nCalm.'}),[]);
+  assert.deepEqual(characterCardRoles({...card,name:'Swimming team'}).map(role=>role.name),['Adrian','Ethan']);
+});
 
 test('HTTP UUID fallback uses secure random bytes, preserves v4 bits and generates distinct IDs',()=>{
   const httpCrypto={getRandomValues:globalThis.crypto.getRandomValues.bind(globalThis.crypto)};

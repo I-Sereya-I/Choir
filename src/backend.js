@@ -100,7 +100,7 @@ export function jevSpeakerCast(config) {
     if (!name || key === 'narrator' || cast.has(key)) continue;
     const profile = profiles.find(p => normalizeName(p.speaker) === key);
     const role = profile?.role === 'persona' ? "the user's own character (persona)"
-      : profile?.role === 'character' ? "the character card's main character. If this name is a story or scenario title, it is the lead character that story is about"
+      : profile?.role === 'character' ? "a lead character defined by the character card; use this person's own profile, and distinguish other people in the same card"
       : config.fixed.includes(actor) ? 'a main character' : 'a supporting character';
     const names = [...new Set([profile?.name, ...(actor.aliases || [])].filter(other => other?.trim() && normalizeName(other) !== key))];
     const about = [profile?.description, profile?.personality, profile?.scenario, profile?.firstMessage].filter(text => text?.trim()).join('\n').slice(0, 1500);
@@ -140,7 +140,7 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
     const route = actor.route || config.defaultRoute || '', name = normalizeName(actor.speaker);
     if (!config.communityRoutes?.[route] || (npc && config.npcPolicy && config.npcPolicy.mode !== 'llm')) return '';
     if (!chosen.has(name)) {
-      const answers = await decide({ transcript }, {
+      const answers = await decide({ transcript, characters: cast }, {
         gender: { type: 'choice', instructions: `Does ${actor.speaker} in this story have a feminine, masculine or neutral voice?`, criteria: { female: 'Feminine voice', male: 'Masculine voice', neutral: 'Neutral or androgynous voice' } },
         age: { type: 'choice', instructions: `How old does ${actor.speaker} in this story sound?`, criteria: { young: 'Young', 'middle-aged': 'Middle-aged', old: 'Old' } },
         language: { type: 'choice', instructions: 'Which language is this story written in?', criteria: FISH_LANGUAGES }
@@ -275,8 +275,12 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
       let voice = actor.voice || await communityVoice(actor, npc);
       if (!voice && config.voices?.length) {
         const route = actor.route || config.defaultRoute || '';
-        const match = config.voices.find(v => (v.route || '') === route && (!npc || config.npcPolicy?.mode!=='preferred' || config.npcPolicy.voices.includes(v.id)));
+        const available=config.voices.filter(v => (v.route || '') === route && (!npc || config.npcPolicy?.mode!=='preferred' || config.npcPolicy.voices.includes(v.id)));
+        const preferred=available.filter(v=>!actor.gender || actor.gender==='auto' || !v.gender || v.gender===actor.gender);
+        const pool=preferred.length?preferred:available;
+        const match=pool.find(v=>!used.has(v.id)) || pool[0];
         voice = match?.id || '';
+        actor.voice=voice;used.add(voice);
       }
       rawSegments.push({
         unit_ids: [u.id],
@@ -457,7 +461,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.5-staging.30',ready:true}});return;
+      send({result:{version:'1.1.6-staging.1',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);

@@ -327,7 +327,7 @@ try{
   assert.equal(await fishCard.locator('[data-choir-voice-id-editor]').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   const fieldBounds=await fishCard.locator('[data-choir-voice-id-input]').boundingBox();const fishBounds=await fishCard.boundingBox();assert.ok(fieldBounds.x+fieldBounds.width<=fishBounds.x+fishBounds.width+1);
   if(process.env.CHOIR_VOICE_ID_SCREENSHOT)await fishCard.screenshot({path:process.env.CHOIR_VOICE_ID_SCREENSHOT});
-  const defaultSetup=page.locator('[data-et="defaultSetup"]');
+  const defaultSetup=page.locator('.et-section-header').filter({has:page.getByRole('heading',{name:'Lead Cast',exact:true})});
   const defaultStart=await page.evaluate(()=>({plans:window.plans,calls:window.calls.length,chunk:document.querySelector('[data-et="chunk"]').value}));
   await defaultSetup.getByRole('button',{name:'Set default',exact:true}).click();const defaultDialog=page.getByRole('dialog',{name:'Set default',exact:true});assert.equal(await defaultDialog.isVisible(),true);
   if(process.env.CHOIR_DEFAULT_SPEECH_SCREENSHOT)await defaultDialog.screenshot({path:process.env.CHOIR_DEFAULT_SPEECH_SCREENSHOT});
@@ -337,8 +337,8 @@ try{
   await defaultDialog.getByRole('button',{name:'Save default',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="defaultStatus"]').textContent.startsWith('Default saved.'));
   await page.getByText('Advanced Settings',{exact:true}).click();
   await page.locator('[data-et="chunk"]').fill('8000');await page.waitForFunction(()=>document.querySelector('[data-et="saveState"]').textContent==='Saved automatically' && window.fixtureStore.get('chat:fixture').chunk===8000);
-  await defaultSetup.getByRole('button',{name:'Apply default to this chat',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="defaultStatus"]').textContent.startsWith('Default applied'));
-  assert.equal(await page.locator('[data-et="chunk"]').inputValue(),defaultStart.chunk);assert.equal(await fishCard.locator('[data-choir-voice]').inputValue(),voiceId);
+  await defaultSetup.getByRole('button',{name:'Apply default',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[data-et="defaultStatus"]').textContent.startsWith('Default applied'));
+  assert.equal(await page.locator('[data-et="chunk"]').inputValue(),'8000');assert.equal(await fishCard.locator('[data-choir-voice]').inputValue(),voiceId);
   assert.equal(await page.evaluate(()=>window.calls.length),defaultStart.calls);assert.equal(await page.evaluate(()=>window.plans),defaultStart.plans);
   await page.getByText('Advanced Settings',{exact:true}).click();
   assert.equal(await defaultSetup.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
@@ -379,7 +379,7 @@ try{
   await touch.getByRole('button',{name:'Decrease Ambience volume',exact:true}).tap();assert.equal(await touchAmbience.inputValue(),'295');
   for(const name of ['Narrator','Mira','SFX']){await touch.getByRole('tab',{name:name==='SFX'?'Scene audio':'Main cast',exact:true}).tap();const entry=touch.getByRole('spinbutton',{name:`${name} volume percent`,exact:true});assert.equal(await entry.getAttribute('max'),'300');await entry.fill('300');assert.equal(await entry.inputValue(),'300');assert.equal(await touch.getByRole('button',{name:`Increase ${name} volume`,exact:true}).isDisabled(),true);}
   await masterPercent.fill('300');assert.equal(await masterPercent.inputValue(),'100');await masterPercent.fill('37');await touch.getByRole('tab',{name:'Scene audio',exact:true}).tap();
-  await touch.getByRole('button',{name:'Collapse Choir voice mixer',exact:true}).tap();await touch.getByRole('button',{name:'Set default',exact:true}).tap();const touchDefaults=touch.getByRole('dialog',{name:'Set default',exact:true});assert.equal(await touchDefaults.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
+  await touch.getByRole('button',{name:'Collapse Choir voice mixer',exact:true}).tap();await touch.locator('[data-et="captureDefaults"]').tap();const touchDefaults=touch.getByRole('dialog',{name:'Set default',exact:true});assert.equal(await touchDefaults.evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   await touchDefaults.getByRole('tab',{name:'Lead cast',exact:true}).tap();assert.equal(await touchDefaults.getByRole('combobox',{name:'Default {{user}} voice',exact:true}).isVisible(),true);if(process.env.CHOIR_DEFAULT_TOUCH_SCREENSHOT)await touchDefaults.screenshot({path:process.env.CHOIR_DEFAULT_TOUCH_SCREENSHOT});await touchDefaults.getByRole('button',{name:'Cancel',exact:true}).tap();await touch.getByRole('button',{name:'Open Choir voice mixer',exact:true}).tap();
   const volumeTargets=await touchMixer.locator('.cm-volume-steps button:visible,.cm-toggle:visible,.cm-channel-tab').evaluateAll(nodes=>nodes.map(node=>{const rect=node.getBoundingClientRect();return {width:rect.width,height:rect.height};}));assert.ok(volumeTargets.every(rect=>rect.width>=44 && rect.height>=44));
   assert.equal(await touchMixer.locator('.cm-channel-controls:visible').evaluateAll(nodes=>nodes.every(node=>node.scrollWidth<=node.clientWidth+1)),true);

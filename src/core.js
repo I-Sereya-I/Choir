@@ -86,6 +86,25 @@ export function normalizeName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+// Multi-character cards commonly give each person a top-level heading or named XML section.
+// Require those explicit profiles before splitting a title: "War and Peace" is not a cast list.
+export function characterCardRoles(card={}) {
+  const description=String(card.description || '');
+  const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const headings=[...description.matchAll(/^#[ \t]+([^#\n\r]{1,100})[ \t]*$/gm)].map(match=>({name:match[1].trim(),start:match.index,end:match.index+match[0].length}));
+  const title=String(card.name || '').split(/\s*\|\s*/)[0];
+  const names=title.split(/\s+(?:and|&|\+)\s+|,\s*/i).map(name=>name.trim()).filter(Boolean);
+  const candidates=names.length>1?names:headings.filter(heading=>new RegExp(`<${escape(heading.name)}(?:\\s|>)`,'i').test(description)).map(heading=>heading.name);
+  const roles=candidates.slice(0,20).flatMap(name=>{
+    const heading=headings.find(item=>normalizeName(item.name)===normalizeName(name));
+    const section=new RegExp(`<${escape(name)}\\b[^>]*>([\\s\\S]*?)<\\/${escape(name)}\\s*>`,'i').exec(description);
+    if(!heading && !section)return [];
+    const next=heading && headings.find(item=>item.start>heading.start);
+    return [{name,description:(section?.[1] || description.slice(heading.start,next?.start)).trim().slice(0,8000)}];
+  });
+  return new Set(roles.map(role=>normalizeName(role.name))).size===roles.length && roles.length>1?roles:[];
+}
+
 export function normalizeVoiceCatalogue(catalogue) {
   return catalogue.map(voice=>{
     const supplied=voice.gender ?? voice.ssmlGender ?? voice.ssml_gender;
@@ -99,10 +118,16 @@ export function normalizeVoiceCatalogue(catalogue) {
   });
 }
 
-export function transcriptFromMessage(value) {
+export function ignoredTagNames(value) {
+  const entries=Array.isArray(value)?value:String(value || '').split(/[\s,;]+/);
+  return [...new Set(entries.map(tag=>String(tag).trim().replace(/^<\/?|\/?>$/g,'').toLowerCase()).filter(tag=>/^[a-z][\w:-]*$/.test(tag)))].slice(0,100);
+}
+
+export function transcriptFromMessage(value, ignoredTags=[]) {
   // Remove complete metadata panels before unwrapping ordinary story markup.
   let text=String(value || '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/<!--[\s\S]*?(?:-->|$)/g,' ');
-  const tags=/<\/?([a-z][\w-]*)\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+  const tags=/<\/?([a-z][\w:-]*)\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+  const ignored=new Set(ignoredTagNames(ignoredTags));
   const metadata=/^(?:think|thinking|reasoning|analysis|redacted_thinking|tracker|stats|status|state|details|script|style|(?:loom|tool|function|ext_tracker)(?:[_-][\w-]+)?)$/i;
   const ranges=[];let block=null,match;
   while((match=tags.exec(text))) {
@@ -112,7 +137,7 @@ export function transcriptFromMessage(value) {
         if(closing)block.depth--;else if(!selfClosing)block.depth++;
         if(!block.depth){ranges.push([block.start,tags.lastIndex]);block=null;}
       }
-    } else if(!closing && (metadata.test(tag) || /\b(?:class|id)\s*=\s*(?:"[^"]*\b(?:tracker|stats|status-panel|hud)\b[^\"]*"|'[^']*\b(?:tracker|stats|status-panel|hud)\b[^']*'|(?:tracker|stats|status-panel|hud)\b)/i.test(match[0]))) {
+    } else if(!closing && (ignored.has(tag) || metadata.test(tag) || /\b(?:class|id)\s*=\s*(?:"[^"]*\b(?:tracker|stats|status-panel|hud)\b[^\"]*"|'[^']*\b(?:tracker|stats|status-panel|hud)\b[^']*'|(?:tracker|stats|status-panel|hud)\b)/i.test(match[0]))) {
       if(selfClosing)ranges.push([match.index,tags.lastIndex]);
       else block={tag,start:match.index,depth:1};
     }
