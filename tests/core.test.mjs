@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles} from '../src/core.js';
+import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,reconcileCardCast} from '../src/core.js';
 import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
 
 test('ignored tags skip nested, attributed, mixed-case and unfinished blocks without dropping ordinary story markup',()=>{
@@ -19,6 +19,31 @@ test('multiple card characters keep separate profiles even when the second begin
   assert.deepEqual(characterCardRoles({name:'War and Peace',description:'A story about many people.'}),[]);
   assert.deepEqual(characterCardRoles({name:'Mira',description:'# Appearance\nTall.\n# Personality\nCalm.'}),[]);
   assert.deepEqual(characterCardRoles({...card,name:'Swimming team'}).map(role=>role.name),['Adrian','Ethan']);
+});
+
+test('decorated card titles reconcile existing lead identities and duplicate NPCs across providers without changing lead voices',()=>{
+  const title='Kellin Beckett || Toxic Fans',lead={speaker:'Kellin Beckett',voice:'lead',route:'native:b',style:'',aliases:['Kellin']};
+  const duplicate={speaker:title,voice:'npc',style:''},mikey={speaker:'Mikey Ross',voice:'npc',style:''};
+  const original={fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Laiyah',voice:'y',style:''},lead],casts:{'native:a':[mikey,duplicate],'native:b':[duplicate]},singleVoices:{'native:a':{[title]:'npc','Kellin Beckett':'lead','Mikey Ross':'npc'}}};
+  const clean=reconcileCardCast(original,{name:title});
+  assert.equal(clean.fixed[2].voice,'lead');assert.equal(clean.fixed[2].route,'native:b');assert.deepEqual(clean.fixed[2].aliases,['Kellin',title]);
+  assert.deepEqual(clean.casts,{'native:a':[mikey],'native:b':[]});assert.deepEqual(clean.singleVoices['native:a'],{'Kellin Beckett':'lead','Mikey Ross':'npc'});
+  assert.equal(original.casts['native:a'].length,2);assert.deepEqual(original.fixed[2].aliases,['Kellin']);
+  const cast={...clean,voices:[{id:'n',route:'native:a'},{id:'y',route:'native:a'},{id:'lead',route:'native:b'},{id:'npc',route:'native:a'}],npcs:clean.casts['native:a'],defaultRoute:'native:a'};
+  const plan=validatePlan({segments:[{speaker:title,voice:'npc',text:'"Hello."'}]},'"Hello."',cast);
+  assert.equal(plan.segments[0].speaker,'Kellin Beckett');assert.equal(plan.segments[0].voice,'lead');assert.deepEqual(plan.npcs,[mikey]);
+});
+
+test('card title identity matching preserves scenario casts, manual names, conflicting leads and separate characters',()=>{
+  const value={fixed:[{speaker:'Narrator'},{speaker:'Persona'},{speaker:'Kellin Beckett'}],casts:{'native:a':[{speaker:'Mikey Ross'}]}};
+  assert.strictEqual(reconcileCardCast(value,{name:'A crowded backstage'}),value);
+  const conflict={...value,fixed:[...value.fixed,{speaker:'Kellin Beckett || Toxic Fans'}]};assert.strictEqual(reconcileCardCast(conflict,{name:'Kellin Beckett || Toxic Fans'}),conflict);
+  const group={...value,fixed:[...value.fixed.slice(0,2),{speaker:'Adrian'},{speaker:'Ethan'}]};
+  assert.strictEqual(reconcileCardCast(group,{name:'Adrian and Ethan | Show and Tell',description:'# Adrian\nA captain.\n# Ethan\nA teammate.'}),group);
+  const named={...value,fixed:[...value.fixed.slice(0,2),{speaker:'My chosen name',aliases:['Kellin Beckett']}]};
+  assert.equal(reconcileCardCast(named,{name:'Kellin Beckett || Toxic Fans'}).fixed[2].speaker,'My chosen name');
+  const renamed={...value,fixed:[...value.fixed.slice(0,2),{speaker:'Kellin Beckett || Toxic Fans',aliases:['Kellin Beckett || Toxic Fans']}]};
+  assert.deepEqual(reconcileCardCast(renamed,{name:'Kellin Beckett || Toxic Fans'}).fixed[2].aliases,['Kellin Beckett']);
 });
 
 test('HTTP UUID fallback uses secure random bytes, preserves v4 bits and generates distinct IDs',()=>{

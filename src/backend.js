@@ -267,9 +267,9 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
       });
     } else {
       const chosenName = dialogueSpeakerMap.get(u.id);
-      let actor = allCast.find(a => normalizeName(a.speaker) === normalizeName(chosenName))
+      let actor = allCast.find(a => [a.speaker,...(a.aliases || [])].some(name=>normalizeName(name)===normalizeName(chosenName)))
         || { speaker: chosenName, voice: '', style: '', gender: 'auto' };
-      const npc=!config.fixed.some(a=>normalizeName(a.speaker)===normalizeName(chosenName));
+      const npc=!config.fixed.includes(actor);
       if(npc)actor=npcCastActor(actor,config);
       const style = dialogueEmotionMap.get(u.id) || '';
       let voice = actor.voice || await communityVoice(actor, npc);
@@ -461,7 +461,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.6-staging.2',ready:true}});return;
+      send({result:{version:'1.1.6-staging.3',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);

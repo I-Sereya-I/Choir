@@ -814,6 +814,18 @@ test('Jev offers the persona and a scenario card by who they are, with profiles 
   assert.deepEqual([...classified.segments.map(s => s.speaker)], [...decided.segments.map(s => s.speaker)]);
 });
 
+test('LLM and Jev card-title aliases resolve to the assigned lead voice instead of NPC policy',async()=>{
+  const title='Kellin Beckett || Toxic Fans',cast={...config,useStyle:false,fixed:[{speaker:'Narrator',voice:'Charon',style:''},{speaker:'Laiyah',voice:'Kore',style:''},{speaker:'Kellin Beckett',voice:'Charon',style:'',aliases:[title]}],npcPolicy:{mode:'single',voice:'Kore',route:''},characterProfiles:[{speaker:'Kellin Beckett',name:title,role:'character',description:'Kellin is the singer.'}]};
+  const llm=await harness(async input=>{
+    const data=JSON.parse(input.messages[1].content);assert.ok(data.fixedCast[2].aliases.includes(title));assert.match(input.messages[0].content,/aliases.*same person/);
+    return {content:JSON.stringify({segments:[{speaker:title,voice:'Kore',unit_ids:[0]}]})};
+  });
+  llm.send('plan',{transcript:'"Hello."',config:cast});const reply=(await llm.result()).message;assert.equal(reply.error,undefined);const standard=reply.result;assert.equal(standard.segments[0].speaker,'Kellin Beckett');assert.equal(standard.segments[0].voice,'Charon');assert.equal(standard.npcs.length,0);
+  let choices;const decisions={evaluate:async input=>{choices=input.questions.speaker_0.criteria;return {answers:{speaker_0:{choice:title}}};}};
+  const jev=await harness(null,null,null,null,null,decisions);jev.send('planJev',{transcript:'"Hello."',config:cast});const fast=(await jev.result()).message.result;
+  assert.match(choices['Kellin Beckett'],/also called Kellin Beckett \|\| Toxic Fans/);assert.ok(!Object.hasOwn(choices,title));assert.equal(fast.segments[0].speaker,'Kellin Beckett');assert.equal(fast.segments[0].voice,'Charon');assert.equal(fast.npcs.length,0);
+});
+
 test('a card voicing several characters keeps its lead and its named NPCs apart', async () => {
   const cast = { voices: [{ id: 'n' }, { id: 'saki' }, { id: 'kanade' }], useStyle: false,
     fixed: [{ speaker: 'Narrator', voice: 'n', style: '' }, { speaker: 'Saki & Kanade', voice: 'saki', style: '', aliases: ['Saki'] }],

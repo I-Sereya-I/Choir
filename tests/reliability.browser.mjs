@@ -111,6 +111,9 @@ async function harness(mixerPreferences,mobile=false){
         else if(request.action==='gemini')result={base64:'AAABAA==',mimeType:'audio/L16;rate=24000'};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
         else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
+        else if(request.action==='plan' && state.cardTitlePlan){
+          result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Hello')?'Kellin Beckett || Toxic Fans':'Mikey Ross',voice:unit.kind==='narration'?'n':'g',style:unit.kind==='dialogue'?'Warm':''}))},request.input.transcript,request.input.config);
+        }
         else if(request.action==='plan' && state.multiCard){
           const cast=request.input.config;
           result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Hello')?'Adrian':'Ethan',voice:unit.kind==='narration'?'n':unit.text.includes('Hello')?'m':'new'}))},request.input.transcript,cast);
@@ -353,6 +356,50 @@ test('ignored tags invalidate cached speech and cannot reappear in Cue paragraph
   const input=h.requests.filter(request=>request.action==='plan').at(-1).input;assert.ok(!input.transcript.includes('Secret narration'));assert.ok(!input.context.includes('Secret context'));assert.ok(!h.synthesis.slice(before).some(input=>input.text.includes('Secret')));
   const bridge=globalThis.__CHOIR_API__;assert.deepEqual(bridge.planParagraph('<private-note>Do not speak.</private-note>').segments,[]);const generated=h.synthesis.length;await bridge.playParagraph({text:'<private-note>Do not speak.</private-note>'});assert.equal(h.synthesis.length,generated);
   await h.reload();await h.play();assert.equal(h.synthesis.length,generated);assert.equal(h.requests.filter(request=>request.action==='plan').length,planned+1);
+ }finally{await h.close();}
+});
+
+const kellinCard='Kellin Beckett || Toxic Fans';
+function kellinCast(h,duplicate=true){
+  const value=structuredClone(h.store.get('chat:chat-a'));value.fixed[1].speaker='Laiyah';value.fixed[2].speaker='Kellin Beckett';value.fixed[2].aliases=[];
+  value.casts={'native:a':[{speaker:'Mikey Ross',voice:'g',style:''},...(duplicate?[{speaker:kellinCard,voice:'g',style:''}]:[])],'native:b':duplicate?[{speaker:kellinCard,voice:'g',style:''}]:[]};return value;
+}
+
+test('decorated card titles migrate duplicate NPCs and restore old title attribution to the lead voice without replanning',async()=>{
+ const h=await harness();try{
+  h.state.character={name:kellinCard,description:'# Kellin Beckett\nThe singer.'};h.store.set('chat:chat-a',kellinCast(h));
+  const key='plan:'+createHash('sha256').update(JSON.stringify(['chat-a',h.message.id])).digest('hex');
+  h.store.set(key,{chatId:'chat-a',messageId:h.message.id,content:h.message.content,transcript:h.message.content,attribution:{segments:speechSourceUnits(h.message.content).map(unit=>({speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Hello')?kellinCard:'Mikey Ross',text:unit.text,style:''}))}});h.store.set('activeplan:chat-a',h.message.id);
+  await h.reload();await until(()=>h.store.get('chat:chat-a').fixed[2].aliases.includes(kellinCard));
+  const saved=h.store.get('chat:chat-a');assert.equal(saved.fixed[2].voice,'m');assert.deepEqual(saved.casts['native:a'].map(actor=>actor.speaker),['Mikey Ross']);assert.deepEqual(saved.casts['native:b'],[]);
+  assert.deepEqual([...h.$('fixed').children].map(row=>row.querySelector('input').value),['Narrator','Laiyah','Kellin Beckett']);
+  await h.play();assert.equal(h.requests.filter(request=>request.action==='plan').length,0);assert.equal(h.synthesis.find(input=>input.text.includes('Hello')).voice,'m');assert.equal(h.synthesis.find(input=>input.text.includes('Hello')).connectionId,'b');
+  const paragraph=globalThis.__CHOIR_API__.planParagraph('"Hello again."',kellinCard);assert.equal(paragraph.segments[0].speaker,'Kellin Beckett');assert.equal(paragraph.segments[0].voice,'m');
+  await h.reload();assert.deepEqual(h.store.get('chat:chat-a').casts['native:a'].map(actor=>actor.speaker),['Mikey Ross']);
+  const editName=async speaker=>{const input=h.$('fixed').children[2].querySelector('input');input.value=speaker;input.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.store.get('chat:chat-a').fixed[2].speaker===speaker);};
+  await editName(kellinCard);assert.deepEqual(h.store.get('chat:chat-a').fixed[2].aliases,['Kellin Beckett']);
+  await editName('Kellin Beckett');assert.deepEqual(h.store.get('chat:chat-a').fixed[2].aliases,[kellinCard]);
+  await h.play();assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+ }finally{await h.close();}
+});
+
+test('a new LLM plan using a decorated card title keeps one lead identity and preserves a different NPC voice',async()=>{
+ const h=await harness();try{
+  h.state.character={name:kellinCard};h.state.cardTitlePlan=true;h.store.set('chat:chat-a',kellinCast(h,false));await h.reload();await h.plan();await h.play();
+  const input=h.requests.find(request=>request.action==='plan').input;assert.ok(input.config.fixed[2].aliases.includes(kellinCard));
+  const segments=JSON.parse(h.$('planJson').value).segments;assert.equal(segments.find(segment=>segment.text.includes('Hello')).speaker,'Kellin Beckett');assert.equal(segments.find(segment=>segment.text.includes('Hello')).voice,'m');
+  assert.equal(h.synthesis.find(input=>input.text.includes('Wait')).voice,'g');assert.deepEqual(h.store.get('chat:chat-a').casts['native:a'].map(actor=>actor.speaker),['Mikey Ross']);
+ }finally{await h.close();}
+});
+
+test('old recordings with a duplicate card-title voice are corrected instead of replaying the NPC voice',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'An unrelated scenario title'};h.state.cardTitlePlan=true;h.store.set('chat:chat-a',kellinCast(h));await h.reload();await h.plan();await h.play();
+  assert.equal(h.synthesis.find(input=>input.text.includes('Hello')).voice,'g');const generated=h.synthesis.length,planned=h.requests.filter(request=>request.action==='plan').length;
+  for(const key of [...h.store.keys()])if(/^(plan:|activeplan:|progress:)/.test(key))h.store.delete(key);
+  h.state.character={name:kellinCard};await h.reload();await h.play();
+  assert.equal(h.requests.filter(request=>request.action==='plan').length,planned+1);assert.equal(h.synthesis.length,generated+1);assert.equal(h.synthesis.at(-1).voice,'m');assert.equal(h.synthesis.at(-1).connectionId,'b');
+  assert.deepEqual(h.store.get('chat:chat-a').casts['native:a'].map(actor=>actor.speaker),['Mikey Ross']);
  }finally{await h.close();}
 });
 

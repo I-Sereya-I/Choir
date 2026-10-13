@@ -1,4 +1,4 @@
-import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, transcriptFromMessage, planningSections, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset } from './core.js';
+import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, reconcileCardCast, transcriptFromMessage, planningSections, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset } from './core.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
 const ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
@@ -421,6 +421,7 @@ export async function setup(ctx) {
   toolbarAutoPlan.innerHTML=`${ICON_SPARKLE}<span></span>`;toolbarAutoPlan.onclick=()=>run(toggleAutoPlan);
   const messageStatuses=new Map(),messageSections=new Set(),seekControls=new Set();let messagePlaybackId=null,messageOperation=null;
   let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, planAttribution=null, planningSource=null, busy=false;
+  let activeCharacterCard=null;
   const autoReplyQueue=new Map(),seenAutoGenerations=new Set();let autoReplyTimer=null,autoReplyActive=null;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[], voiceIdEditorCount=0;
   const voiceCatalogues=new Map();
@@ -1556,14 +1557,14 @@ export async function setup(ctx) {
     // record their own route before capture, including non-default Fish voices.
     scopeLegacyExtraVoices();
     for(const voice of additionalVoices($('extraVoices').value))if(!Object.hasOwn(config.extraVoiceRoutes || {},voice.id))rememberExtraVoiceRoute(voice.id,scope(config));
-    return {...config,showAutoPlanAction:$('showAutoPlanAction').checked,fixed:castRows.filter(v=>v.row.parentElement===$('fixed')).map(v=>v.read()),
+    return reconcileCardCast({...config,showAutoPlanAction:$('showAutoPlanAction').checked,fixed:castRows.filter(v=>v.row.parentElement===$('fixed')).map(v=>v.read()),
       singleVoices:config.connectionMode==='one'?{...config.singleVoices,[scope(config)]:Object.fromEntries([...castRows,...npcRows].filter(v=>v.row.isConnected || v.row.parentElement).map(v=>v.voiceChoice()))}:config.singleVoices,
       casts:{...config.casts,[scope(config)]:npcRows.filter(v=>v.row.parentElement===$('npcs')).map(v=>v.read())},
       mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,decisionConnection:$('decisionConnection')?$('decisionConnection').value:(config.decisionConnection||''),
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,concurrency:Number($('concurrency').value),
       prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
-      extraVoices:$('extraVoices').value,ignoredTags:$('ignoredTags').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,loopMusic:$('loopMusic').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
+      extraVoices:$('extraVoices').value,ignoredTags:$('ignoredTags').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,loopMusic:$('loopMusic').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')},activeCharacterCard || {});
   }
   function casting(c=config) {
     const routeActor=actor=>c.connectionMode==='one'?{...actor,route:scope(c),voice:singleVoice(actor,c)}:actor;
@@ -1805,6 +1806,7 @@ export async function setup(ctx) {
     try{await flushSettings();}catch(error){status(`Previous chat settings could not be saved: ${error.message}`,true);}
     if(disposed || version!==loadVersion)return;
     chatId=id;
+    activeCharacterCard=null;
     pendingSettings=null;
     castRows=[];npcRows=[];$('fixed').replaceChildren();$('npcs').replaceChildren();
     refreshDefaultControls();
@@ -1932,7 +1934,8 @@ export async function setup(ctx) {
     const version=loadVersion,fixed=capture().fixed,characterId=ctx.getActiveChat().characterId;
     const [persona,character]=await Promise.all([leadPlaceholder(fixed,1)?activePersona():null,characterId?ctx.characters.get(characterId).catch(()=>null):null]);
     if(disposed || version!==loadVersion || busy)return;
-    const value=capture();let renamed=false;
+    let value=capture(),renamed=false;
+    activeCharacterCard=character;
     const roles=characterCardRoles(character || {});
     if(roles.length){value.cardGroupName=character.name;config.cardGroupName=character.name;}
     if(roles.length && (leadPlaceholder(value.fixed,2) || normalizeName(value.fixed[2]?.speaker)===normalizeName(character.name))){
@@ -1946,6 +1949,8 @@ export async function setup(ctx) {
       value.fixed[index]={...value.fixed[index],speaker:name};renamed=true;
       value.singleVoices=Object.fromEntries(Object.entries(value.singleVoices || {}).map(([route,voices])=>[route,Object.hasOwn(voices,previous)?{...voices,[name]:voices[previous]}:voices]));
     }
+    const reconciled=reconcileCardCast(value,character || {});
+    renamed ||= JSON.stringify(reconciled)!==JSON.stringify(value);value=reconciled;
     if(!renamed)return;
     config=value;renderCast();
     if(save)scheduleSettingsSave();
@@ -1974,6 +1979,9 @@ export async function setup(ctx) {
   const sameSpeech=(a,b)=>a===b || (a!=null && b!=null && spokenText(a)===spokenText(b));
   function mergedCardRecording(recording){
     return Boolean(config?.cardGroupName && config.fixed.length>3 && (recording.attribution?.segments || recording.segments || []).flatMap(segment=>segment.turns || [segment]).some(segment=>normalizeName(segment.speaker)===normalizeName(config.cardGroupName)));
+  }
+  function aliasedLeadRecording(recording){
+    return (recording.segments || []).flatMap(segment=>segment.turns || [segment]).some(segment=>(config?.fixed || []).some(actor=>normalizeName(actor.speaker)!==normalizeName(segment.speaker) && (actor.aliases || []).some(alias=>normalizeName(alias)===normalizeName(segment.speaker))));
   }
   async function recordingMatchesTranscript(recording,content) {
     let transcript=transcriptFromMessage(content,config?.ignoredTags);
@@ -2581,6 +2589,7 @@ export async function setup(ctx) {
       if(!recording)throw new Error('No saved audio for this message on this device. Plan and play it first.');
       if(!sameSpeech(ctx.messages.getContent(messageId),recording.content))throw new Error('The message changed since recording. Plan and play the current reply.');
       if(mergedCardRecording(recording))throw new Error('This recording combines several card characters into one voice. Plan and play the message again to separate them.');
+      if(aliasedLeadRecording(recording))throw new Error('This recording treats a lead character alias as a separate speaker. Plan and play the message again to use the lead voice.');
       if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to remove trackers or update the persona name.');
       mixerPlaybackSegments=recording.segments;renderMixer();
       let pauseNext=false;
@@ -2618,7 +2627,7 @@ export async function setup(ctx) {
       if(!valid())return;
       let recording;try{recording=await recordingStore('get',recordingKey(operation.chatId,messageId));}catch{}
       if(!valid())return;
-      if(recording && !mergedCardRecording(recording) && sameSpeech(recording.content,content) && await recordingMatchesTranscript(recording,content) && !(resolvePlannerMode(config)==='llm' && needsVoiceSelection({segments:(recording.segments || []).flatMap(segment=>segment.turns || [segment])},casting(config)))){
+      if(recording && !mergedCardRecording(recording) && !aliasedLeadRecording(recording) && sameSpeech(recording.content,content) && await recordingMatchesTranscript(recording,content) && !(resolvePlannerMode(config)==='llm' && needsVoiceSelection({segments:(recording.segments || []).flatMap(segment=>segment.turns || [segment])},casting(config)))){
         if(!valid())return;
         const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
         const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind).map(segment=>segment.text).join(' ');
@@ -3148,7 +3157,7 @@ const paragraphAudioCache = new Map();
           ...(snap.npcs || []),
           ...Object.values(snap.casts || {}).flat()
         ];
-        const explicitActor = preferredSpeaker ? allCast.find(a => normalizeName(a.speaker) === normalizeName(preferredSpeaker) && a.voice) : null;
+        const explicitActor = preferredSpeaker ? allCast.find(a => [a.speaker,...(a.aliases || [])].some(name=>normalizeName(name)===normalizeName(preferredSpeaker)) && a.voice) : null;
         // Several leads require explicit attribution. Do not route every quote to the first person.
         if(snap.fixed.length>3 && !explicitActor && units.some(unit=>unit.kind==='dialogue'))throw new Error('Plan this message with Jev or LLM first to identify each character, or provide a named speaker.');
         const charActor = explicitActor || (snap.fixed[2]?.voice ? snap.fixed[2] : (snap.fixed[1]?.voice ? snap.fixed[1] : (snap.fixed[2] || snap.fixed[1] || snap.fixed[0])));
