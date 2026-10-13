@@ -811,10 +811,48 @@ test('sound effect choices use the planner connection and return only cues and a
   ],ambience:[{segment:0,trigger:'fiel ins',query:'wind'},{segment:2,trigger:'x',query:'rain'}]})};},null,'openai');
   h.send('sfx',{segments:[{speaker:'Narrator',text:'Die Tür fiel ins Schloss.'}],connectionId:'llm-a'});
   const result=await h.result();
-  assert.deepEqual(JSON.parse(JSON.stringify(result.message.result)),{cues:[{segment:0,query:'door slam',trigger:'Die Tür'}],ambience:[{segment:0,query:'wind',trigger:'fiel ins'}]});
+  assert.deepEqual(JSON.parse(JSON.stringify(result.message.result)),{cues:[{segment:0,query:'door slam',trigger:'Die Tür'}],ambience:[{segment:0,query:'wind',trigger:'fiel ins'}],music:[]});
   assert.equal(request.userId,'user-a');assert.equal(request.connection_id,'llm-a');assert.equal(request.reasoning.source,'off');
   assert.equal(request.parameters.response_format.type,'json_object');
-  assert.match(request.messages[0].content,/English Freesound search/);
+  assert.match(request.messages[0].content,/English Freesound search/);assert.doesNotMatch(request.messages[0].content,/music entries/);
   const empty=await harness(()=>{throw Error('Should not call the LLM');});
-  empty.send('sfx',{segments:[]});assert.deepEqual(JSON.parse(JSON.stringify((await empty.result()).message.result)),{cues:[],ambience:[]});
+  empty.send('sfx',{segments:[]});assert.deepEqual(JSON.parse(JSON.stringify((await empty.result()).message.result)),{cues:[],ambience:[],music:[]});
+});
+
+test('enabled music adds incompetech feels and genres to the sound request',async()=>{
+  let request;
+  const h=await harness(async input=>{request=input;return {content:JSON.stringify({cues:[],music:[{segment:0,trigger:'Night fell',feels:['Dark'],genres:['Horror'],keywords:['organ']}]})};},null,'openai');
+  h.send('sfx',{segments:[{speaker:'Narrator',text:'Night fell.'}],connectionId:'llm-a',music:true});
+  assert.deepEqual([...(await h.result()).message.result.music].map(entry=>({...entry,feels:[...entry.feels],genres:[...entry.genres],keywords:[...entry.keywords]})),[{segment:0,feels:['Dark'],genres:['Horror'],keywords:['organ'],trigger:'Night fell'}]);
+  assert.match(request.messages[0].content,/music entries follow/);
+});
+
+const pieces=[
+  {title:'Carefree',filename:'Carefree.mp3',length:'00:03:22',feel:'Bouncy, Humorous',genre:'15',instruments:'Piano',description:'Is nice? Is nice.'},
+  {title:'Ossuary 6 - Air',filename:'Ossuary 6 - Air.mp3',length:'00:04:00',feel:'Dark, Eerie',genre:'10',instruments:'Synths',description:'Dark drones.'},
+  {title:'Crypto',filename:'Crypto.mp3',length:'00:02:30',feel:'Dark, Mysterious',genre:'22',instruments:'Organ, Strings',description:'A haunted crypt.'}];
+const catalog=calls=>async url=>{calls?.push(url);assert.equal(url,'https://incompetech.com/music/royalty-free/pieces.json');return {status:200,body:JSON.stringify(pieces)};};
+const dark={feels:['Dark','Mysterious'],genres:['Soundtrack'],keywords:['organ','crypt'],moment:'They crept into the crypt.'};
+
+test('music ranks the cached incompetech catalog and a Decision connection picks the track',async()=>{
+  let evaluated;const calls=[];
+  const h=await harness(null,catalog(calls),null,null,null,{evaluate:async input=>{evaluated=JSON.parse(JSON.stringify(input));return {answers:{q0:{choice:'s1'}}};}});
+  h.send('music',{...dark,decisionConnection:'decision-a'});
+  assert.deepEqual({...(await h.result()).message.result},{title:'Ossuary 6 - Air',url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Ossuary%206%20-%20Air.mp3',length:'00:04:00'});
+  assert.equal(evaluated.connection_id,'decision-a');assert.deepEqual(evaluated.state,{music:'Dark, Mysterious; Soundtrack; organ, crypt',moment:dark.moment});
+  assert.match(evaluated.questions.q0.instructions,/quietly under the narration/);
+  assert.deepEqual(Object.values(evaluated.questions.q0.criteria),['Crypto — Dark, Mysterious; Soundtrack; Organ, Strings; A haunted crypt. (00:02:30)','Ossuary 6 - Air — Dark, Eerie; Horror; Synths; Dark drones. (00:04:00)','Carefree — Bouncy, Humorous; Polka; Piano; Is nice? Is nice. (00:03:22)']);
+  h.send('music',{feels:['Bouncy']},'second');await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(h.sent.at(-1).message.result.title,'Carefree');assert.equal(calls.length,1);
+});
+
+test('music keeps the top-ranked track when the choice fails or is slow, and a failed catalog is not refetched per cue',async()=>{
+  const top=async(decisions,deadline,input={})=>{const h=await harness(null,catalog(),null,deadline,null,decisions);h.send('music',{...dark,...input});return (await h.result()).message.result.title;};
+  assert.equal(await top({evaluate:async()=>{throw Error('No Decision connection');}}),'Crypto');
+  assert.equal(await top({evaluate:()=>new Promise(()=>{})},(fn,ms)=>{if(ms===5000)fn();}),'Crypto');
+  let evaluations=0;assert.equal(await top({evaluate:async()=>{evaluations++;return {answers:{q0:{choice:'s2'}}};}},undefined,{moment:''}),'Crypto');assert.equal(evaluations,0);
+  let requests=0;const h=await harness(null,async()=>{requests++;return {status:503,body:'Down'};});
+  h.send('music',dark);assert.match((await h.result()).message.error,/Incompetech catalog HTTP 503/);
+  h.send('music',dark,'second');await new Promise(resolve=>setTimeout(resolve,10));
+  assert.match(h.sent.at(-1).message.error,/HTTP 503/);assert.equal(requests,1);
 });
