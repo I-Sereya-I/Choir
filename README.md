@@ -4,7 +4,7 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.5--staging.30-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.7-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/main)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
 [![Tests](https://img.shields.io/badge/tests-267%20passing-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -13,7 +13,7 @@ An installable Lumiverse Spindle extension for multi-voice narration, dialogue a
 
 </div>
 
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.5-staging.30** uses a compact 280px mixer with smaller desktop buttons, percentage fields and spacing. It groups channels into **Main cast**, **NPCs** and **Scene audio**. Compact **Auto-plan**, **Auto-play**, **SFX**, **Ambience** and **Music** switches use green for on and gray for off. Scene audio keeps all three volume controls available, including when their sound is off. Desktop has larger sliders with editable percentages and a double-click reset to 100%. Phones have full-width percentage and step controls, with responsive sizing and scrolling for short screens. This release retains background music, Fish community casting, Jev speaker profiles, saved chat defaults and the playback and cache fixes described below.
+Version **1.1.7** adds scene-aware sound effects, looping ambience and optional background music. Automatic casting uses character profiles and Fish community voices. The compact mixer has **Main cast**, **NPCs** and **Scene audio** tabs, color-coded switches and precise volume controls up to **300%**. Chats can reuse saved defaults and NPC voice settings. Automatic playback queues new replies, and cached replay reuses saved audio and sound choices. Use **main** for the stable release and **staging** to test upcoming changes.
 
 
 ## Overview
@@ -64,7 +64,7 @@ Choir also applies limits per voice route: Fish Audio uses up to the 10,000-char
 ### From GitHub
 
 1. In Lumiverse, open **Extensions -> Add -> Install from source**.
-2. Enter `https://github.com/patatasbravasch-arch/Choir` and select the `staging` branch.
+2. Enter `https://github.com/patatasbravasch-arch/Choir` and select the `main` branch.
 3. Enable **Choir** in your extension list.
 
 ### Local copy
