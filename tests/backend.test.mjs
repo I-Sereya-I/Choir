@@ -1008,3 +1008,13 @@ test('Jev describes a speaker with the Decision model before the community searc
   assert.equal(result.segments.find(segment=>segment.speaker==='Mira').voice,'old-1');
   assert.deepEqual(result.communityVoices,[{id:'old-1',description:'Elder — female, old',route:'native:fish'}]);
 });
+
+test('community search drops tag-stuffed voices that also carry the opposite gender, except for neutral requests',async()=>{
+  const stuffed=[fishItem('stuffed-1','Dramatic Character Male',['male','old','female','young']),fishItem('girl-1','Aiko'),fishItem('boy-1','Kenji',['male','young'])];
+  for(const [gender,expected] of [['female','girl-1'],['male','boy-1'],['neutral','stuffed-1']]){
+    const plan=JSON.stringify({segments:[{speaker:'Narrator',unit_ids:[0]},{speaker:'Mira',voiceSearch:{gender},unit_ids:[1]}]});
+    const h=await harness(async()=>({content:plan}),fishSearch([],[stuffed]));
+    h.send('plan',{transcript:'Mira smiled. "Hello."',config:communityCast});
+    assert.equal((await h.result()).message.result.segments.find(segment=>segment.speaker==='Mira').voice,expected);
+  }
+});

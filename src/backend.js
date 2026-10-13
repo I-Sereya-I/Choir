@@ -375,6 +375,8 @@ function loadMusicCatalog() {
 // The Fish library ANDs its tags, so drop the last wanted tag until a search returns voices.
 export async function searchCommunityVoices({ gender, age, tags = [] }, language, used, signal) {
   const wanted = [gender, age, ...tags].filter(Boolean);
+  // Some voices carry every tag; drop those also tagged with the opposite gender.
+  const opposite = { female: 'male', male: 'female' }[gender];
   for (let count = wanted.length; count >= 0; count--) {
     const query = [['page_size', 30], ['sort_by', 'score'], ['language', language], ...wanted.slice(0, count).map(tag => ['tag', tag])]
       .map(([name, value]) => `${name}=${encodeURIComponent(value)}`).join('&');
@@ -384,7 +386,7 @@ export async function searchCommunityVoices({ gender, age, tags = [] }, language
     const titles = new Set(), voices = [];
     for (const item of JSON.parse(response.body)?.items || []) {
       const title = normalizeName(item.title || item._id);
-      if (!item._id || used.has(item._id) || titles.has(title)) continue;
+      if (!item._id || used.has(item._id) || titles.has(title) || item.tags?.includes(opposite)) continue;
       titles.add(title);
       voices.push({ id: item._id, title: item.title || item._id, tags: Array.isArray(item.tags) ? item.tags.slice(0, 8) : [], description: String(item.description || '').slice(0, 300), languages: Array.isArray(item.languages) ? item.languages : [] });
     }
@@ -455,7 +457,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.5-staging.27',ready:true}});return;
+      send({result:{version:'1.1.5-staging.28',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);
