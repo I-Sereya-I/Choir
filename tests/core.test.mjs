@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,reconcileCardCast} from '../src/core.js';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
 
 test('ignored tags skip nested, attributed, mixed-case and unfinished blocks without dropping ordinary story markup',()=>{
   assert.deepEqual(ignoredTagNames('Summary, <private-note>\nsummary; invalid.*'),['summary','private-note']);
@@ -609,4 +609,37 @@ test('Fish community routes ask the planner to describe new voices and hide that
   const data=JSON.parse(community[1].content);
   assert.deepEqual(data.availableVoices.map(voice=>voice.id),['kept','Kore']);
   assert.deepEqual(data.communityRoutes,{'native:fish':'community','native:both':'both'});
+});
+
+test('read-along maps transcript passages onto rendered text nodes across markup, quote styles, repeats and scripts',()=>{
+  const nodes=['The gate',' creaked. “Hello,” said ','Mira','. “Hello,” the echo answered. ','Nested ','tags',' stay readable. ','「こんにちは」と','彼女は言った。Привет, ','МИР!'];
+  const {stream,at}=readAlongIndex(nodes);
+  const shown=span=>{
+    if(!span)return null;
+    const [startNode,startOffset]=at[span[0]],[endNode,endOffset]=at[span[1]-1];
+    return nodes.slice(startNode,endNode+1).map((text,i)=>text.slice(i?0:startOffset,startNode+i===endNode?endOffset+1:undefined)).join('');
+  };
+  const passages=['*The gate* creaked.','"Hello,"','said **Mira**.','Missing words.','"Hello,"','the echo answered.','Nested tags stay readable.','「こんにちは」と彼女は言った。','Привет, мир!'];
+  assert.deepEqual(locatePassages(stream,passages).map(shown),['The gate creaked','Hello','said Mira',null,'Hello','the echo answered','Nested tags stay readable','こんにちは」と彼女は言った','Привет, МИР']);
+  const spans=locatePassages(stream,passages);
+  assert.equal(at[spans[4][0]][0],3,'the second Hello resolves to its own occurrence');
+  assert.equal(readableText('“Don’t,” she SAID — İ.'),'dontshesaidİ');
+  assert.deepEqual(locatePassages(stream,['', '...']),[null,null]);
+});
+
+test('read-along word progress is monotonic, snaps to word ends and lingers on punctuation pauses',()=>{
+  const text='The gate closed. Then, slowly — it opened again…';
+  let previous=0;
+  for(let step=0;step<=100;step++){
+    const end=spokenLength(text,step/100);
+    assert.ok(end>=previous,'progress never moves backwards');
+    assert.ok(end===text.length || /\s/.test(text[end]),'the highlight ends on a word boundary');
+    previous=end;
+  }
+  assert.equal(spokenLength(text,0),3);
+  assert.equal(spokenLength(text,1),text.length);
+  assert.equal(spokenLength(text,-1),3);
+  assert.equal(spokenLength(text,2),text.length);
+  assert.equal(spokenLength('Stop. Go now',0.5),5,'a sentence end holds the highlight during its pause');
+  assert.equal(spokenLength('Stop Go now',0.5),7);
 });

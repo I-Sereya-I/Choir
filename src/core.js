@@ -800,6 +800,52 @@ export function cueOffset(text, trigger) {
   return exact >= 0 ? exact : text.toLowerCase().indexOf(trigger.toLowerCase());
 }
 
+// Read-along compares only letters, digits and marks, so rendered markdown, quote styles and
+// entities line up with the plain transcript. Case folding keeps UTF-16 offsets one-for-one.
+const READABLE = /[\p{L}\p{N}\p{M}]/u;
+const fold = ch => {const lower = ch.toLowerCase(); return lower.length === ch.length ? lower : ch;};
+
+export function readableText(text) {
+  let out = '';
+  for (const ch of String(text || '')) if (READABLE.test(ch)) out += fold(ch);
+  return out;
+}
+
+// texts are the message's DOM text nodes in order; at[i] points stream unit i back to [node, offset].
+export function readAlongIndex(texts) {
+  let stream = ''; const at = [];
+  texts.forEach((text, node) => {
+    let offset = 0;
+    for (const ch of text) {
+      if (READABLE.test(ch)) { stream += fold(ch); for (let k = 0; k < ch.length; k++) at.push([node, offset + k]); }
+      offset += ch.length;
+    }
+  });
+  return {stream, at};
+}
+
+// Passages are found in reading order, so a repeated phrase resolves to its next occurrence.
+export function locatePassages(stream, passages) {
+  let cursor = 0;
+  return passages.map(text => {
+    const key = readableText(text), start = key ? stream.indexOf(key, cursor) : -1;
+    if (start < 0) return null;
+    cursor = start + key.length;
+    return [start, cursor];
+  });
+}
+
+// Providers return no word timings: spread playback time over the characters, give
+// punctuation the length of its pause, and round up to the end of the current word.
+export function spokenLength(text, progress) {
+  const pause = i => /[.!?…]/.test(text[i]) ? (/[.!?…]/.test(text[i + 1]) ? 1 : 6) : /[,;:]/.test(text[i]) ? 3 : /[—–\n]/.test(text[i]) ? 4 : 1;
+  const weights = Array.from({length: text.length}, (_, i) => pause(i));
+  let remaining = Math.min(1, Math.max(0, progress)) * weights.reduce((sum, weight) => sum + weight, 0), end = 0;
+  while (end < text.length - 1 && remaining >= weights[end]) remaining -= weights[end++];
+  while (end < text.length && !/\s/.test(text[end])) end++;
+  return end;
+}
+
 // Kevin MacLeod's incompetech catalog: genre ids from genre.json and the feels used by more than a few tracks.
 export const MUSIC_GENRES = {2:'African',3:'Blues',4:'Classical',5:'Contemporary',6:'Disco',7:'Electronica',8:'Funk',9:'Holiday',10:'Horror',11:'Jazz',12:'Latin',13:'Modern',14:'Musical',15:'Polka',16:'Pop',18:'Reggae',19:'Rock',20:'Silent Film Score',21:'Ska',22:'Soundtrack',23:'Stings',24:'Unclassifiable',25:'World',26:'Urban'};
 export const MUSIC_FEELS = ['Action','Aggressive','Bouncy','Bright','Calming','Dark','Driving','Epic','Eerie','Grooving','Humorous','Intense','Mysterious','Mystical','Relaxed','Somber','Suspenseful','Unnerving','Uplifting'];

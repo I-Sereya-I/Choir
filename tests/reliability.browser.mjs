@@ -2274,3 +2274,45 @@ test('edits that only add images or trackers keep the plan, playback and saved a
     assert.equal(h.$('preview').children.length,0);
   }finally{await h.close();}
 });
+
+test('read-along highlights the spoken passage, then words, without changing the message, and clears on stop',async()=>{
+  const original={CSS:globalThis.CSS,Highlight:globalThis.Highlight,requestAnimationFrame:globalThis.requestAnimationFrame,cancelAnimationFrame:globalThis.cancelAnimationFrame};
+  const highlights=new Map(),shown=[];
+  globalThis.CSS={highlights:{set:(name,highlight)=>{shown.push(highlight.ranges.map(String).join('|'));highlights.set(name,highlight);},delete:name=>highlights.delete(name)}};
+  globalThis.Highlight=class{constructor(...ranges){this.ranges=ranges;}};
+  globalThis.requestAnimationFrame=fn=>setTimeout(fn,1);globalThis.cancelAnimationFrame=clearTimeout;
+  const h=await harness();
+  try{
+    assert.equal(h.$('readAlong').value,'off');assert.equal(h.$('followNarration').checked,false);
+    const bubble=document.createElement('div');bubble.dataset.messageId='message-a';
+    bubble.innerHTML='<div data-component="MessageContent"><p>At <strong>dawn</strong>. <em>“Hello.”</em></p><p>“Wait.” The gate closed.</p><button>At dawn.</button></div>';
+    document.body.append(bubble);const rendered=bubble.innerHTML;
+    h.ctx.dom.findMessageElement=id=>document.querySelector(`[data-message-id="${id}"]`);
+    await h.plan();await h.play();
+    assert.deepEqual(shown,[],'the default draws nothing');
+    h.$('readAlong').value='passage';h.$('readAlong').dispatchEvent(new h.dom.window.Event('change'));
+    await h.play();
+    assert.deepEqual(shown.filter((text,i)=>text!==shown[i-1]),['At dawn','“Hello.”','“Wait.”','The gate closed.']);
+    assert.equal(bubble.innerHTML,rendered);assert.equal(highlights.size,0);
+    shown.length=0;h.state.blockAudio=true;
+    h.$('readAlong').value='word';h.$('readAlong').dispatchEvent(new h.dom.window.Event('change'));
+    h.footer.querySelector('button').click();await until(()=>shown.length);
+    assert.equal(shown.at(-1),'At');
+    h.audios.at(-1).currentTime=20;await until(()=>shown.at(-1)==='At dawn');
+    h.$('stop').click();assert.equal(highlights.size,0);
+    await until(()=>h.store.get('settings:global')?.readAlong==='word');await h.reload();
+    assert.equal(h.$('readAlong').value,'word');
+  }finally{await h.close();Object.assign(globalThis,original);}
+});
+
+test('read-along and Follow narration are inert without the CSS Custom Highlight API',async()=>{
+  const h=await harness();
+  try{
+    h.ctx.dom.findMessageElement=()=>{throw Error('message lookup without highlight support');};
+    h.$('readAlong').value='word';h.$('followNarration').checked=true;
+    for(const name of ['readAlong','followNarration'])h.$(name).dispatchEvent(new h.dom.window.Event('change'));
+    await h.plan();await h.play();
+    await until(()=>h.store.get('settings:global')?.followNarration===true);await h.reload();
+    assert.equal(h.$('followNarration').checked,true);
+  }finally{await h.close();}
+});
