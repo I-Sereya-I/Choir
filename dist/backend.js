@@ -1410,7 +1410,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
           failure=error;
           if(attempt===0){
             if(result.content?.trim())messages.push({role:'assistant',content:result.content});
-            messages.push({role:'user',content:`The previous response failed: ${error.message}. Return one complete JSON object with cues and ambience arrays. No reasoning, commentary or code fences. Return {"cues":[],"ambience":[]} when no sounds fit. Keep searches to 1 to 3 English words.`});
+            messages.push({role:'user',content:`The previous response failed: ${error.message}. Return one complete JSON object with ${input.music===true?'cues, ambience and music':'cues and ambience'} arrays. No reasoning, commentary or code fences. Return {"cues":[],"ambience":[]${input.music===true?',"music":[]':''}} when no sounds fit. Keep searches to 1 to 3 English words.`});
           }
         }
       }
@@ -1487,7 +1487,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
           `The story needs instrumental background music that plays quietly under the narration of this moment. Wanted music: "${wanted}". Story moment: "${input.moment}". Which track best fits the mood and setting of the story moment?`)
         : 0;
       const track = tracks[pick];
-      send({ result: { title: track.title, url: `${MUSIC_BASE}mp3-royaltyfree/${encodeURIComponent(track.filename)}`, length: track.length } }); return;
+      send({ result: { title: track.title, url: `${MUSIC_BASE}mp3-royaltyfree/${encodeURIComponent(track.filename)}` } }); return;
     }
     if (message.action === 'searchVoices') {
       const query = typeof input.query === 'string' ? input.query.trim() : '';

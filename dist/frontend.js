@@ -951,6 +951,7 @@ export async function setup(ctx) {
     .ensemble-tts .et-cast-name-input{position:absolute;left:50%;transform:translateX(-50%);font:inherit;font-weight:bold;text-align:center;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.25);border-radius:4px;color:inherit;padding:1px 6px;max-width:180px;outline:none;z-index:2}
     .ensemble-tts .et-cast-editor{margin-top:10px;padding-top:10px;border-top:1px solid rgba(128,128,128,0.2)}
     .ensemble-tts .et-status{white-space:pre-wrap;padding:8px 12px;border-radius:6px;background:rgba(128,128,128,0.08);font-size:0.88em;margin:8px 0}
+    .ensemble-tts .et-credit{opacity:.75}
     .ensemble-tts [hidden]{display:none!important}
     .ensemble-tts .et-error{color:#ef7878}
     .ensemble-tts .et-transcript{font:inherit;white-space:pre-wrap;max-height:160px;overflow:auto;font-size:0.9em;opacity:0.9}
@@ -1079,7 +1080,7 @@ export async function setup(ctx) {
       <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
       <div class="et-status" data-et="statusActions" hidden></div>
       <div class="et-status" data-et="sfxStatus" role="status" aria-live="polite" hidden></div>
-      <small data-et="musicCredit" style="opacity:.75" hidden></small>
+      <small class="et-credit" data-et="musicCredit" hidden></small>
     </div>
     <div class="et-section-header">
       <h3>Lead Cast</h3>
@@ -1397,16 +1398,19 @@ export async function setup(ctx) {
   const currentMusic=()=>{const title=beds.music?.audio && beds.music.title;return title?{title,credit:`"${title}" Kevin MacLeod (incompetech.com) · CC BY 4.0`}:null;};
   function showMusicCredit(){
     if(disposed)return;const music=currentMusic();$('musicCredit').hidden=!music;$('musicCredit').textContent=music?.credit || '';
-    if(music?.title!==announcedMusic){announcedMusic=music?.title;globalThis.dispatchEvent?.(new (globalThis.CustomEvent || CustomEvent)('choir-music-v1',{detail:music}));}
+    // A replacement that is still loading keeps the previous announcement.
+    if(music?.title!==announcedMusic && (music || !beds.music)){announcedMusic=music?.title;globalThis.dispatchEvent?.(new (globalThis.CustomEvent || CustomEvent)('choir-music-v1',{detail:music}));}
   }
   function fadeBed(layer,to,done){
     clearInterval(layer.timer);const from=layer.level,start=Date.now();
     layer.timer=setInterval(()=>{const progress=Math.min(1,(Date.now()-start)/AMBIENCE_FADE_MS);layer.level=progress<1?from+(to-from)*progress:to;bedVolume(layer);if(progress===1){clearInterval(layer.timer);done?.();}},50);
   }
-  function dropBed(layer){clearInterval(layer.timer);layer.loading.abort();if(layer.audio){layer.audio.onerror=null;layer.audio.pause();}if(layer.url)URL.revokeObjectURL(layer.url);fadingBeds.delete(layer);}
+  function dropBed(layer){clearInterval(layer.timer);layer.loading.abort();if(layer.audio){layer.audio.onerror=null;layer.audio.pause();if(layer.kind==='music'){layer.audio.removeAttribute('src');layer.audio.load();}}if(layer.url)URL.revokeObjectURL(layer.url);fadingBeds.delete(layer);}
   function failBed(layer,error){
     if(beds[layer.kind]!==layer || layer.loading.signal.aborted)return;
     beds[layer.kind]=null;dropBed(layer);showMusicCredit();updateTransport();
+    // A track that cannot play must not be replayed from a cache.
+    if(layer.kind==='music'){foleyCache.delete(layer.key);paragraphAudioCache.delete(`music:${layer.key}`);layer.purge?.();}
     const detail=error?.name==='NotAllowedError'?'Browser blocked background audio. Click Play to retry.':error?.message || 'Background audio could not play.';
     const warning=`${BED_NAME[layer.kind]} skipped (${layer.query}): ${detail} Speech continues.`;
     const previous=$('sfxStatus').hidden?'':$('sfxStatus').textContent;
@@ -1416,13 +1420,13 @@ export async function setup(ctx) {
     try{layer.audio.play().catch(error=>failBed(layer,error));}catch(error){failBed(layer,error);}
   }
   // load resolves to a Freesound blob or, for music, an incompetech track {title,url} streamed directly.
-  function followBed(entry,load,kind='ambience'){
+  function followBed(entry,load,kind='ambience',purge){
     if(!bedEnabled(kind)){stopBeds(kind);updateTransport();return;}
     const key=entry && !entry.stop?foleyKey(entry):'';
     if(key===(beds[kind]?.key || ''))return;
     if(beds[kind]){const old=beds[kind];fadingBeds.add(old);fadeBed(old,0,()=>dropBed(old));}
     // A carried bed keeps loading after the paragraph that started it is cancelled.
-    const layer=beds[kind]=key?{kind,key,query:entry.query || [...entry.feels,...entry.genres].join(', '),feels:entry.feels,level:0,loading:new AbortController()}:null;showMusicCredit();updateTransport();
+    const layer=beds[kind]=key?{kind,key,query:entry.query || [...entry.feels,...entry.genres].join(', '),feels:entry.feels,purge,level:0,loading:new AbortController()}:null;showMusicCredit();updateTransport();
     if(layer)load(layer.loading.signal).then(source=>{
       if(beds[kind]!==layer)return;
       layer.title=source.title;layer.audio=new Audio(source.url || (layer.url=URL.createObjectURL(source)));layer.audio.loop=true;bedVolume(layer);
@@ -1436,7 +1440,6 @@ export async function setup(ctx) {
   const bedIndex=(batches,index,kind)=>{while(index>=0 && batches[index].kind!==kind)index--;return index;};
   function stopBeds(kind){for(const layer of [...Object.values(beds),...fadingBeds])if(layer && (!kind || layer.kind===kind))dropBed(layer);for(const name in beds)if(!kind || name===kind)beds[name]=null;if(!kind)bedsPaused=false;showMusicCredit();}
   function pauseBeds(paused){bedsPaused=paused;for(const layer of [...Object.values(beds),...fadingBeds])if(layer?.audio){if(paused)layer.audio.pause();else playBed(layer);}}
-
   function positionMixer(){
     const collapsed=Boolean(mixerState.collapsed);
     const isEnabled=Boolean(config?.enableMixer),expanded=isEnabled && !collapsed;
@@ -2887,7 +2890,7 @@ export async function setup(ctx) {
         const completedSections=savedProgress && sameSpeech(savedProgress.content,content) && savedProgress.transcript===transcript && Array.isArray(savedProgress.sections)?savedProgress.sections.filter(saved=>saved && typeof saved.text==='string'):[];
         let timeoutSplits=0;
         streaming = autoPlay && sections.length > 1 && !config.autoDesignNPCs;
-        soundsChosen=streaming && soundCuesWanted(config);
+        soundsChosen=streaming && soundCuesWanted(config);let sectionMusic;
         if (streaming) {
           const apiKey = $('key').value.trim();
           const cached=await recordingStore('get',recordingKey(targetChat,messageId)).catch(()=>null);
@@ -2939,9 +2942,9 @@ export async function setup(ctx) {
           }
           let sectionSegments=checked.segments;
           if (streaming) {
-            const cued=await cuePlannedSegments(sectionSegments,ctrl,token);
+            const cued=await cuePlannedSegments(sectionSegments,ctrl,token,sectionMusic);
             if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
-            sectionSegments=cued.segments;soundsChosen&&=cued.checked;if(cued.warning)soundCueWarnings.add(cued.warning);
+            sectionSegments=cued.segments;sectionMusic=lastMusic(sectionSegments.flatMap(segment=>segment.music || [])) || sectionMusic;soundsChosen&&=cued.checked;if(cued.warning)soundCueWarnings.add(cued.warning);
           }
           playbackSections.push(sectionSegments.map((_,index)=>combined.length+index));
           combined.push(...stripBase(sectionSegments)); previous = section;
@@ -3131,9 +3134,11 @@ export async function setup(ctx) {
     return freesoundKey(config)?result:{...result,cues:[],ambience:[]};
   }
   // Sound effects are optional: a failed choice never blocks speech.
-  async function cuePlannedSegments(segments,ctrl,token){
+  // The music playing at the end of earlier text, so the next sound request keeps it unless the scene changes.
+  const lastMusic=entries=>{const entry=(entries || []).filter(entry=>!entry.stop).at(-1);return entry && {title:'',feels:entry.feels};};
+  async function cuePlannedSegments(segments,ctrl,token,currentMusic){
     if(!soundCuesWanted(config))return {segments,checked:false};
-    try{return {segments:applySoundCues(segments,await chooseSoundCues(segments,ctrl.signal)),checked:true};}
+    try{return {segments:applySoundCues(segments,await chooseSoundCues(segments,ctrl.signal,status,currentMusic)),checked:true};}
     catch(error){
       if(ctrl.signal.aborted || token!==revision)throw error;
       const warning=`SFX skipped: ${error.message}. Speech continues. Use Plan latest to retry sound-effect choices.`;
@@ -3295,7 +3300,7 @@ export async function setup(ctx) {
         activePlayback={chatId:source.chatId,messageId:source.messageId,content:source.content,passage:seg.passageIndex ?? playIdx,chunk:seg.chunkIndex ?? 0};
         const offset=resumePending && source.resume.passage===activePlayback.passage && source.resume.chunk===activePlayback.chunk?source.resume.seconds:0;resumePending=false;
         const paused=pauseNext;pauseNext=false;
-        for(const kind in beds){const marker=bedIndex(segments,playIdx,kind);followBed(segments[marker]?.[kind],()=>loadBed(marker),kind);}
+        for(const kind in beds){const marker=bedIndex(segments,playIdx,kind);followBed(segments[marker]?.[kind],()=>loadBed(marker),kind,()=>{delete passages[cacheKey(segments[marker],snapshot)];blobs[marker]=undefined;void persist();});}
         try{await playBlob(blob,ctrl.signal,seg.speaker,offset,snapshot.normalizeLoudness,paused);}
         catch(error){
           if(seg.kind!=='sfx' || ctrl.signal.aborted || token!==revision)throw error;
@@ -3866,6 +3871,7 @@ export async function setup(ctx) {
     const track=await rpc('music',{feels,genres,keywords,moment:seg.moment,decisionConnection:snapshot.decisionConnection,jevApiKey:snapshot.jevApiKey,jevEndpoint:snapshot.jevEndpoint},signal,20000);
     signal.throwIfAborted();
     foleyCache.set(key,track);
+    if(foleyCache.size>64)foleyCache.delete(foleyCache.keys().next().value);
     return track;
   }
 
@@ -3968,11 +3974,11 @@ const paragraphAudioCache = new Map();
   }
 
   // Paragraphs outside the current message plan get their effects chosen once per text.
-  async function loadParagraphCues(rawText, snap, preferredSpeaker, signal) {
+  async function loadParagraphCues(rawText, snap, preferredSpeaker, signal, carried) {
     const {segments, cleanPara, fromPlan} = paragraphSegments(rawText, snap, preferredSpeaker);
     if (fromPlan || !segments.length || paragraphCues.has(cleanPara) || !soundCuesWanted(snap)) return;
     // Cue carries the playing track into later paragraphs, so the planner changes it only when the scene does.
-    const playing = beds.music && {title: beds.music.title || '', feels: beds.music.feels};
+    const playing = carried || beds.music && {title: beds.music.title || '', feels: beds.music.feels};
     paragraphCues.set(cleanPara, await chooseSoundCues(segments, signal, () => {}, playing));
     if (paragraphCues.size > 80) paragraphCues.delete(paragraphCues.keys().next().value);
   }
@@ -4036,7 +4042,9 @@ const paragraphAudioCache = new Map();
 
         // Prefetch upcoming paragraph in background for 0ms transition latency
         if (snapshot.prefetch>0 && nextText && typeof nextText === 'string' && nextText.trim()) {
-          void loadParagraphCues(nextText, snapshot, '', ctrl.signal).catch(() => {}).then(() => {
+          // The current paragraph's music has not started yet, so name it directly.
+          const carried = lastMusic(paragraphCues.get(paragraphSegments(text, snapshot, speaker).cleanPara)?.music);
+          void loadParagraphCues(nextText, snapshot, '', ctrl.signal, carried).catch(() => {}).then(() => {
             const first = planAndBatchParagraph(nextText, snapshot, true).find(batch => !isBed(batch));
             if (!ctrl.signal.aborted && first && !playbackExcluded(first)) {
               getCachedOrSynthesize(first, snapshot, apiKey, ctrl.signal).catch(() => {});
