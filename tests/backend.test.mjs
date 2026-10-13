@@ -780,8 +780,11 @@ test('DeepSeek sound choices request JSON mode and recover a truncated response 
       assert.deepEqual(JSON.parse(JSON.stringify(request.reasoning)),{source:'custom',apiReasoning:true,effort:'auto'});
     }else assert.equal(request.reasoning.source,'off');
   }
-  assert.match(requests[1].messages.at(-1).content,/complete JSON object/);
+  assert.match(requests[1].messages.at(-1).content,/complete JSON object with cues and ambience arrays/);
  }
+ const requests=[];const h=await harness(async input=>{requests.push(input);return {content:requests.length===1?'{"cues":[':'{"cues":[]}'};});
+ h.send('sfx',{segments:[{speaker:'Narrator',text:'Night fell.'}],connectionId:'llm-a',music:true});await h.result();
+ assert.match(requests[1].messages.at(-1).content,/cues, ambience and music arrays.*"music":\[\]/);
 });
 
 test('invalid sound choices stop after one correction and report the selected connection',async()=>{
@@ -841,7 +844,7 @@ test('music ranks the cached incompetech catalog and a Decision connection picks
   let evaluated;const calls=[];
   const h=await harness(null,catalog(calls),null,null,null,{evaluate:async input=>{evaluated=JSON.parse(JSON.stringify(input));return {answers:{q0:{choice:'s1'}}};}});
   h.send('music',{...dark,decisionConnection:'decision-a'});
-  assert.deepEqual({...(await h.result()).message.result},{title:'Ossuary 6 - Air',url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Ossuary%206%20-%20Air.mp3',length:'00:04:00'});
+  assert.deepEqual({...(await h.result()).message.result},{title:'Ossuary 6 - Air',url:'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Ossuary%206%20-%20Air.mp3'});
   assert.equal(evaluated.connection_id,'decision-a');assert.deepEqual(evaluated.state,{music:'Dark, Mysterious; Soundtrack; organ, crypt',moment:dark.moment});
   assert.match(evaluated.questions.q0.instructions,/quietly under the narration/);
   assert.deepEqual(Object.values(evaluated.questions.q0.criteria),['Crypto — Dark, Mysterious; Soundtrack; Organ, Strings; A haunted crypt. (00:02:30)','Ossuary 6 - Air — Dark, Eerie; Horror; Synths; Dark drones. (00:04:00)','Carefree — Bouncy, Humorous; Polka; Piano; Is nice? Is nice. (00:03:22)']);
