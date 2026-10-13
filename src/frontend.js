@@ -252,6 +252,7 @@ export async function setup(ctx) {
     <div class="et-grid">
       <label hidden>Voice connections<select data-et="connectionMode"><option value="several">Several TTS · per character</option><option value="one">One TTS · whole cast</option></select></label>
       <label hidden>Default TTS connection<select data-et="mode"><option value="native">Lumiverse TTS</option><option value="gemini">Gemini 3.8 (style metadata)</option></select></label>
+      <label data-et="fishVoiceSourceWrap" hidden>Voices the planner picks from<select data-et="fishVoiceSource"><option value="community">Fish community library</option><option value="own">My Fish voices</option><option value="both">Both</option></select></label>
       <label>Planner engine<select data-et="plannerMode"><option value="llm">Standard LLM Connection</option><option value="jev">Jev System 1 (TypeSafe AI)</option><option value="heuristic">Heuristic (local only)</option></select></label>
     </div>
     <p data-et="plannerHint" role="note" style="font-size:.85em;opacity:.75;margin:8px 0"></p>
@@ -427,7 +428,7 @@ export async function setup(ctx) {
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
   const defaults = () => ({mode:'native',model:'gemini-3.8-flash-tts',planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
-    extraVoices:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
+    extraVoices:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
       {speaker:'Character',voice:'',style:''} ]});
@@ -752,6 +753,23 @@ export async function setup(ctx) {
     const routes=extraVoiceRoutes(id);
     config.extraVoiceRoutes={...config.extraVoiceRoutes,[id]:[...new Set([...routes,route])]};
   }
+  // Voices outside a connection's catalogue (pasted IDs, community picks) live in Additional voices on their route.
+  function addExtraVoice(id,description,route) {
+    rememberExtraVoiceRoute(id,route);
+    const lines=$('extraVoices').value.split('\n').filter(line=>line.trim() && line.split('|')[0].trim()!==id);
+    lines.push(description?`${id} | ${description}`:id);$('extraVoices').value=config.extraVoices=lines.join('\n');
+    const existing=(voiceCatalogues.get(route) || []).find(item=>item.id===id);
+    const catalogue=[...(voiceCatalogues.get(route) || []).filter(item=>item.id!==id),{...existing,id,name:existing?.name || id,description}];
+    voiceCatalogues.set(route,catalogue);
+    if(route===scope(config))voices=catalogue;
+    return catalogue;
+  }
+  function adoptCommunityVoices(result,snapshot) {
+    for(const voice of result.communityVoices || []){
+      addExtraVoice(voice.id,voice.description,voice.route);
+      snapshot.voices.push({id:voice.id,name:voice.id,description:voice.description,route:voice.route});
+    }
+  }
   function scopeLegacyExtraVoices() {
     const routes=['gemini',...nativeConnections.map(connection=>`native:${connection.id}`)];
     for(const voice of additionalVoices(config.extraVoices)) {
@@ -798,7 +816,7 @@ export async function setup(ctx) {
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
   const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
-  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','npcPolicy','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','enableAmbience','enableMusic','freesoundApiKey'];
+  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','npcPolicy','fishVoiceSource','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','muteNarrator','enableSfx','enableAmbience','enableMusic','freesoundApiKey'];
   const defaultVoiceFields=['voice','route','gender','style','accent','excluded'];
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   let closeDefaultEditor;
@@ -870,7 +888,7 @@ export async function setup(ctx) {
     const select=index=>{panels.forEach((panel,i)=>panel.hidden=i!==index);buttons.forEach((button,i)=>{button.setAttribute('aria-selected',String(i===index));button.tabIndex=i===index?0:-1;});};
     buttons.forEach((button,index)=>{button.onclick=()=>select(index);button.onkeydown=event=>{const next=event.key==='ArrowRight'?(index+1)%3:event.key==='ArrowLeft'?(index+2)%3:null;if(next!==null){event.preventDefault();select(next);buttons[next].focus();}};});select(0);
     const fields={};
-    const specs=[['connectionMode','Voice connections'],['mode','Default TTS provider'],['connection','Lumiverse connection'],['model','Gemini model'],['styleParam','Style handling'],['plannerMode','Planner engine'],['planner','Planner LLM connection'],['decisionConnection','Decision connection'],['auto','Auto-play new replies'],['autoPlan','Auto-plan new replies'],['showAutoPlanAction','Show Auto-plan in chat toolbar'],['enableSfx','Sound effects (Foley cues)'],['enableAmbience','Ambient sound'],['enableMusic','Background music'],['sectionButtons','Show section play buttons'],['enableMixer','Floating audio mixer'],['useStyle','Delivery styles'],['retention','Audio retention'],['concurrency','Concurrent TTS requests'],['chunk','Max characters per request'],['plannerTokens','Planner output tokens'],['prefetch','Prefetch passages'],['allowLlmFallback','Allow LLM fallback after Jev fails'],['normalizeLoudness','Match passage loudness'],['allowVoiceFallback','Allow Gemini custom voice fallback'],['apiBase','Lumiverse API base'],['freesoundApiKey','Freesound API key'],['autoDesignNPCs','Auto-design custom NPC voices']];
+    const specs=[['connectionMode','Voice connections'],['mode','Default TTS provider'],['connection','Lumiverse connection'],['model','Gemini model'],['styleParam','Style handling'],['plannerMode','Planner engine'],['planner','Planner LLM connection'],['decisionConnection','Decision connection'],['fishVoiceSource','Fish voices the planner picks from'],['auto','Auto-play new replies'],['autoPlan','Auto-plan new replies'],['showAutoPlanAction','Show Auto-plan in chat toolbar'],['enableSfx','Sound effects (Foley cues)'],['enableAmbience','Ambient sound'],['enableMusic','Background music'],['sectionButtons','Show section play buttons'],['enableMixer','Floating audio mixer'],['useStyle','Delivery styles'],['retention','Audio retention'],['concurrency','Concurrent TTS requests'],['chunk','Max characters per request'],['plannerTokens','Planner output tokens'],['prefetch','Prefetch passages'],['allowLlmFallback','Allow LLM fallback after Jev fails'],['normalizeLoudness','Match passage loudness'],['allowVoiceFallback','Allow Gemini custom voice fallback'],['apiBase','Lumiverse API base'],['freesoundApiKey','Freesound API key'],['autoDesignNPCs','Auto-design custom NPC voices']];
     for(const [name,label] of specs){
       const source=$(name),input=source?source.cloneNode(true):document.createElement('input');input.removeAttribute('data-et');input.removeAttribute('aria-describedby');input.disabled=false;input.dataset.defaultField=name;
       if(name==='autoPlan')input.type='checkbox';
@@ -1382,14 +1400,8 @@ export async function setup(ctx) {
       if(!/^[A-Za-z0-9_-]{1,200}$/.test(id))throw new Error('Enter a Fish Audio voice ID using letters, numbers, hyphens or underscores.');
       const selectedRoute=route.value || scope(config),targetChat=chatId,version=loadVersion;
       if(detectProvider(selectedRoute)!=='fish_audio')throw new Error('Select a Fish Audio connection for this voice.');
-      const existingVoice=rowVoices.find(item=>item.id===id);
-      rememberExtraVoiceRoute(id,selectedRoute);
-      const description=voiceDescription.value.trim().replace(/[|\r\n]+/g,' ') || existingVoice?.description || '';
-      const lines=$('extraVoices').value.split('\n').filter(line=>line.trim() && line.split('|')[0].trim()!==id);
-      lines.push(description?`${id} | ${description}`:id);$('extraVoices').value=lines.join('\n');
-      const entry={...existingVoice,id,name:existingVoice?.name || id,description};
-      rowVoices=[...rowVoices.filter(item=>item.id!==id),entry];voiceCatalogues.set(selectedRoute,rowVoices);
-      if(selectedRoute===scope(config))voices=rowVoices;
+      const description=voiceDescription.value.trim().replace(/[|\r\n]+/g,' ') || rowVoices.find(item=>item.id===id)?.description || '';
+      rowVoices=addExtraVoice(id,description,selectedRoute);
       if(![...voice.options].some(item=>item.value===id))option(voice,id,id);
       voice.value=id;searchFilter='';voiceSearchInput.value='';filterVoices();
       if(!scheduleSettingsSave())throw new Error('Voice ID could not be saved. Check Advanced Settings first.');
@@ -1553,7 +1565,7 @@ export async function setup(ctx) {
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,concurrency:Number($('concurrency').value),
       prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
-      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
+      extraVoices:$('extraVoices').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')};
   }
   function casting(c=config) {
     const routeActor=actor=>c.connectionMode==='one'?{...actor,route:scope(c),voice:singleVoice(actor,c)}:actor;
@@ -1570,8 +1582,10 @@ export async function setup(ctx) {
     }
     const fixed=c.fixed.map(routeActor),npcs=[...knownNPCs.values()].map(routeActor).map(actor=>npcCastActor(actor,{npcPolicy,defaultRoute:scope(c)})),actors=[...fixed,...npcs];
     const routes=new Set([scope(c),...actors.map(actor=>actor.route || scope(c)),...(npcPolicy?.route?[npcPolicy.route]:[])]);
+    const communityRoutes=c.fishVoiceSource==='own'?[]:[...routes].filter(route=>detectProvider(route)==='fish_audio');
     return {fixed,npcs,defaultRoute:scope(c),
-      voices:[...routes].flatMap(route=>(voiceCatalogues.get(route) || []).map(voice=>({...voice,route}))),useStyle:c.useStyle,npcPolicy};
+      voices:[...routes].flatMap(route=>(voiceCatalogues.get(route) || []).map(voice=>({...voice,route}))),useStyle:c.useStyle,npcPolicy,
+      ...(communityRoutes.length?{communityRoutes:Object.fromEntries(communityRoutes.map(route=>[route,c.fishVoiceSource || 'community']))}:{})};
   }
   function singleVoice(actor,c){
     const selected=c.singleVoices?.[scope(c)];
@@ -1647,7 +1661,7 @@ export async function setup(ctx) {
     if($('voiceDesignBox'))$('voiceDesignBox').hidden=!anyGemini;
     if($('autoDesignNPCsWrap'))$('autoDesignNPCsWrap').hidden=!anyGemini;
     if($('batchGeminiWrap'))$('batchGeminiWrap').hidden=true;
-    if($('fishLibraryContainer'))$('fishLibraryContainer').hidden=!anyFish;
+    $('fishVoiceSourceWrap').hidden=!anyFish;
 
     if($('extraVoicesLabel')) {
       if(activeProvider==='fish_audio') {
@@ -1679,7 +1693,7 @@ export async function setup(ctx) {
     }
   }
   function setFields() {
-    for(const name of ['mode','model','planner','connection','decisionConnection','styleParam','apiBase','chunk','plannerTokens','extraVoices','retention'])if($(name))$(name).value=config[name] || '';
+    for(const name of ['mode','model','planner','connection','decisionConnection','fishVoiceSource','styleParam','apiBase','chunk','plannerTokens','extraVoices','retention'])if($(name))$(name).value=config[name] || '';
     $('connectionMode').value=config.connectionMode;
     $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;
     $('showAutoPlanAction').checked=Boolean(config.showAutoPlanAction);
@@ -1702,7 +1716,7 @@ export async function setup(ctx) {
     busy=value;
     if(!value)scheduleAutoReplies();
     for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','connectionMode','apply','auto'])if($(name))$(name).disabled=value;
-    for (const name of ['model','planner','plannerMode','decisionConnection','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','enableSfx','enableAmbience','enableMusic','freesoundApiKey','testTts','importCast'])if($(name))$(name).disabled=value;
+    for (const name of ['model','planner','plannerMode','decisionConnection','fishVoiceSource','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','enableSfx','enableAmbience','enableMusic','freesoundApiKey','testTts','importCast'])if($(name))$(name).disabled=value;
     updateTransport();
     if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button'),...$('npcPolicyRoot').querySelectorAll('input,select')])node.disabled=value;
@@ -2021,8 +2035,9 @@ export async function setup(ctx) {
             decisionConnection: snapshot.decisionConnection || $('decisionConnection')?.value || '',
             apiKey: jevKey,
             endpoint: jevEndpoint
-          }, ctrl.signal, 15000);
+          }, ctrl.signal, snapshot.communityRoutes ? 60000 : 15000);
           if (!result || !Array.isArray(result.segments))throw new Error('Jev returned no valid speech plan.');
+          adoptCommunityVoices(result,snapshot);
           fastPlan = validatePlan({ segments: stripBase(result.segments) }, transcript, snapshot);
           status('Speech plan ready (Jev System 1 classifier).');
         } catch (err) {
@@ -2074,7 +2089,10 @@ export async function setup(ctx) {
               timeoutMs: 90000,
               context: [context, previous ? `Previous section of this same reply:\n${previous.slice(-2000)}` : ''].filter(Boolean).join('\n').slice(-4000),
               connectionId: config.planner,
-              maxTokens: config.plannerTokens
+              maxTokens: config.plannerTokens,
+              decisionConnection: config.decisionConnection,
+              jevApiKey: config.jevApiKey,
+              jevEndpoint: config.jevEndpoint
             }, ctrl.signal, 95000,
             progress => status(`Planning section ${index+1}/${sections.length}: ${progress.stage}${progress.model ? ` · ${progress.model}` : ''}`));
           } catch(error) {
@@ -2090,6 +2108,7 @@ export async function setup(ctx) {
             throw new Error(jevFailure?`${jevFailure}\nLLM fallback failed: ${error.message}`:error.message);
           }
           if (token !== revision || targetChat !== chatId || disposed) return;
+          adoptCommunityVoices(result,snapshot);
           const checked = validatePlan({ segments: stripBase(result.segments) }, section, snapshot);
           const savedSection={index,text:section,attribution:attributionPlan(checked,snapshot)};
           const existing=completedSections.findIndex(saved=>saved.index===index && saved.text===section);

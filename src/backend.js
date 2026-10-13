@@ -133,6 +133,26 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
   const cast = jevSpeakerCast(config);
   const choices = cast.length ? [...cast, { name: UNLISTED_SPEAKER, description: 'A speaker who matches none of the other choices, their names or descriptions.' }] : [];
 
+  const chosen = new Map(), used = new Set(allCast.map(actor => actor.voice).filter(Boolean));
+  const decisionInput = { decisionConnection: decisionConnection || config.decisionConnection, jevApiKey: key, jevEndpoint: ep };
+  // Jev returns no voice description, so the Decision model describes each speaker before the community search.
+  const communityVoice = async (actor, npc) => {
+    const route = actor.route || config.defaultRoute || '', name = normalizeName(actor.speaker);
+    if (!config.communityRoutes?.[route] || (npc && config.npcPolicy && config.npcPolicy.mode !== 'llm')) return '';
+    if (!chosen.has(name)) {
+      const answers = await decide({ transcript }, {
+        gender: { type: 'choice', instructions: `Does ${actor.speaker} in this story have a feminine, masculine or neutral voice?`, criteria: { female: 'Feminine voice', male: 'Masculine voice', neutral: 'Neutral or androgynous voice' } },
+        age: { type: 'choice', instructions: `How old does ${actor.speaker} in this story sound?`, criteria: { young: 'Young', 'middle-aged': 'Middle-aged', old: 'Old' } },
+        language: { type: 'choice', instructions: 'Which language is this story written in?', criteria: FISH_LANGUAGES }
+      }, decisionInput, userId, signal);
+      const language = Object.hasOwn(FISH_LANGUAGES, answers?.language?.choice || '') ? answers.language.choice : 'en';
+      const voice = await chooseCommunityVoice({ speaker: actor.speaker, wish: voiceWish({ gender: answers?.gender?.choice, age: answers?.age?.choice }, actor.gender), language, used, input: decisionInput, userId, signal });
+      chosen.set(name, { ...voice, route });
+      used.add(voice.id);
+    }
+    return chosen.get(name).id;
+  };
+
   const dialogueUnits = units.filter(u => u.kind === 'dialogue');
   let speakerChoices = [];
   let emotionChoices = [];
@@ -240,7 +260,7 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
       rawSegments.push({
         unit_ids: [u.id],
         speaker: narrator?.speaker || 'Narrator',
-        voice: narrator?.voice || '',
+        voice: narrator?.voice || (narrator ? await communityVoice(narrator, false) : ''),
         style: '',
         route: narrator?.route || config.defaultRoute || '',
         gender: narrator?.gender || 'auto'
@@ -252,7 +272,7 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
       const npc=!config.fixed.some(a=>normalizeName(a.speaker)===normalizeName(chosenName));
       if(npc)actor=npcCastActor(actor,config);
       const style = dialogueEmotionMap.get(u.id) || '';
-      let voice = actor.voice || '';
+      let voice = actor.voice || await communityVoice(actor, npc);
       if (!voice && config.voices?.length) {
         const route = actor.route || config.defaultRoute || '';
         const match = config.voices.find(v => (v.route || '') === route && (!npc || config.npcPolicy?.mode!=='preferred' || config.npcPolicy.voices.includes(v.id)));
@@ -269,10 +289,10 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
     }
   }
 
-  const rawPlan = { segments: rawSegments };
-  const resolved = resolvePlanReferences(rawPlan, transcript, config);
-  const plan = validatePlan(resolved, transcript, config);
-  return plan;
+  const communityVoices = [...chosen.values()];
+  const voiced = { ...config, voices: [...config.voices, ...communityVoices.map(voice => ({ id: voice.id, name: voice.id, description: voice.description, route: voice.route }))] };
+  const plan = validatePlan(resolvePlanReferences({ segments: rawSegments }, transcript, voiced), transcript, voiced);
+  return communityVoices.length ? { ...plan, communityVoices } : plan;
 }
 
 if (typeof globalThis !== 'undefined') {
@@ -297,23 +317,27 @@ function textGenerationOptions(connection,parameters){
     : {parameters,reasoning:{source:'off'}};
 }
 
+const FISH_LANGUAGES = { en: 'English', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', es: 'Spanish', pt: 'Portuguese', fr: 'French', de: 'German', it: 'Italian', ru: 'Russian', ar: 'Arabic', nl: 'Dutch', pl: 'Polish' };
+
+// One Decision question set, answered by a Lumiverse Decision connection or a Jev key; no answers without either.
+async function decide(state, questions, input, userId, signal) {
+  return typeof spindle.decisions?.evaluate === 'function'
+    ? (await spindle.decisions.evaluate({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal })).answers
+    : input.jevApiKey?.trim() ? await jevDecision({ apiKey: input.jevApiKey, endpoint: input.jevEndpoint, state, questions, signal }) : {};
+}
+
 // Searches rank by words alone, so a Decision model picks the result that fits the story moment.
 // A slow or failed choice keeps the top result.
 async function chooseSound(choices, input, userId, signal, state, instructions) {
   const ids = choices.map((_, i) => `s${i}`);
   const questions = { q0: { type: 'choice', instructions, criteria: Object.fromEntries(choices.map((choice, i) => [ids[i], choice])) } };
-  const decide = async signal => {
-    const answers = typeof spindle.decisions?.evaluate === 'function'
-      ? (await spindle.decisions.evaluate({ userId, connection_id: input.decisionConnection || undefined, state, questions }, { signal })).answers
-      : input.jevApiKey?.trim() ? await jevDecision({ apiKey: input.jevApiKey, endpoint: input.jevEndpoint, state, questions, signal }) : {};
-    return Math.max(0, ids.indexOf(answers?.q0?.choice));
-  };
+  const pick = async signal => Math.max(0, ids.indexOf((await decide(state, questions, input, userId, signal))?.q0?.choice));
   // The choice is cancelled at 5 s or with the request, so a late answer never keeps spending.
   const decision = new AbortController(), stop = () => decision.abort();
   const stopped = new Promise(resolve => decision.signal.addEventListener('abort', () => resolve(0), { once: true }));
   signal.addEventListener('abort', stop, { once: true });
   const wait = setTimeout(stop, 5000);
-  try { return await Promise.race([decide(decision.signal), stopped]); }
+  try { return await Promise.race([pick(decision.signal), stopped]); }
   catch { return 0; }
   finally { clearTimeout(wait); signal.removeEventListener('abort', stop); }
 }
@@ -346,6 +370,65 @@ function loadMusicCatalog() {
     }).catch(error => { musicCatalogFailedAt = Date.now(); throw error; });
   }
   return musicCatalog;
+}
+
+// The Fish library ANDs its tags, so drop the last wanted tag until a search returns voices.
+export async function searchCommunityVoices({ gender, age, tags = [] }, language, used, signal) {
+  const wanted = [gender, age, ...tags].filter(Boolean);
+  for (let count = wanted.length; count >= 0; count--) {
+    const query = [['page_size', 30], ['sort_by', 'score'], ['language', language], ...wanted.slice(0, count).map(tag => ['tag', tag])]
+      .map(([name, value]) => `${name}=${encodeURIComponent(value)}`).join('&');
+    const response = await spindle.cors(`https://api.fish.audio/model?${query}`, { method: 'GET', headers: { 'Accept': 'application/json' } });
+    signal?.throwIfAborted();
+    if (response.status < 200 || response.status >= 300) throw new Error(`Fish community voice search HTTP ${response.status}.`);
+    const titles = new Set(), voices = [];
+    for (const item of JSON.parse(response.body)?.items || []) {
+      const title = normalizeName(item.title || item._id);
+      if (!item._id || used.has(item._id) || titles.has(title)) continue;
+      titles.add(title);
+      voices.push({ id: item._id, title: item.title || item._id, tags: Array.isArray(item.tags) ? item.tags.slice(0, 8) : [], description: String(item.description || '').slice(0, 300), languages: Array.isArray(item.languages) ? item.languages : [] });
+    }
+    if (voices.length) return voices.slice(0, 10);
+  }
+  throw new Error(`No Fish community voice found for language "${language}".`);
+}
+
+export async function chooseCommunityVoice({ speaker, wish, language, used, input = {}, userId, signal }) {
+  const voices = await searchCommunityVoices(wish, language, used, signal);
+  const wanted = [wish.gender, wish.age, ...wish.tags].filter(Boolean).join(', ') || 'any';
+  const pick = voices.length < 2 ? 0 : await chooseSound(voices.map(voice => `${voice.title} — ${voice.tags.join(', ')}; ${voice.description} (${voice.languages.join(', ')})`), input, userId, signal,
+    { character: speaker, voice: wanted }, `Cast a voice for the story character "${speaker}". Wanted voice: ${wanted}. Which voice fits this character best?`);
+  const voice = voices[pick];
+  return { id: voice.id, description: `${voice.title} — ${voice.tags.join(', ')}`.replace(/[|\r\n]+/g, ' ') };
+}
+
+const voiceWish = (value, gender) => ({
+  gender: ['female', 'male', 'neutral'].includes(gender) ? gender : ['female', 'male', 'neutral'].includes(value?.gender) ? value.gender : '',
+  age: ['young', 'middle-aged', 'old'].includes(value?.age) ? value.age : '',
+  tags: (Array.isArray(value?.tags) ? value.tags : []).filter(tag => typeof tag === 'string' && /^[a-z][a-z -]{1,30}$/i.test(tag.trim())).map(tag => tag.trim().toLowerCase()).slice(0, 4)
+});
+
+// Speakers needing a voice on a community route get one search each; the voices join the catalogue for validation.
+async function castCommunityVoices(raw, config, chosen, cast) {
+  const routes = config.communityRoutes;
+  if (!routes || !Array.isArray(raw?.segments)) return config;
+  const actors = [...config.fixed, ...config.npcs];
+  const keyOf = name => normalizeName(actors.find(actor => [actor.speaker, ...(actor.aliases || [])].some(alias => normalizeName(alias) === normalizeName(name)))?.speaker || name);
+  const language = /^[a-z]{2}/.exec(String(raw.language || '').toLowerCase())?.[0] || 'en';
+  const used = new Set([...actors.map(actor => actor.voice), ...[...chosen.values()].map(voice => voice.id)].filter(Boolean));
+  for (const segment of raw.segments) {
+    const key = keyOf(segment?.speaker);
+    if (!segment?.voiceSearch || chosen.has(key)) continue;
+    const actor = actors.find(item => normalizeName(item.speaker) === key), fixed = config.fixed.includes(actor);
+    if (actor?.voice || (!fixed && config.npcPolicy && config.npcPolicy.mode !== 'llm')) continue;
+    const route = actor ? actor.route || config.defaultRoute || '' : config.npcPolicy?.route || config.defaultRoute || '';
+    if (!routes[route]) continue;
+    const voice = await cast({ speaker: segment.speaker, wish: voiceWish(segment.voiceSearch, actor?.gender), language, used });
+    chosen.set(key, { ...voice, route });
+    used.add(voice.id);
+  }
+  for (const segment of raw.segments) if (chosen.has(keyOf(segment?.speaker))) segment.voice = chosen.get(keyOf(segment.speaker)).id;
+  return { ...config, voices: [...config.voices, ...[...chosen.values()].map(voice => ({ id: voice.id, name: voice.id, description: voice.description, route: voice.route }))] };
 }
 
 // Spindle supplies this global before importing the backend bundle.
@@ -500,7 +583,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       if(!connection?.model)throw new Error('Select a Planner LLM connection with a configured text-generation model.');
       let maxTokens=input.maxTokens ?? 8192;
       if(!Number.isInteger(maxTokens) || maxTokens<1024 || maxTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
-      let failure;
+      let failure;const communityVoices=new Map();
       for (let attempt=0;attempt<2;attempt++) {
         progress({stage:`Waiting for planner response (attempt ${attempt+1}/2)`,provider:connection.provider,model:connection.model});
         // Raw calls use the saved connection credentials without inheriting a chat preset's
@@ -526,9 +609,18 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         } else result=await spindle.generate.raw(request);
         if (controller.signal.aborted) return;
         progress({stage:'Validating planner response',provider:connection.provider,model:connection.model});
+        let raw;
+        try {raw=parsePlanJson(result.content);} catch (error) {raw=error;}
+        // Search failures stop planning; asking the LLM again would not fix them.
+        const config=raw instanceof Error?input.config:await castCommunityVoices(raw,input.config,communityVoices,async wanted=>{
+          progress({stage:`Searching Fish community voices for ${wanted.speaker}`});
+          return chooseCommunityVoice({...wanted,input,userId,signal:controller.signal});
+        });
+        if (controller.signal.aborted) return;
         try {
-          const plan = validatePlan(resolvePlanReferences(parsePlanJson(result.content),input.transcript,input.config),input.transcript,input.config);
-          send({result:{...plan,...(jevFailure?{warning:jevFailure.message}:{})}}); return;
+          if (raw instanceof Error) throw raw;
+          const plan = validatePlan(resolvePlanReferences(raw,input.transcript,config),input.transcript,config);
+          send({result:{...plan,...(communityVoices.size?{communityVoices:[...communityVoices.values()]}:{}),...(jevFailure?{warning:jevFailure.message}:{})}}); return;
         } catch (error) {
           const truncated=/length|max_tokens|max_output_tokens/i.test(result.finish_reason || '');
           failure = truncated ? new Error('The planner response was cut off by its output limit. Increase the planner output budget or plan a shorter reply.') : error;

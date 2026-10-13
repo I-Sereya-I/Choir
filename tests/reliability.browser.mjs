@@ -110,6 +110,11 @@ async function harness(mixerPreferences,mobile=false){
         else if(request.action==='gemini')result={base64:'AAABAA==',mimeType:'audio/L16;rate=24000'};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
         else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
+        else if(request.action==='plan' && state.communityVoice && request.input.config.communityRoutes){
+          const cast=request.input.config,voice={...state.communityVoice,route:'native:b'};
+          result={...validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Wait')?'Guard':'Mira',
+            voice:unit.kind==='narration'?'n':unit.text.includes('Wait')?'g':voice.id}))},request.input.transcript,{...cast,voices:[...cast.voices,voice]}),communityVoices:[voice]};
+        }
         else if(request.action==='plan' && state.planForCatalogue){
           const cast=request.input.config;
           result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>{
@@ -1697,6 +1702,30 @@ test('Fish automatic casting excludes foreign voice IDs and plays with the chose
    }
   }finally{await h.close();}
  }
+});
+
+test('Fish casting searches the community library by default, keeps the chosen voice in the cast and leaves My Fish voices unchanged',async()=>{
+ const ownId='0123456789abcdef0123456789abcdef',communityId='fedcba9876543210fedcba9876543210';
+ const h=await harness();try{
+  h.connections[1].provider='fish_audio';h.state.catalogues={b:{voices:[{id:ownId,name:'Client voice'}]}};
+  h.state.allowedVoices={a:['n','y','g'],b:[ownId,communityId]};h.state.planForCatalogue=true;
+  h.state.communityVoice={id:communityId,description:'Ana — female, young, soft'};
+  const saved=h.store.get('chat:chat-a');saved.fixed[2].voice='';h.store.set('chat:chat-a',saved);await h.reload();
+  assert.equal(h.$('fishVoiceSource').value,'community');assert.equal(h.$('fishVoiceSourceWrap').hidden,false);
+  await h.plan();
+  assert.deepEqual({...h.requests.find(request=>request.action==='plan').input.config.communityRoutes},{'native:b':'community'});
+  const chosen=()=>h.$('fixed').querySelectorAll('[data-choir-voice]')[2];
+  assert.equal(chosen().value,communityId);assert.match(chosen().selectedOptions[0].textContent,/Ana — female, young, soft/);
+  await h.play();assert.ok(h.synthesis.filter(request=>request.connectionId==='b').every(request=>request.voice===communityId));
+  await h.reload();assert.equal(chosen().value,communityId);assert.doesNotMatch(chosen().selectedOptions[0].textContent,/unavailable/);
+  assert.match(h.$('extraVoices').value,new RegExp(`${communityId} \\| Ana`));
+  h.$('fishVoiceSource').value='own';h.$('fishVoiceSource').dispatchEvent(new h.dom.window.Event('change'));
+  chosen().value='';chosen().dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  h.state.communityVoice={id:'00000000000000000000000000000000',description:'Unused'};h.message.content='A new dawn. "Hello again."';await h.plan();
+  const own=h.requests.filter(request=>request.action==='plan').at(-1).input.config;
+  assert.equal('communityRoutes' in own,false);assert.deepEqual(own.voices.filter(voice=>voice.route==='native:b').map(voice=>voice.id),[ownId,communityId]);
+  assert.equal(chosen().value,communityId);assert.doesNotMatch(h.$('extraVoices').value,/Unused/);
+ }finally{await h.close();}
 });
 
 test('GPT TTS retains unknown-gender choices, recovers built-in voices, and excludes saved Fish voices',async()=>{

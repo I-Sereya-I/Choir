@@ -555,3 +555,16 @@ test('rankMusic scores feels, genre, keywords and full-length tracks',()=>{
   assert.deepEqual(rankMusic(pieces,want,2).map(track=>track.title),['Sting','Woods']);
   assert.equal(rankMusic(pieces,{}).at(-1).title,'Sting');
 });
+
+test('Fish community routes ask the planner to describe new voices and hide that route\'s own catalogue; My Fish voices keep the old prompt',()=>{
+  const cast={voices:[{id:'own',route:'native:fish'},{id:'kept',route:'native:both'},{id:'Kore',route:'gemini'}],fixed:[{speaker:'Narrator',voice:'Kore',style:'',route:'gemini'}],npcs:[],defaultRoute:'native:fish'};
+  const own=plannerPrompt('Hello.',cast,'');
+  assert.doesNotMatch(own[0].content,/voiceSearch/);
+  assert.deepEqual(Object.keys(JSON.parse(own[1].content)),['fixedCast','existingNPCs','characterProfiles','availableVoices','defaultRoute','context','sourceUnits']);
+  const community=plannerPrompt('Hello.',{...cast,communityRoutes:{'native:fish':'community','native:both':'both'}},'');
+  assert.match(community[0].content,/"voiceSearch":\{"gender":"female\|male\|neutral","age":"young\|middle-aged\|old"/);
+  assert.match(community[0].content,/top-level "language" with the ISO 639-1 code/);
+  const data=JSON.parse(community[1].content);
+  assert.deepEqual(data.availableVoices.map(voice=>voice.id),['kept','Kore']);
+  assert.deepEqual(data.communityRoutes,{'native:fish':'community','native:both':'both'});
+});
