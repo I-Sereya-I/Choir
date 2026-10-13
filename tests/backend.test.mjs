@@ -5,6 +5,7 @@ import vm from 'node:vm';
 const bundle=readFileSync(new URL('../dist/backend.js',import.meta.url),'utf8');
 const manifest=JSON.parse(readFileSync(new URL('../spindle.json',import.meta.url),'utf8'));
 const config={voices:[{id:'Charon'},{id:'Kore'}],fixed:[{speaker:'Narrator',voice:'Charon',style:''}],npcs:[],useStyle:true};
+const castConfig={...config,fixed:[...config.fixed,{speaker:'Mira',voice:'Kore',style:''}]};
 test('Gemini accepts speech beyond the old 2000-character cap when it fits the input budget',async()=>{
   let calls=0;const h=await harness(null,async(url,options)=>{calls++;assert.equal(JSON.parse(options.body).contents[0].parts[0].text.length,3000);return {status:200,body:JSON.stringify({candidates:[{content:{parts:[{inlineData:{data:'YQ==',mimeType:'audio/wav'}}]}}]})};});
   h.send('gemini',{apiKey:'test-key',model:'gemini-3.8-flash-tts',segment:{text:'x'.repeat(3000),voice:'Kore',style:'Warm'}});
@@ -24,7 +25,7 @@ test('Jev proxy options are clone-safe and cancellation discards a late response
     options=input;assert.ok(!('signal' in input));structuredClone(input);
     return new Promise(resolve=>release=resolve);
   });
-  h.send('planJev',{transcript:'"Hello."',apiKey:'jev-secret',config:{...config,useStyle:false}});
+  h.send('planJev',{transcript:'"Hello."',apiKey:'jev-secret',config:{...castConfig,useStyle:false}});
   await new Promise(resolve=>setTimeout(resolve,0));assert.ok(options);
   h.send('cancel',{});release({status:200,body:JSON.stringify({answers:{q0:{choice:'Narrator'}}})});
   await new Promise(resolve=>setTimeout(resolve,10));
@@ -100,7 +101,7 @@ test('Freesound keeps its top result without a story moment or Decision model an
 test('Jev errors stop by default and never bill the LLM',async()=>{
   let calls=0;
   const h=await harness(async()=>{calls++;throw Error('Unexpected LLM');},async()=>{throw Error('The object cannot be cloned');});
-  h.send('plan',{transcript:'"Hello."',config:{...config,useJev:true,jevApiKey:'secret'}});
+  h.send('plan',{transcript:'"Hello."',config:{...castConfig,useJev:true,jevApiKey:'secret'}});
   assert.match((await h.result()).message.error,/Jev classification failed: The object cannot be cloned/);
   assert.equal(calls,0);
   const missing=await harness(async()=>{calls++;});
@@ -143,7 +144,7 @@ test('LLM voice selection receives character profiles and catalogue descriptions
 
 test('an opted-in failed LLM fallback retains both provider errors',async()=>{
   const h=await harness(async()=>{throw Error('LLM quota exceeded');},async()=>({status:429,body:'Jev quota exhausted'}));
-  h.send('plan',{transcript:'"Hello."',config:{...config,useJev:true,jevApiKey:'secret',allowLlmFallback:true}});
+  h.send('plan',{transcript:'"Hello."',config:{...castConfig,useJev:true,jevApiKey:'secret',allowLlmFallback:true}});
   const error=(await h.result()).message.error;
   assert.match(error,/Jev classification HTTP 429: Jev quota exhausted/);assert.match(error,/LLM quota exceeded/);
 });
@@ -151,7 +152,7 @@ test('an opted-in failed LLM fallback retains both provider errors',async()=>{
 test('unknown or missing Jev classifications fail rather than attributing to the first character',async()=>{
   for(const choices of [[],['Unknown']]){
     const h=await harness(null,async()=>({status:200,body:JSON.stringify({choices})}));
-    h.send('planJev',{transcript:'"Hello."',apiKey:'secret',config});
+    h.send('planJev',{transcript:'"Hello."',apiKey:'secret',config:castConfig});
     assert.match((await h.result()).message.error,/incomplete or unknown/);
   }
 });
@@ -546,8 +547,8 @@ test('planWithJev classifies dialogue speakers and emotion tags into valid speec
     assert.ok(plan.segments);
     assert.equal(calls.length, 2);
     assert.ok(calls.every(call => call.url === 'https://api.typesafe.ai/v1/systemone' && call.body.model === 'jev-latest'));
-    // Persona must be excluded from candidate choices
-    assert.deepEqual(Object.keys(calls[0].body.questions.q0.criteria), ['Alice', 'Bob']);
+    // The persona speaks in replies too, and a speaker outside the cast has its own choice.
+    assert.deepEqual(Object.keys(calls[0].body.questions.q0.criteria), ['Persona', 'Alice', 'Bob', 'Someone not listed']);
     assert.equal(calls[0].body.questions.q0.instructions, 'Which character speaks this dialogue: ""Good morning!""?');
     assert.deepEqual(Object.keys(calls[1].body.questions.q1.criteria), ['neutral', 'cheerful', 'whispering', 'angry', 'sad', 'sigh']);
 
@@ -687,7 +688,7 @@ test('action plan uses explicitly enabled LLM fallback and retains the Jev diagn
   };
   const jevConfig = {
     voices: [{ id: 'Charon' }],
-    fixed: [{ speaker: 'Narrator', voice: 'Charon', style: '' }],
+    fixed: [{ speaker: 'Narrator', voice: 'Charon', style: '' }, { speaker: 'Hero', voice: 'Charon', style: '' }],
     npcs: [],
     useStyle: true,
     useJev: true,
@@ -749,6 +750,98 @@ test('Jev with spindle.decisions asks about each line in place and sends the who
   assert.match(evalInput.questions.speaker_0.instructions,/Alice looked up\. \[\["Robots\?"\]\] Bob shrugged/);
   assert.match(evalInput.questions.speaker_1.instructions,/Bob shrugged\. \[\["Robots\."\]\]/);
   assert.deepEqual([...result.message.result.segments.filter(s=>s.speaker!=='Narrator').map(s=>s.speaker)],['Alice','Bob']);
+});
+
+// The user's chat: a scenario card whose title fills the character slot, an unresolved "Persona" placeholder and a class of NPCs.
+const scenarioCast = {
+  voices: [{ id: 'narrator' }, { id: 'jay' }, { id: 'saki' }, { id: 'student-1' }, { id: 'student-2' }],
+  fixed: [
+    { speaker: 'Narrator', voice: 'narrator', style: '' },
+    { speaker: 'Persona', voice: 'jay', style: '' },
+    { speaker: 'Metamorphosis: Just the Way You Are!', voice: 'saki', style: '' }
+  ],
+  npcs: [{ speaker: 'Student 1', voice: 'student-1', style: '' }, { speaker: 'Student 2', voice: 'student-2', style: '', aliases: ['Kenta'] }],
+  characterProfiles: [
+    { speaker: 'Metamorphosis: Just the Way You Are!', name: 'Metamorphosis: Just the Way You Are!', role: 'character', description: '', personality: '', scenario: '', firstMessage: 'April 6, 2015. Among the kids celebrating, Saki stood far off to the outside.' },
+    { speaker: 'Persona', name: 'Jay', role: 'persona', description: 'A Japanese young man with straight black hair.', personality: '' }
+  ],
+  useStyle: false
+};
+const scenarioTranscript = 'Jay unhooked the receiver. "Hello?" Saki flinched. "We should pack up."';
+
+test('Jev offers the persona and a scenario card by who they are, with profiles in the state, on both Jev paths', async () => {
+  const expected = {
+    Persona: "Persona (also called Jay): the user's own character (persona).",
+    'Metamorphosis: Just the Way You Are!': "Metamorphosis: Just the Way You Are!: the character card's main character. If this name is a story or scenario title, it is the lead character that story is about.",
+    'Student 1': 'Student 1: a supporting character.',
+    'Student 2': 'Student 2 (also called Kenta): a supporting character.',
+    'Someone not listed': 'A speaker who matches none of the other choices, their names or descriptions.'
+  };
+  const checkState = characters => {
+    assert.deepEqual([...characters.map(c => c.name)], ['Persona', 'Metamorphosis: Just the Way You Are!', 'Student 1', 'Student 2']);
+    assert.match(characters[0].about, /straight black hair/);
+    assert.match(characters[1].about, /Saki stood far off/);
+  };
+  let evalInput;
+  const decisions = { evaluate: async input => { evalInput = input; return { answers: { speaker_0: { choice: 'Persona' }, speaker_1: { choice: 'Metamorphosis: Just the Way You Are!' } } }; } };
+  const h = await harness(null, null, null, null, null, decisions);
+  h.send('planJev', { transcript: scenarioTranscript, context: 'Saki: "Thanks for today."', config: scenarioCast });
+  const decided = (await h.result()).message.result;
+  assert.deepEqual({ ...evalInput.questions.speaker_0.criteria }, expected);
+  assert.equal(evalInput.state.context, 'Saki: "Thanks for today."');
+  checkState(evalInput.state.characters);
+  assert.deepEqual([...decided.segments.filter(s => s.speaker !== 'Narrator').map(s => `${s.speaker}:${s.voice}`)], ['Persona:jay', 'Metamorphosis: Just the Way You Are!:saki']);
+
+  let body;
+  const direct = await harness(null, async (url, options) => {
+    body = JSON.parse(options.body);
+    return { status: 200, body: JSON.stringify({ answers: { q0: { choice: 'Persona' }, q1: { choice: 'Metamorphosis: Just the Way You Are!' } } }) };
+  });
+  direct.send('planJev', { transcript: scenarioTranscript, context: 'Saki: "Thanks for today."', apiKey: 'jev-key', config: scenarioCast });
+  const classified = (await direct.result()).message.result;
+  assert.deepEqual(body.questions.q0.criteria, expected);
+  checkState(body.state.characters);
+  assert.match(body.state.lines[1].context, /Thanks for today[\s\S]*pack up/);
+  assert.deepEqual([...classified.segments.map(s => s.speaker)], [...decided.segments.map(s => s.speaker)]);
+});
+
+test('a card voicing several characters keeps its lead and its named NPCs apart', async () => {
+  const cast = { voices: [{ id: 'n' }, { id: 'saki' }, { id: 'kanade' }], useStyle: false,
+    fixed: [{ speaker: 'Narrator', voice: 'n', style: '' }, { speaker: 'Saki & Kanade', voice: 'saki', style: '', aliases: ['Saki'] }],
+    npcs: [{ speaker: 'Kanade', voice: 'kanade', style: '', aliases: ['Kana'] }],
+    characterProfiles: [{ speaker: 'Saki & Kanade', name: 'Saki & Kanade', role: 'character', description: 'Saki is shy. Her sister Kanade is loud.', personality: '' }] };
+  let evalInput;
+  const decisions = { evaluate: async input => { evalInput = input; return { answers: { speaker_0: { choice: 'Saki & Kanade' }, speaker_1: { choice: 'Kanade' } } }; } };
+  const h = await harness(null, null, null, null, null, decisions);
+  h.send('planJev', { transcript: '"Um, hi," Saki said. "Speak up!" Kanade laughed.', config: cast });
+  const plan = (await h.result()).message.result;
+  assert.deepEqual(Object.keys(evalInput.questions.speaker_0.criteria), ['Saki & Kanade', 'Kanade', 'Someone not listed']);
+  assert.match(evalInput.questions.speaker_0.criteria['Saki & Kanade'], /also called Saki/);
+  assert.match(evalInput.questions.speaker_0.criteria.Kanade, /also called Kana/);
+  assert.deepEqual([...plan.segments.filter(s => s.speaker !== 'Narrator').map(s => s.voice)], ['saki', 'kanade']);
+});
+
+test('dialogue from someone not in the cast goes to the enabled LLM fallback, otherwise to a separate NPC', async () => {
+  const answer = async () => ({ status: 200, body: JSON.stringify({ answers: { q0: { choice: 'Someone not listed' } } }) });
+  let llmCalls = 0;
+  const fallback = await harness(async () => { llmCalls++; return { content: JSON.stringify({ segments: [{ speaker: 'Narrator', unit_ids: [0] }, { speaker: 'Clerk', voice: 'Charon', unit_ids: [1] }] }) }; }, answer);
+  fallback.send('plan', { transcript: 'The clerk droned. "Seven hundred change."', config: { ...castConfig, useStyle: false, useJev: true, jevApiKey: 'jev-key', allowLlmFallback: true } });
+  const planned = (await fallback.result()).message.result;
+  assert.equal(llmCalls, 1);
+  assert.match(planned.warning, /not in the cast/);
+  assert.equal(planned.segments[1].speaker, 'Clerk');
+
+  const separate = await harness(() => { throw Error('No LLM fallback'); }, answer);
+  separate.send('planJev', { transcript: 'The clerk droned. "Seven hundred change."', apiKey: 'jev-key', config: { ...castConfig, useStyle: false } });
+  const plan = (await separate.result()).message.result;
+  assert.equal(plan.segments[1].speaker, 'Unknown speaker');
+  assert.deepEqual([...plan.npcs.map(npc => npc.speaker)], ['Unknown speaker']);
+
+  let requests = 0;
+  const narratorOnly = await harness(null, async () => { requests++; throw Error('Unexpected Jev request'); });
+  narratorOnly.send('planJev', { transcript: '"Hello."', apiKey: 'jev-key', config: { ...config, useStyle: false } });
+  assert.equal((await narratorOnly.result()).message.result.segments[0].speaker, 'Unknown speaker');
+  assert.equal(requests, 0);
 });
 
 test('testPlanner with Jev and spindle.decisions passes userId to evaluate',async()=>{

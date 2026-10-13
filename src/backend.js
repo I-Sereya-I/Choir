@@ -57,7 +57,7 @@ async function jevDecision({ apiKey, endpoint, state, questions, signal }) {
   return data?.answers || {};
 }
 
-export async function classifyWithJev({ items = [], candidates = [], apiKey, endpoint, signal, question = 'Which choice fits this text' } = {}) {
+export async function classifyWithJev({ items = [], candidates = [], apiKey, endpoint, signal, question = 'Which choice fits this text', characters } = {}) {
   if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
     throw new Error('Enter a Jev API key for classification.');
   }
@@ -72,12 +72,12 @@ export async function classifyWithJev({ items = [], candidates = [], apiKey, end
     context: typeof it?.context === 'string' ? it.context : String(it?.context || '')
   }));
   const choices = candidates.map(c => typeof c === 'string' ? c : String(c.name || c.speaker || c));
-  const criteria = Object.fromEntries(choices.map(choice => [choice, choice]));
+  const criteria = Object.fromEntries(candidates.map((c, i) => [choices[i], typeof c === 'string' ? c : c.description || choices[i]]));
   const questions = Object.fromEntries(inputs.map((input, i) => [`q${i}`, { type: 'choice', instructions: `${question}: "${input.text}"?`, criteria }]));
 
   let answers;
   try {
-    answers = await jevDecision({ apiKey, endpoint, state: inputs, questions, signal });
+    answers = await jevDecision({ apiKey, endpoint, state: characters ? { characters, lines: inputs } : inputs, questions, signal });
   } catch (err) {
     if (signal?.aborted) throw err;
     throw new Error(`Jev classification failed: ${err.message}`, {cause:err});
@@ -87,6 +87,26 @@ export async function classifyWithJev({ items = [], candidates = [], apiKey, end
     throw new Error('Jev returned incomplete or unknown classification choices.');
   }
   return result;
+}
+
+export const UNLISTED_SPEAKER = 'Someone not listed';
+
+// Jev sees only the passage, the state and these choices. Cast labels can be placeholders ("Persona") or a
+// scenario card's title, so each choice names who the speaker is and the state carries their profile.
+export function jevSpeakerCast(config) {
+  const profiles = config.characterProfiles || [], cast = new Map();
+  for (const actor of [...config.fixed, ...config.npcs]) {
+    const name = String(actor.speaker || '').trim(), key = normalizeName(name);
+    if (!name || key === 'narrator' || cast.has(key)) continue;
+    const profile = profiles.find(p => normalizeName(p.speaker) === key);
+    const role = profile?.role === 'persona' ? "the user's own character (persona)"
+      : profile?.role === 'character' ? "the character card's main character. If this name is a story or scenario title, it is the lead character that story is about"
+      : config.fixed.includes(actor) ? 'a main character' : 'a supporting character';
+    const names = [...new Set([profile?.name, ...(actor.aliases || [])].filter(other => other?.trim() && normalizeName(other) !== key))];
+    const about = [profile?.description, profile?.personality, profile?.scenario, profile?.firstMessage].filter(text => text?.trim()).join('\n').slice(0, 1500);
+    cast.set(key, { name, description: `${name}${names.length ? ` (also called ${names.join(', ')})` : ''}: ${role}.`, ...(about ? { about } : {}) });
+  }
+  return [...cast.values()];
 }
 
 export async function planWithJev({ transcript, config, apiKey, endpoint, context = '', decisionConnection, signal, userId } = {}) {
@@ -107,25 +127,11 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
   if (!units || !units.length) throw new Error('No speech units found in transcript.');
 
   const allCast = [...(config.fixed || []), ...(config.npcs || [])];
-  const listenerNorm = typeof config.listener === 'string' && config.listener.trim()
-    ? normalizeName(config.listener)
-    : (config.listener === false ? null : 'persona');
-
-  const candidates = [];
-  for (const actor of allCast) {
-    const name = (actor.speaker || actor.name || '').trim();
-    if (!name) continue;
-    const norm = normalizeName(name);
-    if (norm === 'narrator') continue;
-    if (listenerNorm && norm === listenerNorm) continue;
-    if (!candidates.includes(name)) candidates.push(name);
-  }
-  if (candidates.length === 0) {
-    const narrator = config.fixed?.find(a => normalizeName(a.speaker) === 'narrator');
-    if (narrator?.speaker) candidates.push(narrator.speaker);
-    else if (allCast[0]?.speaker) candidates.push(allCast[0].speaker);
-    else candidates.push('Narrator');
-  }
+  const narrator = config.fixed?.find(a => normalizeName(a.speaker) === 'narrator');
+  // The persona speaks in replies too, so every named cast member is a choice. A line from someone outside the
+  // cast gets its own answer instead of borrowing a listed character's voice.
+  const cast = jevSpeakerCast(config);
+  const choices = cast.length ? [...cast, { name: UNLISTED_SPEAKER, description: 'A speaker who matches none of the other choices, their names or descriptions.' }] : [];
 
   const dialogueUnits = units.filter(u => u.kind === 'dialogue');
   let speakerChoices = [];
@@ -136,10 +142,9 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
       const questions = {};
       // Each question carries its line in place: a bare quote such as "Robots?" cannot be attributed on its own.
       const passage = u => `${transcript.slice(Math.max(0, u.start - 300), u.start)}[[${u.text}]]${transcript.slice(u.end, u.end + 300)}`;
+      const criteria = Object.fromEntries(choices.map(c => [c.name, c.description]));
       dialogueUnits.forEach((u, i) => {
-        if (candidates.length >= 2) {
-          const criteria = {};
-          for (const c of candidates) criteria[c] = c;
+        if (choices.length) {
           questions[`speaker_${i}`] = {
             type: 'choice',
             instructions: `Which character speaks the line marked [[ ]] in this passage: "${passage(u)}"?`,
@@ -167,41 +172,35 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
           connection_id: decisionConnection || config.decisionConnection || undefined,
           state: {
             transcript,
-            characters: candidates
+            ...(context ? { context } : {}),
+            characters: cast
           },
           questions
         }, { signal });
         for (let i = 0; i < dialogueUnits.length; i++) {
-          if (candidates.length >= 2) {
-            speakerChoices[i] = evalResult.answers?.[`speaker_${i}`]?.choice || candidates[0];
-          } else {
-            speakerChoices[i] = candidates[0];
-          }
+          speakerChoices[i] = evalResult.answers?.[`speaker_${i}`]?.choice || UNLISTED_SPEAKER;
           if (config.useStyle !== false) {
             emotionChoices[i] = evalResult.answers?.[`emotion_${i}`]?.choice || 'neutral';
           }
         }
       } else {
-        speakerChoices = dialogueUnits.map(() => candidates[0]);
+        speakerChoices = dialogueUnits.map(() => UNLISTED_SPEAKER);
       }
     } else {
       const items = dialogueUnits.map(u => {
-        const contextStart = Math.max(0, u.start - 300);
-        const contextEnd = Math.min(transcript.length, u.end + 300);
-        const localContext = transcript.slice(contextStart, contextEnd);
-        const castAliases=allCast.filter(actor=>actor.aliases?.length).map(actor=>`${actor.speaker}: ${(actor.aliases || []).join(', ')}`).join('; ');
-        const fullContext = [castAliases?`Character aliases: ${castAliases}`:'',context.slice(-1000),localContext].filter(Boolean).join('\n');
-        return { text: u.text, context: fullContext };
+        const localContext = transcript.slice(Math.max(0, u.start - 300), Math.min(transcript.length, u.end + 300));
+        return { text: u.text, context: [context.slice(-1000), localContext].filter(Boolean).join('\n') };
       });
 
-      speakerChoices = await classifyWithJev({
+      speakerChoices = choices.length ? await classifyWithJev({
         items,
-        candidates,
+        candidates: choices,
+        characters: cast,
         apiKey: key,
         endpoint: ep,
         signal,
         question: 'Which character speaks this dialogue'
-      });
+      }) : dialogueUnits.map(() => UNLISTED_SPEAKER);
 
       if (config.useStyle !== false) {
         const emotions = ["neutral", "cheerful", "whispering", "angry", "sad", "sigh"];
@@ -221,19 +220,20 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
       }
     }
   }
+  // The LLM planner can name and cast a new speaker; without it the line keeps a separate NPC voice.
+  if (config.allowLlmFallback === true && speakerChoices.includes(UNLISTED_SPEAKER)) throw new Error('Jev found dialogue from someone who is not in the cast.');
 
   const dialogueSpeakerMap = new Map();
   const dialogueEmotionMap = new Map();
   for (let i = 0; i < dialogueUnits.length; i++) {
     const u = dialogueUnits[i];
-    dialogueSpeakerMap.set(u.id, speakerChoices[i] || candidates[0]);
+    dialogueSpeakerMap.set(u.id, speakerChoices[i] === UNLISTED_SPEAKER ? 'Unknown speaker' : speakerChoices[i]);
     const emotion = emotionChoices[i];
     if (emotion && emotion.toLowerCase() !== 'neutral') {
       dialogueEmotionMap.set(u.id, emotion);
     }
   }
 
-  const narrator = config.fixed?.find(a => normalizeName(a.speaker) === 'narrator');
   const rawSegments = [];
   for (const u of units) {
     if (u.kind === 'narration') {
@@ -246,7 +246,7 @@ export async function planWithJev({ transcript, config, apiKey, endpoint, contex
         gender: narrator?.gender || 'auto'
       });
     } else {
-      const chosenName = dialogueSpeakerMap.get(u.id) || candidates[0] || 'Narrator';
+      const chosenName = dialogueSpeakerMap.get(u.id);
       let actor = allCast.find(a => normalizeName(a.speaker) === normalizeName(chosenName))
         || { speaker: chosenName, voice: '', style: '', gender: 'auto' };
       const npc=!config.fixed.some(a=>normalizeName(a.speaker)===normalizeName(chosenName));
