@@ -110,7 +110,7 @@ export async function setup(ctx) {
     .ensemble-tts .et-message{display:flex;gap:10px;align-items:center;justify-content:space-between}
     .ensemble-tts .et-btn-group{display:flex;gap:6px;align-items:center}
     .choir-mixer[hidden],.choir-mixer.cm-hidden{display:none !important}
-    .choir-mixer{--cm-accent:#c4b5fd;--cm-muted:#a6afc2;--cm-line:#ffffff12;position:fixed;z-index:10000;display:flex;flex-direction:column;box-sizing:border-box;max-width:calc(100vw - 24px);max-height:min(560px,calc(100dvh - 24px));overflow:hidden;background:linear-gradient(150deg,#1d2435,#121824 65%);color:#f1f3fa;border:1px solid #ffffff1c;box-shadow:0 16px 48px #0007,0 2px 8px #0004;font:13px/1.4 system-ui,sans-serif;color-scheme:dark;isolation:isolate}
+    .choir-mixer{--cm-accent:#c4b5fd;--cm-muted:#a6afc2;--cm-line:#ffffff12;position:fixed;z-index:10000;display:flex;flex-direction:column;box-sizing:border-box;max-width:calc(100vw - 24px);max-height:min(640px,calc(100dvh - 24px));overflow:hidden;background:linear-gradient(150deg,#1d2435,#121824 65%);color:#f1f3fa;border:1px solid #ffffff1c;box-shadow:0 16px 48px #0007,0 2px 8px #0004;font:13px/1.4 system-ui,sans-serif;color-scheme:dark;isolation:isolate}
     .choir-mixer *{box-sizing:border-box}
     .choir-mixer button{appearance:none;cursor:pointer;border:0;background:transparent;color:inherit;padding:0;font:inherit;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;transition:background .15s,color .15s}
     .choir-mixer button:hover:not(:disabled){background:#ffffff10}
@@ -148,55 +148,56 @@ export async function setup(ctx) {
     .choir-mixer .cm-seek{display:flex;align-items:center;gap:9px;width:100%;font:10px/1.4 system-ui,sans-serif;color:var(--cm-muted);font-variant-numeric:tabular-nums}
     .choir-mixer .cm-seek input{flex:1}
     .choir-mixer .cm-seek span{white-space:nowrap}
-    .choir-mixer .cm-master{display:grid;grid-template-columns:auto minmax(0,1fr) 34px;align-items:center;gap:10px;margin:0;padding:10px 14px;color:#cad2e1;font-size:11px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
-    .choir-mixer .cm-auto-plan{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:8px 14px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
-    .choir-mixer .cm-auto-plan button{padding:5px 8px;border:1px solid #ffffff25;border-radius:7px;font-size:11px}
-    .choir-mixer .cm-auto-plan button[aria-pressed="true"]{background:#c4b5fd20;color:var(--cm-accent)}
+    .choir-mixer .cm-master{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:10px;margin:0;padding:8px 14px;color:#cad2e1;font-size:11px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
+    .choir-mixer .cm-master .cm-percent,.choir-mixer .cm-channel-head .cm-percent{display:none}
+    .choir-mixer .cm-auto-plan{display:flex;flex-wrap:wrap;gap:4px;padding:6px 8px;border-bottom:1px solid var(--cm-line);flex-shrink:0}
+    .choir-mixer .cm-auto-plan button{flex:1 0 auto;min-height:26px;padding:4px 5px;border:1px solid #ffffff18;border-radius:6px;font-size:11px;color:var(--cm-muted);background:#ffffff04;white-space:nowrap}
+    .choir-mixer .cm-auto-plan button[aria-pressed="true"]{background:#3fb95024;border-color:#3fb95065;color:#a7e8c0}
     .choir-mixer .cm-percent{font-size:10px;text-align:right;font-variant-numeric:tabular-nums;color:var(--cm-muted)}
     .choir-mixer .cm-levels,.choir-mixer .cm-levels-body{display:flex;flex-direction:column;min-height:0}
+    .choir-mixer .cm-levels-body{overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
     .choir-mixer .cm-channels-title{display:flex;align-items:center;gap:7px;width:100%;padding:10px 14px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;text-align:left;color:var(--cm-muted);flex-shrink:0}
     .choir-mixer .cm-channels-title span:last-child{margin-left:auto}
-    .choir-mixer .cm-channels{overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#ffffff25 transparent;padding:0 8px;min-height:0}
-    .choir-mixer .cm-channel-tabs{position:relative;display:flex;align-items:center;gap:6px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;padding:3px 10px 7px;flex-shrink:0;min-width:0}
-    .choir-mixer .cm-channel-tab{min-width:44px;max-width:140px;min-height:44px;padding:6px 10px;border:1px solid #ffffff25;border-radius:8px;font-size:12px;white-space:nowrap;flex-shrink:0}
+    .choir-mixer .cm-channels{padding:0 8px;min-height:0;flex-shrink:0}
+    .choir-mixer .cm-channel-tabs{position:sticky;top:0;z-index:1;background:#171d2b;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:3px 8px 7px;flex-shrink:0;min-width:0}
+    .choir-mixer .cm-channel-tab{min-width:0;min-height:32px;padding:6px 4px;border:1px solid #ffffff25;border-radius:7px;font-size:11px;white-space:nowrap}
     .choir-mixer .cm-channel-tab span{overflow:hidden;text-overflow:ellipsis}
     .choir-mixer .cm-channel-tab[aria-selected="true"]{background:#c4b5fd20;border-color:#c4b5fd70;color:var(--cm-accent)}
-    .choir-mixer[data-channel-tabs="true"] .cm-channel{border:0;padding-bottom:10px}
-    .choir-mixer[data-channel-tabs="true"] .cm-levels-body{overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
-    .choir-mixer[data-channel-tabs="true"] .cm-channels{overflow:visible;flex-shrink:0}
-    .choir-mixer[data-channel-tabs="true"] .cm-master{padding-top:6px;padding-bottom:6px}
-    .choir-mixer[data-channel-tabs="true"] .cm-auto-plan{padding-top:6px;padding-bottom:6px}
-    .choir-mixer[data-channel-tabs="true"] .cm-channel-tabs{padding-top:1px;padding-bottom:3px}
-    .choir-mixer[data-channel-tabs="true"] .cm-legend{padding-top:6px;padding-bottom:7px}
     .choir-mixer .cm-empty{margin:0;padding:12px 6px;color:var(--cm-muted);font-size:11px}
     .choir-mixer .cm-channel{padding:6px;border-bottom:1px solid var(--cm-line);border-radius:8px;min-width:0}
     .choir-mixer .cm-channel:last-child{border-bottom:0}
     .choir-mixer .cm-channel[aria-current="true"]{background:#c4b5fd0c}
-    .choir-mixer .cm-channel-head{display:flex;align-items:center;gap:7px;margin-bottom:5px;min-width:0}
+    .choir-mixer .cm-channel-head{display:flex;align-items:center;gap:7px;margin-bottom:4px;min-width:0}
     .choir-mixer .cm-channel-dot{width:5px;height:5px;border-radius:50%;background:#566177;flex-shrink:0}
     .choir-mixer .cm-channel[aria-current="true"] .cm-channel-dot{background:var(--cm-accent);box-shadow:0 0 0 3px #c4b5fd15}
     .choir-mixer .cm-channel-name{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
     .choir-mixer .cm-channel[data-no-voice="true"] .cm-channel-name{color:var(--cm-muted)}
-    .choir-mixer .cm-channel-controls{display:grid;grid-template-columns:minmax(0,1fr) 28px 28px;align-items:center;gap:7px}
-    .choir-mixer .cm-channel[data-kind="sfx"] .cm-channel-controls,.choir-mixer .cm-channel[data-kind="ambience"] .cm-channel-controls,.choir-mixer .cm-channel[data-kind="music"] .cm-channel-controls{grid-template-columns:minmax(0,1fr)}
-    .choir-mixer .cm-toggle{height:26px;border:1px solid #ffffff16;border-radius:7px;background:#ffffff04;font-size:10px;font-weight:500;color:#aeb8cc;white-space:nowrap}
+    .choir-mixer .cm-channel[data-enabled="false"] .cm-channel-name{color:var(--cm-muted)}
+    .choir-mixer .cm-channel-controls{display:grid;grid-template-columns:minmax(0,1fr);align-items:center}
+    .choir-mixer .cm-toggle{width:32px;height:32px;border:1px solid #ffffff16;border-radius:7px;background:#ffffff04;font-size:10px;font-weight:500;color:#aeb8cc;white-space:nowrap}
     .choir-mixer .cm-toggle svg{width:16px;height:16px}
-    .choir-mixer .cm-volume{min-width:0}
-    .choir-mixer .cm-volume-steps{display:none;grid-template-columns:44px minmax(0,1fr) 44px;align-items:center;gap:4px;min-width:0}
+    .choir-mixer .cm-volume{display:grid;grid-template-columns:minmax(0,1fr) 72px;align-items:center;gap:10px;min-width:0}
+    .choir-mixer .cm-volume-steps{display:grid;grid-template-columns:minmax(0,1fr);align-items:center;gap:4px;min-width:0}
     .choir-mixer .cm-volume-steps button{height:44px;border:1px solid #ffffff25;border-radius:8px;background:#ffffff04;font-size:22px}
-    .choir-mixer .cm-volume-entry{display:flex;align-items:center;gap:2px;min-width:0;border:1px solid #ffffff25;border-radius:8px;background:#ffffff04;height:44px;padding:0 5px}
-    .choir-mixer .cm-volume-entry input{appearance:textfield;min-width:0;width:100%;height:100%;padding:0;border:0;background:transparent;color:inherit;text-align:center;font:16px system-ui;outline-offset:0}
+    .choir-mixer .cm-volume-steps>button{display:none}
+    .choir-mixer .cm-volume-entry{display:flex;align-items:center;gap:2px;min-width:0;border:1px solid #ffffff25;border-radius:8px;background:#ffffff04;height:36px;padding:0 6px}
+    .choir-mixer .cm-volume-entry input{appearance:textfield;min-width:0;width:100%;height:100%;padding:0;border:0;background:transparent;color:inherit;text-align:center;font:13px system-ui;outline-offset:0}
     .choir-mixer .cm-volume-entry input::-webkit-inner-spin-button,.choir-mixer .cm-volume-entry input::-webkit-outer-spin-button{appearance:none;margin:0}
     .choir-mixer .cm-volume-entry span{font-size:11px;color:var(--cm-muted)}
     .choir-mixer .cm-toggle[data-kind="silent"][aria-pressed="true"]{background:#f3cb841c;border-color:#f3cb8440;color:#f3cb84}
     .choir-mixer .cm-toggle[data-kind="no-voice"][aria-pressed="true"]{background:#c4b5fd1c;border-color:#c4b5fd40;color:#d0c3ff}
     .choir-mixer .cm-legend{display:block;padding:9px 14px 11px;margin:0;font-size:10px;color:var(--cm-muted);border-top:1px solid var(--cm-line);flex-shrink:0}
     .choir-mixer .cm-legend span{display:flex;align-items:center;gap:5px}.choir-mixer .cm-legend svg{width:13px;height:13px}
-    .choir-mixer input[type="range"]{appearance:none;-webkit-appearance:none;display:block;width:100%;min-width:0;height:20px;margin:0;padding:0;border:0;border-radius:0;background:transparent;cursor:pointer;--choir-level:100%;--cm-track:linear-gradient(to right,var(--cm-accent) 0%,var(--cm-accent) var(--choir-level),#ffffff14 var(--choir-level),#ffffff14 100%)}
-    .choir-mixer input[type="range"]::-webkit-slider-runnable-track{height:3px;border-radius:4px;background:var(--cm-track)}
-    .choir-mixer input[type="range"]::-moz-range-track{height:3px;border-radius:4px;background:var(--cm-track)}
-    .choir-mixer input[type="range"]::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:10px;height:10px;border-radius:50%;margin-top:-3.5px;border:0;background:var(--cm-accent);box-shadow:0 0 0 2px #171d2b}
-    .choir-mixer input[type="range"]::-moz-range-thumb{width:10px;height:10px;border-radius:50%;border:0;background:var(--cm-accent);box-shadow:0 0 0 2px #171d2b}
+    .choir-mixer input[type="range"]{appearance:none;-webkit-appearance:none;display:block;width:100%;min-width:0;height:36px;margin:0;padding:0;border:0;border-radius:0;background:transparent;cursor:pointer;--choir-level:100%;--cm-track:linear-gradient(to right,var(--cm-accent) 0%,var(--cm-accent) var(--choir-level),#ffffff24 var(--choir-level),#ffffff24 100%)}
+    .choir-mixer input[type="range"]::-webkit-slider-runnable-track{height:6px;border-radius:4px;background:var(--cm-track)}
+    .choir-mixer input[type="range"]::-moz-range-track{height:6px;border-radius:4px;background:var(--cm-track)}
+    .choir-mixer input[type="range"]::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;box-sizing:border-box;width:20px;height:20px;border-radius:50%;margin-top:-7px;border:2px solid #eee9ff;background:var(--cm-accent);box-shadow:0 2px 6px #0006}
+    .choir-mixer input[type="range"]::-moz-range-thumb{box-sizing:border-box;width:20px;height:20px;border-radius:50%;border:2px solid #eee9ff;background:var(--cm-accent);box-shadow:0 2px 6px #0006}
+    .choir-mixer .cm-seek input[type="range"]{height:24px}
+    .choir-mixer .cm-seek input[type="range"]::-webkit-slider-runnable-track{height:3px}
+    .choir-mixer .cm-seek input[type="range"]::-moz-range-track{height:3px}
+    .choir-mixer .cm-seek input[type="range"]::-webkit-slider-thumb{width:12px;height:12px;margin-top:-4.5px;border:0}
+    .choir-mixer .cm-seek input[type="range"]::-moz-range-thumb{width:12px;height:12px;border:0}
     .choir-mixer input[type="range"]:disabled{opacity:.4;cursor:default}
     .choir-mixer [hidden]{display:none!important}
     .choir-mixer[data-collapsed="true"]{background:linear-gradient(145deg,#29324a,#171e2e);max-width:44px;box-shadow:0 6px 20px #0005,0 0 0 1px #ffffff20;color:var(--cm-accent)}
@@ -204,8 +205,9 @@ export async function setup(ctx) {
     .choir-mixer[data-collapsed="true"] button{width:44px;height:44px;display:grid;place-items:center;border-radius:50%;touch-action:none;color:inherit}
     @keyframes choir-level{to{transform:scaleY(.35)}}
     @media(prefers-reduced-motion:reduce){.choir-mixer .cm-activity i{animation:none!important}.choir-mixer button{transition:none}}
-    @media(pointer:coarse){.choir-mixer .cm-transport{height:44px;gap:6px;padding:0}.choir-mixer .cm-transport button,.choir-mixer .cm-transport button[data-choir-action]{position:static;min-width:44px;min-height:44px}.choir-mixer .cm-auto-plan button,.choir-mixer .cm-channels-title{min-height:44px}}
-    @media(pointer:coarse),(max-width:600px){.choir-mixer .cm-volume>input[type="range"]{display:none}.choir-mixer .cm-volume-steps{display:grid}.choir-mixer .cm-master{grid-template-columns:auto minmax(0,1fr)}.choir-mixer .cm-master .cm-percent,.choir-mixer .cm-channel-head .cm-percent{display:none}.choir-mixer .cm-channel-controls{grid-template-columns:minmax(0,1fr) 44px 44px;gap:4px}.choir-mixer .cm-toggle{height:44px}.choir-mixer .cm-toggle svg{width:19px;height:19px}}
+    @media(pointer:coarse){.choir-mixer .cm-transport{height:44px;gap:6px;padding:0}.choir-mixer .cm-transport button,.choir-mixer .cm-transport button[data-choir-action]{position:static;min-width:44px;min-height:44px}.choir-mixer .cm-auto-plan button,.choir-mixer .cm-channels-title,.choir-mixer .cm-channel-tab{min-width:44px;min-height:44px}}
+    @media(pointer:coarse),(max-width:600px){.choir-mixer{max-height:calc(100dvh - 24px)}.choir-mixer .cm-header{padding:7px 12px}.choir-mixer .cm-player{padding:6px 12px}.choir-mixer .cm-now{margin-bottom:4px}.choir-mixer .cm-master{padding:6px 12px}.choir-mixer .cm-auto-plan{gap:3px;padding:6px}.choir-mixer .cm-auto-plan button{padding:4px 3px}.choir-mixer .cm-channels-title{padding:8px 12px}.choir-mixer .cm-volume{grid-template-columns:minmax(0,1fr)}.choir-mixer .cm-volume>input[type="range"]{display:none}.choir-mixer .cm-volume-steps{grid-template-columns:44px minmax(0,1fr) 44px}.choir-mixer .cm-volume-steps>button{display:inline-flex}.choir-mixer .cm-volume-entry{height:44px}.choir-mixer .cm-volume-entry input{font-size:16px}.choir-mixer .cm-channel-head{gap:5px}.choir-mixer .cm-toggle{width:44px;height:44px}.choir-mixer .cm-toggle svg{width:19px;height:19px}}
+    @media(max-height:480px){.choir-mixer .cm-header{padding:4px 10px}.choir-mixer .cm-body{overflow:auto;overscroll-behavior:contain}.choir-mixer .cm-player{padding:4px 10px}.choir-mixer .cm-caption{display:none}.choir-mixer .cm-transport{margin-bottom:0}.choir-mixer .cm-master{padding:4px 10px}.choir-mixer .cm-auto-plan{padding:4px 8px}.choir-mixer .cm-levels{flex-shrink:0}.choir-mixer .cm-levels-body{overflow:visible}}
   `);
   root.innerHTML = `<div class="ensemble-tts">
     <div class="et-header">
@@ -437,7 +439,6 @@ export async function setup(ctx) {
   let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged,mixerPlaybackSegments=null,bedsPaused=false;
   // Keep the launcher unobtrusive on every load, including existing expanded preferences.
   const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,music:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),...(savedMixer||{}),collapsed:true};
-  const channelTabsQuery=root.ownerDocument.defaultView?.matchMedia?.('(pointer:coarse), (max-width:600px)');let useChannelTabs=Boolean(channelTabsQuery?.matches);
   // Solo is no longer exposed; old solo preferences must not silently mute other voices.
   for(const channel of Object.values(mixerState.channels))delete channel.solo;
   // Dedicated effect levels replace legacy voice-channel preferences.
@@ -458,6 +459,7 @@ export async function setup(ctx) {
     const maxPercent=maxVolume*100;
     if(maxVolume>1)root.title=`Increase above 100% if the audio is too quiet (up to ${maxPercent}%).`;
     const range=document.createElement('input');range.type='range';range.min='0';range.max=String(maxVolume);range.step='0.01';range.setAttribute('aria-label',`${name} volume`);
+    range.title='Drag to adjust, use arrow keys for 1% steps, or double-click to reset to 100%.';
     const steps=document.createElement('div');steps.className='cm-volume-steps';
     const minus=document.createElement('button'),plus=document.createElement('button');minus.type=plus.type='button';minus.textContent='−';plus.textContent='+';minus.setAttribute('aria-label',`Decrease ${name} volume`);plus.setAttribute('aria-label',`Increase ${name} volume`);
     const entry=document.createElement('div');entry.className='cm-volume-entry';const number=document.createElement('input');number.type='number';number.min='0';number.max=String(maxPercent);number.step='1';number.inputMode='numeric';number.setAttribute('aria-label',`${name} volume percent`);
@@ -466,6 +468,7 @@ export async function setup(ctx) {
     const sync=()=>{range.value=percent/100;number.value=String(percent);showVolume(range,readout,percent/100);minus.disabled=percent===0;plus.disabled=percent===maxPercent;};
     const change=(next,save)=>{percent=Math.max(0,Math.min(maxPercent,Math.round(next)));sync();onValue(percent/100);if(save)void persistMixer();};
     range.oninput=()=>change(Number(range.value)*100,false);range.onchange=()=>persistMixer();
+    range.ondblclick=()=>change(100,true);
     number.oninput=()=>{if(number.value.trim() && Number.isFinite(Number(number.value)))change(Number(number.value),true);};
     number.onblur=sync;number.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();number.blur();}};
     minus.onclick=()=>change(percent-5,true);plus.onclick=()=>change(percent+5,true);sync();return root;
@@ -483,6 +486,7 @@ export async function setup(ctx) {
   const mixerSeek=makeSeekControl(),legend=document.createElement('small');legend.className='cm-legend';legend.innerHTML=`<span>${ICON_MUTED} Silent = mute</span><span>${ICON_MIC_OFF} No voice = skip & don’t generate</span>`;
   const levels=document.createElement('div'),levelsBody=document.createElement('div');levels.className='cm-levels';levelsBody.className='cm-levels-body';levelsBody.id=`choir-channel-levels-${randomUuid()}`;
   const channelTabs=document.createElement('div');channelTabs.className='cm-channel-tabs';channelTabs.setAttribute('role','tablist');channelTabs.setAttribute('aria-label','Mixer channels');
+  channelsRoot.id=`${levelsBody.id}-panel`;channelsRoot.setAttribute('role','tabpanel');channelsRoot.tabIndex=0;
   const channelsTitle=document.createElement('button');channelsTitle.type='button';channelsTitle.className='cm-channels-title';channelsTitle.setAttribute('aria-label','Channel levels');channelsTitle.setAttribute('aria-controls',levelsBody.id);
   const levelsArrow=document.createElement('span');levelsArrow.setAttribute('aria-hidden','true');const levelsTitle=document.createElement('span');levelsTitle.textContent='Channel levels';channelsTitle.append(levelsArrow,levelsTitle);
   const channelCount=document.createElement('span');channelCount.setAttribute('aria-hidden','true');channelsTitle.append(channelCount);
@@ -492,18 +496,22 @@ export async function setup(ctx) {
   const mixerAutoPlan=document.createElement('button');mixerAutoPlan.type='button';mixerAutoPlan.dataset.choirAction='auto-plan';mixerAutoPlan.setAttribute('aria-label','Auto-plan new replies');mixerAutoPlan.onclick=()=>run(toggleAutoPlan);
   const mixerAutoPlay=document.createElement('button');mixerAutoPlay.type='button';mixerAutoPlay.dataset.choirAction='auto-play';mixerAutoPlay.setAttribute('aria-label','Auto-play new replies');mixerAutoPlay.title='Automatically plan and play new assistant replies with the selected engine and cast voices.';mixerAutoPlay.onclick=()=>run(toggleAutoPlay);
   const mixerSfx=document.createElement('button');mixerSfx.type='button';mixerSfx.dataset.choirAction='sfx';mixerSfx.setAttribute('aria-label','Sound effects');mixerSfx.title='Enable or disable Freesound effects in Choir and Cue. Speech continues separately.';mixerSfx.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableSfx').checked=!$('enableSfx').checked;scheduleSettingsSave();syncSfxPlayback();});
-  const mixerAmbience=document.createElement('button');mixerAmbience.type='button';mixerAmbience.dataset.choirAction='ambience';mixerAmbience.setAttribute('aria-label','Ambient sound');mixerAmbience.title='Enable looping background ambience in Choir and Cue. Off stops the current bed.';mixerAmbience.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableAmbience').checked=!$('enableAmbience').checked;scheduleSettingsSave();syncAmbiencePlayback();});autoPlanRow.append(mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience);
+  const mixerAmbience=document.createElement('button');mixerAmbience.type='button';mixerAmbience.dataset.choirAction='ambience';mixerAmbience.setAttribute('aria-label','Ambient sound');mixerAmbience.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableAmbience').checked=!$('enableAmbience').checked;scheduleSettingsSave();syncAmbiencePlayback();});
+  const mixerMusic=document.createElement('button');mixerMusic.type='button';mixerMusic.dataset.choirAction='music';mixerMusic.setAttribute('aria-label','Background music');mixerMusic.onclick=()=>run(()=>{if(!chatId)throw new Error('Open a chat first.');$('enableMusic').checked=!$('enableMusic').checked;scheduleSettingsSave();syncMusicPlayback();});
+  autoPlanRow.append(mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic);
   levelsBody.append(channelTabs,channelsRoot,legend);levels.append(channelsTitle,levelsBody);
   player.append(nowPlaying,transport,mixerSeek.root);mixerBody.append(player,masterLabel,autoPlanRow,levels);mixer.append(mixerHeader,mixerBody);document.body.append(mixer);
   unsubs.push(()=>{autoPlanAction?.destroy();autoPlanAction=null;toolbarAutoPlan.remove();});
   function refreshAutoPlanControls(){
-    mixerAutoPlan.textContent=`Auto-plan ${config?.autoPlan?'On':'Off'}`;
+    mixerAutoPlan.textContent='Auto-plan';
     mixerAutoPlan.setAttribute('aria-pressed',String(Boolean(config?.autoPlan)));mixerAutoPlan.disabled=!chatId;
     mixerAutoPlan.title='Plan new assistant replies with the selected engine. Jev and LLM planning can incur costs. Auto-play is controlled separately.';
-    mixerAutoPlay.textContent=`Auto-play ${config?.auto?'On':'Off'}`;
+    mixerAutoPlay.textContent='Auto-play';
     mixerAutoPlay.setAttribute('aria-pressed',String(Boolean(config?.auto)));mixerAutoPlay.disabled=!chatId;
-    mixerSfx.textContent=`SFX ${config?.enableSfx!==false?'On':'Off'}`;mixerSfx.setAttribute('aria-pressed',String(config?.enableSfx!==false));mixerSfx.disabled=!chatId;
-    mixerAmbience.textContent=`Ambience ${config?.enableAmbience!==false?'On':'Off'}`;mixerAmbience.setAttribute('aria-pressed',String(config?.enableAmbience!==false));mixerAmbience.disabled=!chatId;
+    mixerSfx.textContent='SFX';mixerSfx.setAttribute('aria-pressed',String(config?.enableSfx!==false));mixerSfx.disabled=!chatId;
+    mixerAmbience.textContent='Ambience';mixerAmbience.setAttribute('aria-pressed',String(config?.enableAmbience!==false));mixerAmbience.disabled=!chatId;
+    mixerMusic.textContent='Music';mixerMusic.setAttribute('aria-pressed',String(config?.enableMusic===true));mixerMusic.disabled=!chatId;
+    for(const button of [mixerAutoPlan,mixerAutoPlay,mixerSfx,mixerAmbience,mixerMusic])button.title=`${button.textContent} is ${button.getAttribute('aria-pressed')==='true'?'on':'off'}. ${button===mixerAutoPlan?'Plan new replies without starting speech.':button===mixerAutoPlay?'Plan and play new replies automatically.':button===mixerSfx?'Play scene sound effects.':button===mixerAmbience?'Loop scene ambience under speech.':'Play background music under speech. Replan an existing reply to add music.'}`;
     toolbarAutoPlan.querySelector('span').textContent=mixerAutoPlan.textContent;toolbarAutoPlan.title=mixerAutoPlan.title;
     toolbarAutoPlan.setAttribute('aria-label',mixerAutoPlan.textContent);toolbarAutoPlan.setAttribute('aria-pressed',String(Boolean(config?.autoPlan)));toolbarAutoPlan.disabled=!chatId;
     if(config?.showAutoPlanAction){
@@ -597,7 +605,7 @@ export async function setup(ctx) {
     $('showMixer').textContent=expanded?'Close mixer':'Open mixer';
     $('showMixer').setAttribute('aria-expanded',String(expanded));
     mixer.dataset.collapsed=String(collapsed);mixerBody.hidden=collapsed;mixerTitle.hidden=collapsed;
-    mixer.style.width=collapsed?'44px':'300px';mixer.style.padding='0';mixer.style.borderRadius=collapsed?'50%':'16px';
+    mixer.style.width=collapsed?'44px':'360px';mixer.style.padding='0';mixer.style.borderRadius=collapsed?'50%':'16px';
     mixer.style.borderWidth=collapsed?'0':'1px';
     collapse.innerHTML=collapsed?ICON_SOUND:ICON_CLOSE;
     collapse.setAttribute('aria-label',collapsed?'Open Choir voice mixer':'Collapse Choir voice mixer');
@@ -620,22 +628,20 @@ export async function setup(ctx) {
   mixerHeader.addEventListener('pointerup',endDrag);mixerHeader.addEventListener('pointercancel',endDrag);
   const docWin=root?.ownerDocument?.defaultView || (typeof window!=='undefined'?window:null);
   const resizeMixer=()=>positionMixer();docWin?.addEventListener('resize',resizeMixer);
-  const changeChannelLayout=()=>{useChannelTabs=Boolean(channelTabsQuery.matches);renderMixer();};channelTabsQuery?.addEventListener('change',changeChannelLayout);
-  unsubs.push(()=>channelTabsQuery?.removeEventListener('change',changeChannelLayout));
   unsubs.push(()=>{docWin?.removeEventListener('resize',resizeMixer);mixer.remove();audioContext?.close().catch(()=>{});});
   function renderMixer(){
     const doc=root?.ownerDocument || (typeof document!=='undefined'?document:null);
     if(!doc)return;
     refreshAutoPlanControls();
-    const focused=doc.activeElement,focusLabel=channelsRoot.contains(focused)?focused.getAttribute('aria-label'):null,focusTabKey=channelTabs.contains(focused)?focused.dataset.channelKey:null,scrollTop=channelsRoot.scrollTop,tabScroll=channelTabs.scrollLeft;
+    const focused=doc.activeElement,focusLabel=channelsRoot.contains(focused)?focused.getAttribute('aria-label'):null,focusTabKey=channelTabs.contains(focused)?focused.dataset.channelKey:null,scrollTop=channelsRoot.scrollTop;
     updateNextControls();
     channelsRoot.replaceChildren();speakerLabel.replaceChildren();
     if(currentSpeaker){const prefix=doc.createElement('span');prefix.className='cm-sr-only';prefix.textContent='Speaking: ';speakerLabel.append(prefix,doc.createTextNode(currentSpeaker));}else speakerLabel.textContent='Ready to play';
     const speakers=new Set((mixerPlaybackSegments ?? plan?.segments ?? []).flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind && segment.speaker).map(segment=>segment.speaker));
-    if(!speakers.size){const empty=doc.createElement('p');empty.className='cm-empty';empty.textContent='Plan the latest reply to see its voices.';channelsRoot.append(empty);}
+    const mainCast=new Set((config?.fixed || []).flatMap(actor=>[actor.speaker,...(actor.aliases || [])]).map(normalizeName));
     for(const speaker of speakers){
       const channel=Object.hasOwn(mixerState.channels,speaker)?mixerState.channels[speaker]:{volume:1,mute:false};Object.defineProperty(mixerState.channels,speaker,{value:channel,writable:true,enumerable:true,configurable:true});
-      const row=doc.createElement('div');row.className='cm-channel';row.dataset.speaker=speaker;row.dataset.kind='voice';row.dataset.noVoice=String(speakerExcluded(speaker));
+      const row=doc.createElement('div');row.className='cm-channel';row.dataset.speaker=speaker;row.dataset.kind='voice';row.dataset.channelGroup=mainCast.has(normalizeName(speaker))?'main':'npcs';row.dataset.noVoice=String(speakerExcluded(speaker));
       row.setAttribute('aria-current',String(currentSpeaker===speaker));const name=doc.createElement('span');name.className='cm-channel-name';name.textContent=speaker;name.title=speaker;
       const head=doc.createElement('div');head.className='cm-channel-head';
       const dot=doc.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
@@ -643,37 +649,36 @@ export async function setup(ctx) {
       const controls=doc.createElement('div');controls.className='cm-channel-controls';
       const volume=makeMixerVolume(speaker,channel.volume,readout,value=>{channel.volume=value;applyVolume();},MAX_CHANNEL_VOLUME);
       const silent=doc.createElement('button');silent.type='button';silent.className='cm-toggle';silent.dataset.kind='silent';silent.innerHTML=channel.mute?ICON_MUTED:ICON_SOUND;silent.setAttribute('aria-label',`${speaker} silent`);silent.setAttribute('aria-pressed',String(Boolean(channel.mute)));silent.title='Silent: mute playback. Audio can still be generated and cached.';silent.onclick=()=>{channel.mute=!channel.mute;applyVolume();renderMixer();persistMixer();};
-      controls.append(volume,silent);
-      const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.innerHTML=speakerExcluded(speaker)?ICON_MIC_OFF:ICON_MIC;noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='No voice: skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));controls.append(noVoice);
+      controls.append(volume);head.append(silent);
+      const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.innerHTML=speakerExcluded(speaker)?ICON_MIC_OFF:ICON_MIC;noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='No voice: skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));head.append(noVoice);
       row.append(head,controls);
       channelsRoot.append(row);
     }
     for(const [kind,name,enabled] of [['sfx','SFX',config?.enableSfx!==false],['ambience','Ambience',config?.enableAmbience!==false],['music','Music',config?.enableMusic===true]]){
-      if(!enabled)continue;
-      const row=doc.createElement('div');row.className='cm-channel';row.dataset.kind=kind;row.dataset.speaker=name;row.setAttribute('aria-current',String(kind==='sfx' && currentSpeaker==='SFX'));
+      const row=doc.createElement('div');row.className='cm-channel';row.dataset.kind=kind;row.dataset.speaker=name;row.dataset.channelGroup='scene';row.dataset.enabled=String(enabled);row.title=enabled?`${name} is on.`:`${name} is off. Use its button above to turn it on.`;row.setAttribute('aria-current',String(kind==='sfx' && currentSpeaker==='SFX'));
       const head=doc.createElement('div');head.className='cm-channel-head';const dot=doc.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
       const label=doc.createElement('span');label.className='cm-channel-name';label.textContent=name;
       const readout=doc.createElement('span');readout.className='cm-percent';readout.setAttribute('aria-hidden','true');head.append(dot,label,readout);
       const controls=doc.createElement('div');controls.className='cm-channel-controls';const volume=makeMixerVolume(name,mixerState[kind],readout,value=>{mixerState[kind]=value;applyVolume();},MAX_CHANNEL_VOLUME);
       controls.append(volume);row.append(head,controls);channelsRoot.append(row);
     }
-    const rows=[...channelsRoot.querySelectorAll('.cm-channel')],keys=rows.map(row=>`${row.dataset.kind}:${row.dataset.speaker}`);
-    const selected=keys.includes(mixerState.channelTab)?mixerState.channelTab:keys[0],revealSelected=selected!==channelTabs.querySelector('[aria-selected="true"]')?.dataset.channelKey || mixer.dataset.channelTabs!==String(useChannelTabs);
-    mixer.dataset.channelTabs=String(useChannelTabs);channelTabs.hidden=!useChannelTabs;channelTabs.replaceChildren();
-    rows.forEach((row,index)=>{
-      const key=keys[index],active=key===selected,tabId=`${levelsBody.id}-tab-${index}`;row.id=`${levelsBody.id}-panel-${index}`;row.hidden=useChannelTabs && !active;
-      if(useChannelTabs){
-        row.setAttribute('role','tabpanel');row.setAttribute('aria-labelledby',tabId);
-        const tab=doc.createElement('button');tab.type='button';tab.className='cm-channel-tab';tab.id=tabId;tab.dataset.channelKey=key;tab.setAttribute('role','tab');tab.setAttribute('aria-label',row.dataset.speaker);tab.setAttribute('aria-controls',row.id);tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;tab.title=row.dataset.speaker;
-        const label=doc.createElement('span');label.textContent=row.dataset.speaker;tab.append(label);
-        const select=next=>{mixerState.channelTab=keys[next];renderMixer();void persistMixer();};tab.onclick=()=>select(index);
-        tab.onkeydown=event=>{const next=event.key==='ArrowRight'?(index+1)%rows.length:event.key==='ArrowLeft'?(index+rows.length-1)%rows.length:event.key==='Home'?0:event.key==='End'?rows.length-1:null;if(next===null)return;event.preventDefault();select(next);channelTabs.children[next]?.focus({preventScroll:true});};
-        channelTabs.append(tab);
-      }
+    const rows=[...channelsRoot.querySelectorAll('.cm-channel')],groups=[['main','Main cast'],['npcs','NPCs'],['scene','Scene audio']],keys=groups.map(([key])=>key);
+    const legacySpeaker=mixerState.channelTab?.startsWith('voice:')?mixerState.channelTab.slice(6):'';
+    const selected=keys.includes(mixerState.channelGroup)?mixerState.channelGroup:legacySpeaker?(mainCast.has(normalizeName(legacySpeaker))?'main':'npcs'):mixerState.channelTab?'scene':'main';
+    mixerState.channelGroup=selected;channelTabs.replaceChildren();
+    groups.forEach(([key,label],index)=>{
+      const active=key===selected,tabId=`${levelsBody.id}-tab-${key}`;
+      const tab=doc.createElement('button');tab.type='button';tab.className='cm-channel-tab';tab.id=tabId;tab.dataset.channelKey=key;tab.setAttribute('role','tab');tab.setAttribute('aria-label',label);tab.setAttribute('aria-controls',channelsRoot.id);tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;tab.textContent=label;
+      const select=next=>{mixerState.channelGroup=keys[next];levelsBody.scrollTop=0;channelsRoot.scrollTop=0;renderMixer();void persistMixer();};tab.onclick=()=>select(index);
+      tab.onkeydown=event=>{const next=event.key==='ArrowRight'?(index+1)%groups.length:event.key==='ArrowLeft'?(index+groups.length-1)%groups.length:event.key==='Home'?0:event.key==='End'?groups.length-1:null;if(next===null)return;event.preventDefault();select(next);channelTabs.children[next]?.focus({preventScroll:true});};
+      if(active)channelsRoot.setAttribute('aria-labelledby',tabId);
+      channelTabs.append(tab);
     });
-    channelCount.textContent=String(rows.length);legend.hidden=useChannelTabs?rows.find(row=>`${row.dataset.kind}:${row.dataset.speaker}`===selected)?.dataset.kind!=='voice':!speakers.size;
+    for(const row of rows)row.hidden=row.dataset.channelGroup!==selected;
+    const visibleRows=rows.filter(row=>!row.hidden);
+    if(!visibleRows.length){const empty=doc.createElement('p');empty.className='cm-empty';empty.textContent=selected==='npcs'?'No NPC voices in this reply.':'Plan the latest reply to see its voices.';channelsRoot.append(empty);}
+    channelCount.textContent=String(visibleRows.length);legend.hidden=selected==='scene' || !visibleRows.length;
     positionMixer();
-    channelTabs.scrollLeft=tabScroll;if(useChannelTabs && revealSelected){const activeTab=[...channelTabs.children].find(tab=>tab.getAttribute('aria-selected')==='true');if(activeTab?.offsetLeft<channelTabs.scrollLeft)channelTabs.scrollLeft=activeTab.offsetLeft;else if(activeTab && activeTab.offsetLeft+activeTab.offsetWidth>channelTabs.scrollLeft+channelTabs.clientWidth)channelTabs.scrollLeft=activeTab.offsetLeft+activeTab.offsetWidth-channelTabs.clientWidth;}
     if(focusTabKey)[...channelTabs.children].find(tab=>tab.dataset.channelKey===focusTabKey)?.focus({preventScroll:true});
     channelsRoot.scrollTop=scrollTop;if(focusLabel)[...channelsRoot.querySelectorAll('[aria-label]')].find(node=>node.getAttribute('aria-label')===focusLabel)?.focus({preventScroll:true});
   }
