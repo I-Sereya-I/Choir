@@ -68,7 +68,8 @@ async function harness(mixerPreferences,mobile=false){
     if(url.includes('/providers'))value={providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}},{id:'accent_tts',capabilities:{parameters:{instructions:{type:'string'},accent:{enum:['Irish','French']}}}}]};
     else if(url.endsWith('/voices')){if(state.failCatalogue)throw Error('Voice catalogue unavailable');value=state.catalogues?.[url.split('/').at(-2)] || {voices:['n','y','m','g','new'].map(id=>({id,name:id,description:id==='m'?'A mature, husky Irish voice.':'A light, youthful voice.'}))};}
     else if(url.includes('/chats/') && url.includes('/messages?')){state.canonicalReads=(state.canonicalReads || 0)+1;value={data:state.savedMessages || []};}
-    else if(url.includes('/personas/'))value=state.persona;
+    else if(url.includes('/personas/'))value=state.personas?.[decodeURIComponent(url.split('/personas/')[1])] ?? state.persona;
+    else if(url.endsWith('?messages=false'))value={metadata:state.chatPersona?{active_persona_id:state.chatPersona}:{}};
     else if(url.includes('/decision-connections?'))value={data:[{id:'decision-a',name:'Decision A',provider:'typesafe',model:'jev'},{id:'decision-b',name:'Decision B',provider:'typesafe',model:'jev'}]};
     else if(url.includes('/connections?'))value={data:[{id:'planner',name:'Planner',model:'text-model'}]};
     else value={data:connections};
@@ -1646,10 +1647,50 @@ test('LLM casting receives bounded character and persona descriptions with voice
   h.state.persona={id:'persona-a',name:'Alex',description:'A young, softly spoken traveller.'};
   const name=h.$('fixed').children[2].querySelector('input');name.value='Captain Mira';name.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
   await h.plan();const snapshot=h.requests.find(v=>v.action==='plan').input.config;
-  assert.deepEqual(snapshot.characterProfiles,[{speaker:'Captain Mira',description:h.state.character.description.slice(0,8000),personality:h.state.character.personality},{speaker:'You',description:h.state.persona.description,personality:''}]);
+  assert.deepEqual(snapshot.characterProfiles,[{speaker:'Captain Mira',name:'Mira',role:'character',description:h.state.character.description.slice(0,8000),personality:h.state.character.personality,scenario:'',firstMessage:''},{speaker:'You',name:'Alex',role:'persona',description:h.state.persona.description,personality:''}]);
   assert.equal(snapshot.voices.find(voice=>voice.id==='m' && voice.route==='native:b').description,'A mature, husky Irish voice.');
   assert.ok(!JSON.stringify(snapshot).includes('Private'));assert.ok(!JSON.stringify(h.store.get('chat:chat-a')).includes('mature captain'));
   h.state.failProfile=true;h.message.content='A new dawn.';await h.plan();assert.equal(h.requests.filter(v=>v.action==='plan').at(-1).input.config.characterProfiles.length,1);
+ }finally{await h.close();}
+});
+
+test('placeholder lead names resolve once the persona and character are known, without replacing typed names',async()=>{
+ const h=await harness();try{
+  const names=()=>[...h.$('fixed').children].map(row=>row.querySelector('input').value);
+  // Lumiverse may bind a new chat's persona only after the chat opened.
+  h.state.character={name:'Metamorphosis: Just the Way You Are!',first_mes:'April 6, 2015. Saki stood far off.'};h.state.active='chat-new';h.subscriptions.get('chat.active')();
+  await until(()=>names()[2]==='Metamorphosis: Just the Way You Are!');
+  assert.deepEqual(names(),['Narrator','Persona','Metamorphosis: Just the Way You Are!']);assert.equal(h.store.has('chat:chat-new'),false);
+  h.state.persona={id:'persona-jay',name:'Jay'};h.subscriptions.get('persona.activeId')();
+  await until(()=>h.store.get('chat:chat-new')?.fixed[1].speaker==='Jay');assert.deepEqual(names(),['Narrator','Jay','Metamorphosis: Just the Way You Are!']);
+  // Existing chats saved with placeholders resolve on load; the chat's own persona wins over a stale global one.
+  const saved=structuredClone(h.store.get('chat:chat-a'));
+  h.store.set('chat:chat-old',{...saved,fixed:[saved.fixed[0],{...saved.fixed[1],speaker:'Persona'},{...saved.fixed[2],speaker:'Character'}]});
+  h.store.set('chat:chat-typed',{...saved,fixed:[saved.fixed[0],{...saved.fixed[1],speaker:'Captain'},{...saved.fixed[2],speaker:'Sensei'}]});
+  h.state.personas={'persona-saki':{id:'persona-saki',name:'Saki'}};h.state.chatPersona='persona-saki';h.state.character={name:'Mira'};
+  h.state.active='chat-old';h.subscriptions.get('chat.active')();
+  await until(()=>h.store.get('chat:chat-old')?.fixed[1].speaker==='Saki');
+  assert.deepEqual(h.store.get('chat:chat-old').fixed.map(actor=>actor.speaker),['Narrator','Saki','Mira']);assert.deepEqual(h.store.get('chat:chat-old').fixed.map(actor=>actor.voice),['n','y','m']);
+  h.state.active='chat-typed';h.subscriptions.get('chat.active')();
+  await until(()=>h.$('saveState').textContent==='Saved settings restored' && names()[1]==='Captain');
+  h.subscriptions.get('persona.activeId')();await tick();
+  assert.deepEqual(names(),['Narrator','Captain','Sensei']);assert.equal(h.store.get('chat:chat-typed').fixed[1].speaker,'Captain');
+ }finally{await h.close();}
+});
+
+test('Jev planning receives speaker profiles, recent context and the fallback choice',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'Metamorphosis: Just the Way You Are!',description:'',scenario:'',first_mes:'April 6, 2015. Saki stood far off.'};
+  h.state.persona={id:'persona-jay',name:'Jay',description:'A quiet young man.'};
+  h.state.messages=[{id:'earlier',content:'"Thanks for today."',name:'Saki',is_user:false},h.message];
+  h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  h.$('allowLlmFallback').checked=true;h.$('allowLlmFallback').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  await h.plan();
+  const jev=h.requests.find(request=>request.action==='planJev').input;
+  assert.equal(jev.config.allowLlmFallback,true);assert.match(jev.context,/Saki: "Thanks for today\."/);
+  assert.deepEqual(jev.config.characterProfiles.map(profile=>[profile.speaker,profile.name,profile.role]),[['Mira','Metamorphosis: Just the Way You Are!','character'],['You','Jay','persona']]);
+  assert.equal(jev.config.characterProfiles[0].firstMessage,'April 6, 2015. Saki stood far off.');
+  assert.deepEqual(h.requests.find(request=>request.action==='plan').input.config.characterProfiles,jev.config.characterProfiles);
  }finally{await h.close();}
 });
 

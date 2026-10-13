@@ -2612,26 +2612,14 @@ export async function setup(ctx) {
     if(saved?.jevApiKey){await persistConfig(id,config);if(disposed || version!==loadVersion)return;}
     await recordingStore('prune').catch(()=>{});
     if(disposed || version!==loadVersion)return;
-    if(!saved && !legacyCast) {
-      const personaId=ctx.state.get?.('persona.activeId');
-      if(personaId) {
-        const persona=await api(`/personas/${encodeURIComponent(personaId)}`).then(r=>r.json()).catch(()=>null);
-        if(disposed || version!==loadVersion)return;
-        config.fixed[1].speaker=persona?.name || 'Persona';
-      }
-      const characterId=ctx.getActiveChat().characterId;
-      if(characterId) {
-        const character=await ctx.characters.get(characterId).catch(()=>null);
-        if(disposed || version!==loadVersion)return;
-        config.fixed[2].speaker=character?.name || 'Character';
-      }
-      if(capturedDefaults)config=withDefaultSetup(config,capturedDefaults);
-    }
+    if(!saved && !legacyCast && capturedDefaults)config=withDefaultSetup(config,capturedDefaults);
     setFields();await loadProviders();
     if(version!==loadVersion || disposed)return;
     const previous=id?await ctx.settings.get(`activeplan:${id}`):null;
     if(version!==loadVersion || disposed)return;
     if(previous)await restoreSavedPlan(previous);
+    if(version!==loadVersion || disposed)return;
+    await refreshLeadNames(Boolean(saved));
     if(version!==loadVersion || disposed)return;
     saveState(saved?'Saved settings restored':capturedDefaults?'Default setup loaded':preferences?'Connection preferences restored':'Changes save automatically');
     $('defaultStatus').textContent=capturedDefaults?'Captured default available. New chats use this setup.':'No default captured yet. New chats use your latest preferences.';
@@ -2717,28 +2705,48 @@ export async function setup(ctx) {
     }
   }
   const replacePersonaMacro=(text,name)=>text.replace(/\{\{\s*user\s*\}\}/gi,()=>name);
-  async function personaName() {
-    const personaId=ctx.state.get?.('persona.activeId');
-    if(personaId) {
-      const persona=await api(`/personas/${encodeURIComponent(personaId)}`).then(response=>response.json()).catch(()=>null);
-      if(persona?.name?.trim())return persona.name.trim();
+  // A chat can open before Lumiverse applies its persona binding, so the chat's own persona wins over the global selection.
+  async function activePersona(signal){
+    const chat=chatId?await api(`/chats/${encodeURIComponent(chatId)}?messages=false`,{signal}).then(response=>response.json()).catch(()=>null):null;
+    const personaId=chat?.metadata?.active_persona_id || ctx.state.get?.('persona.activeId');
+    return personaId?api(`/personas/${encodeURIComponent(personaId)}`,{signal}).then(response=>response.json()).catch(()=>null):null;
+  }
+  const LEAD_PLACEHOLDERS=[[],['persona','{{user}}'],['character','{{char}}']];
+  const leadPlaceholder=(fixed,index)=>Boolean(LEAD_PLACEHOLDERS[index]?.includes(normalizeName(fixed[index]?.speaker)));
+  // Only placeholder lead names are replaced, so names the user typed stay. Runs after each chat load and
+  // whenever the persona changes, because the persona may become known only after the chat opened.
+  async function refreshLeadNames(save=true){
+    if(!chatId || !config || busy)return;
+    const version=loadVersion,fixed=capture().fixed,characterId=leadPlaceholder(fixed,2) && ctx.getActiveChat().characterId;
+    const [persona,character]=await Promise.all([leadPlaceholder(fixed,1)?activePersona():null,characterId?ctx.characters.get(characterId).catch(()=>null):null]);
+    if(disposed || version!==loadVersion || busy)return;
+    const value=capture();let renamed=false;
+    for(const [index,profile] of [[1,persona],[2,character]]){
+      const name=typeof profile?.name==='string'?profile.name.trim():'',previous=value.fixed[index]?.speaker;
+      if(!name || !leadPlaceholder(value.fixed,index))continue;
+      value.fixed[index]={...value.fixed[index],speaker:name};renamed=true;
+      value.singleVoices=Object.fromEntries(Object.entries(value.singleVoices || {}).map(([route,voices])=>[route,Object.hasOwn(voices,previous)?{...voices,[name]:voices[previous]}:voices]));
     }
+    if(!renamed)return;
+    config=value;renderCast();
+    if(save)scheduleSettingsSave();
+  }
+  async function personaName() {
+    const persona=await activePersona();
+    if(persona?.name?.trim())return persona.name.trim();
     const name=config.fixed[1]?.speaker?.trim();
-    if(name && name!=='Persona')return name;
+    if(name && !leadPlaceholder(config.fixed,1))return name;
     throw new Error('Set your persona name in Choir’s fixed cast to resolve {{user}}.');
   }
   async function plannerProfiles(cast,signal){
-    const characterId=ctx.getActiveChat().characterId,personaId=ctx.state.get?.('persona.activeId');
-    const [character,persona]=await Promise.all([
-      characterId?ctx.characters.get(characterId).catch(()=>null):null,
-      personaId?api(`/personas/${encodeURIComponent(personaId)}`,{signal}).then(response=>response.json()).catch(()=>null):null
-    ]);
-    return [[cast.fixed[2]?.speaker,character],[cast.fixed[1]?.speaker,persona]].flatMap(([speaker,profile])=>{
-      if(!speaker || !profile)return [];
-      const description=typeof profile.description==='string'?profile.description.trim().slice(0,8000):'';
-      const personality=typeof profile.personality==='string'?profile.personality.trim().slice(0,2000):'';
-      return description || personality?[{speaker,description,personality}]:[];
-    });
+    const characterId=ctx.getActiveChat().characterId;
+    const [character,persona]=await Promise.all([characterId?ctx.characters.get(characterId).catch(()=>null):null,activePersona(signal)]);
+    const text=(value,limit)=>typeof value==='string'?value.trim().slice(0,limit):'';
+    return [[cast.fixed[2]?.speaker,character,'character'],[cast.fixed[1]?.speaker,persona,'persona']].flatMap(([speaker,profile,role])=>!speaker || !profile?[]:[{
+      speaker,name:text(profile.name,100),role,description:text(profile.description,8000),personality:text(profile.personality,2000),
+      // Scenario cards often leave the description empty and introduce their characters in the scenario and greeting.
+      ...(role==='character'?{scenario:text(profile.scenario,2000),firstMessage:text(profile.first_mes,1500)}:{})
+    }]);
   }
   // Edits that only add images, trackers or other non-spoken markup keep a plan and its audio valid.
   const spokenText=content=>transcriptFromMessage(content).replace(/\s+/g,' ').trim();
@@ -2796,6 +2804,10 @@ export async function setup(ctx) {
       if(!fastPlan){await rpc('ping',{},ctrl.signal,8000);if(token!==revision || ctrl.signal.aborted)return;}
       // 2. Jev System 1 classifier (~20ms)
       let jevFailure='';
+      if(!fastPlan){
+        snapshot.characterProfiles=await plannerProfiles(snapshot,ctrl.signal);
+        if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
+      }
       if (!fastPlan && plannerMode==='jev') {
         try {
           status('Classifying dialogue with Jev System 1 model…');
@@ -2803,7 +2815,8 @@ export async function setup(ctx) {
           const jevEndpoint = (config.jevEndpoint || $('jevEndpoint')?.value || '').trim();
           const result = await rpc('planJev', {
             transcript,
-            config: snapshot,
+            config: {...snapshot,allowLlmFallback:config.allowLlmFallback},
+            context,
             decisionConnection: snapshot.decisionConnection || $('decisionConnection')?.value || '',
             apiKey: jevKey,
             endpoint: jevEndpoint
@@ -2830,8 +2843,6 @@ export async function setup(ctx) {
         combined.push(...stripBase(fastPlan.segments));
         playbackSections.push(...fastPlan.segments.map((_,index)=>[index]));
       } else {
-        snapshot.characterProfiles=await plannerProfiles(snapshot,ctrl.signal);
-        if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
         const sections = planningSections(transcript);
         const progressKey=`progress:${(await planKey(targetChat,messageId)).slice(5)}`;
         const savedProgress=forceReplan?null:await ctx.settings.get(progressKey).catch(()=>null);
@@ -3687,6 +3698,7 @@ export async function setup(ctx) {
     await persistPlan();renderCast();renderPreview();status('Edited plan validated and saved.');
   });
   unsubs.push(ctx.state.subscribe('chat.active',()=>run(switchChat)));
+  unsubs.push(ctx.state.subscribe('persona.activeId',()=>run(refreshLeadNames)));
   function cancelAutoReplies(messageId){
     if(messageId)autoReplyQueue.delete(messageId);else autoReplyQueue.clear();
     if(!autoReplyQueue.size){clearTimeout(autoReplyTimer);autoReplyTimer=null;}
