@@ -101,9 +101,10 @@ async function harness(mixerPreferences,mobile=false){
           if(state.sfxError){backend({namespace:'choir',id:request.id,error:state.sfxError});return;}
           const anchored=entries=>request.input.segments.flatMap((segment,index)=>Object.entries(entries).filter(([trigger])=>segment.text.includes(trigger)).map(([trigger,query])=>({segment:index,trigger,...(query?{query}:{stop:true})})));
           result={cues:anchored({'page snapped':'page turn','glass shattered':'glass shatter'}),ambience:anchored({'Rain drummed':'rain','The tavern':'tavern crowd','Silence fell':''}),
-            music:request.input.music?anchored({'Night fell':'Dark','The storm broke':'Intense'}).map(({query,...entry})=>({...entry,feels:[query],genres:['Soundtrack'],keywords:['organ']})):[]};
+            music:request.input.music?anchored({'Night fell':'Dark','The storm broke':'Intense','Dawn broke':'Bright','Music stopped':''}).map(({query,...entry})=>query?({...entry,feels:[query],genres:['Soundtrack'],keywords:['organ']}):entry):[]};
         }
         else if(request.action==='music'){
+          if(state.musicError){backend({namespace:'choir',id:request.id,error:state.musicError});return;}
           const title=state.musicTitle || 'Crypto',reply=()=>backend?.({namespace:'choir',id:request.id,result:{title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`}});
           if(state.holdMusic){state.releaseMusic=reply;return;}result={title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`};
         }
@@ -814,6 +815,96 @@ test('a music marker streams the chosen incompetech track under speech with its 
   h.state.blockAudio=false;h.state.bedPlayError=true;await h.play();assert.match(h.$('sfxStatus').textContent,/Music skipped \(Dark, Soundtrack\): Browser blocked background audio/);
   h.state.bedPlayError=false;h.state.bedDecodeError=true;await h.play();assert.equal(musicRequests(),1);await until(()=>/Music skipped \(Dark, Soundtrack\): Browser could not play the incompetech track/.test(h.$('sfxStatus').textContent));
   h.state.bedDecodeError=false;await h.play();assert.equal(musicRequests(),2);assert.equal(beds(h).at(-1).src,'https://incompetech.com/music/royalty-free/mp3-royaltyfree/Crypto.mp3');
+ }finally{await h.close();}
+});
+
+test('continuous music is opt-in, global, survives reply completion and cue-free replies, and stops explicitly',async()=>{
+ const h=await harness();try{
+  assert.equal(h.$('loopMusic').checked,false);
+  await toggle(h,'enableMusic',true);await toggle(h,'loopMusic',true);
+  assert.equal(h.store.get('settings:global').loopMusic,true);
+  h.message.content='Night fell over the road.';await h.plan();await h.play();
+  await until(()=>beds(h).length===1 && !beds(h)[0].paused);const music=beds(h)[0];
+  await new Promise(resolve=>setTimeout(resolve,1600));assert.equal(music.paused,false);assert.equal(music.loop,true);
+  h.message.content='The travellers kept walking.';await h.plan();
+  assert.deepEqual(h.requests.filter(request=>request.action==='sfx').at(-1).input.currentMusic,{title:'Crypto',feels:['Dark']});
+  assert.equal(music.paused,false);await h.play();assert.equal(music.paused,false);assert.equal(beds(h).length,1);
+  assert.equal(h.$('stop').disabled,false);h.$('stop').click();assert.equal(music.paused,true);assert.equal(music.src,undefined);
+  await h.play();assert.equal(beds(h).length,1);
+  h.store.set('chat:chat-b',{loopMusic:false,enableMusic:false});h.state.active='chat-b';h.subscriptions.get('chat.active')();
+  await until(()=>h.$('loopMusic').checked && h.$('enableMusic').checked);await h.reload();assert.equal(h.$('loopMusic').checked,true);
+ }finally{await h.close();}
+});
+
+test('continuous music waits for its replacement, crossfades when ready, and keeps the current track if selection fails',async()=>{
+ const h=await harness();try{
+  await toggle(h,'enableMusic',true);await toggle(h,'loopMusic',true);const bridge=globalThis.__CHOIR_API__;
+  await bridge.playParagraph({text:'Night fell over the road.'});await until(()=>beds(h).length===1 && !beds(h)[0].paused);
+  const original=beds(h)[0];await until(()=>original.volume===0.2);
+  h.state.holdMusic=true;h.state.musicTitle='Storm';await bridge.playParagraph({text:'The storm broke at once.'});
+  await until(()=>h.state.releaseMusic);await new Promise(resolve=>setTimeout(resolve,1600));
+  assert.equal(original.paused,false);assert.equal(original.volume,0.2);assert.equal(bridge.getMusic().title,'Crypto');
+  h.state.releaseMusic();await until(()=>beds(h).length===2 && !beds(h)[1].paused);const replacement=beds(h)[1];
+  await until(()=>original.paused && replacement.volume===0.2);assert.equal(bridge.getMusic().title,'Storm');
+  h.state.holdMusic=false;h.state.musicError='No music available';await bridge.playParagraph({text:'Dawn broke in a new place.'});
+  assert.equal(replacement.paused,false);assert.equal(bridge.getMusic().title,'Storm');
+  bridge.stop();assert.ok(beds(h).every(audio=>audio.paused));
+ }finally{await h.close();}
+});
+
+test('continuous music can finish loading after speech ends and is stopped by the loop toggle, music toggle, chat change and cleanup',async()=>{
+ const h=await harness();try{
+  await toggle(h,'enableMusic',true);await toggle(h,'loopMusic',true);
+  h.state.holdMusic=true;h.message.content='Night fell over the road.';await h.plan();await h.play();
+  await until(()=>h.state.releaseMusic);assert.equal(beds(h).length,0);
+  h.state.holdMusic=false;h.state.releaseMusic();await until(()=>beds(h).length===1 && !beds(h)[0].paused);
+  await toggle(h,'loopMusic',false);assert.equal(beds(h)[0].paused,true);
+  await toggle(h,'loopMusic',true);await h.play();await until(()=>beds(h).length===2 && !beds(h)[1].paused);
+  await toggle(h,'enableMusic',false);assert.equal(beds(h)[1].paused,true);
+  await toggle(h,'enableMusic',true);await h.play();await until(()=>beds(h).length===3 && !beds(h)[2].paused);
+  h.store.set('chat:chat-b',h.store.get('chat:chat-a'));h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>beds(h)[2].paused && /restored/i.test(h.$('saveState').textContent));
+  assert.equal(h.$('loopMusic').checked,true);assert.equal(globalThis.__CHOIR_API__.getMusic(),null);
+  await globalThis.__CHOIR_API__.playParagraph({text:'Night fell in another chat.'});await until(()=>beds(h).length===4 && !beds(h)[3].paused);
+  await h.reload();assert.equal(beds(h)[3].paused,true);
+ }finally{h.state.releaseMusic?.();await h.close();}
+});
+
+test('default music playback fades at the end, while continuous cached replay carries a track across messages',async()=>{
+ const h=await harness();try{
+  await toggle(h,'enableMusic',true);h.message.content='Night fell over the road.';await h.plan();
+  h.state.blockAudio=true;h.$('play').click();await until(()=>beds(h).length===1 && !beds(h)[0].paused && voices(h).length===1 && !voices(h)[0].paused);
+  h.state.blockAudio=false;voices(h)[0].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  await until(()=>beds(h).length===1 && beds(h)[0].paused);
+  h.message.content='The travellers kept walking.';await h.plan();await h.play();
+  await toggle(h,'loopMusic',true);
+  for(const key of [...h.store.keys()])if(/^(plan:|activeplan:)/.test(key))h.store.delete(key);
+  await h.reload();const bridge=globalThis.__CHOIR_API__;
+  await bridge.playParagraph({text:'Night fell over the road.'});await until(()=>beds(h).length===2 && !beds(h)[1].paused);const music=beds(h)[1];
+  const synthesis=h.synthesis.length;h.footer.querySelector('button').click();await until(()=>h.$('status').textContent==='Replay finished.');
+  assert.equal(music.paused,false);assert.equal(h.synthesis.length,synthesis);assert.equal(beds(h).length,2);
+ }finally{await h.close();}
+});
+
+test('continuous music honors stop cues and cancels a loading replacement when music is turned off',async()=>{
+ const h=await harness();try{
+  await toggle(h,'enableMusic',true);await toggle(h,'loopMusic',true);const bridge=globalThis.__CHOIR_API__;
+  await bridge.playParagraph({text:'Night fell over the road.'});await until(()=>beds(h).length===1 && !beds(h)[0].paused);
+  await bridge.playParagraph({text:'Music stopped in the quiet room.'});await until(()=>beds(h)[0].paused);assert.equal(bridge.getMusic(),null);
+  await bridge.playParagraph({text:'The travellers kept walking.'});assert.equal(beds(h).length,1);
+  await bridge.playParagraph({text:'Night fell in another place.'});await until(()=>beds(h).length===2 && !beds(h)[1].paused);
+  h.state.holdMusic=true;await bridge.playParagraph({text:'The storm broke at once.'});await until(()=>h.state.releaseMusic);
+  await toggle(h,'enableMusic',false);h.state.releaseMusic();await tick();assert.equal(beds(h).length,2);assert.ok(beds(h).every(audio=>audio.paused));assert.equal(bridge.getMusic(),null);
+ }finally{h.state.releaseMusic?.();await h.close();}
+});
+
+test('continuous music carries through streamed planning sections without a new music marker',async()=>{
+ const h=await harness();try{
+  await toggle(h,'enableMusic',true);await toggle(h,'loopMusic',true);const bridge=globalThis.__CHOIR_API__;
+  await bridge.playParagraph({text:'Night fell over the road.'});await until(()=>beds(h).length===1 && !beds(h)[0].paused);const music=beds(h)[0];
+  h.message.content='The hall was quiet '.repeat(70)+'. "Hello." '+'The road was dark '.repeat(80)+'.';
+  await h.play();assert.ok(h.requests.filter(request=>request.action==='plan').length>1);
+  assert.ok(h.requests.filter(request=>request.action==='sfx').slice(1).every(request=>request.input.currentMusic.title==='Crypto'));
+  assert.equal(beds(h).length,1);assert.equal(music.paused,false);
  }finally{await h.close();}
 });
 
