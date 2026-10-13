@@ -136,6 +136,8 @@ try{
   const sfxSwitch=page.getByRole('button',{name:'Sound effects',exact:true});assert.equal(await sfxSwitch.innerText(),'SFX');assert.equal(await sfxSwitch.locator('..').getAttribute('class'),'cm-auto-plan');
   await sfxSwitch.press('Space');assert.equal(await sfxSwitch.getAttribute('aria-pressed'),'false');assert.equal(await page.locator('[data-et="enableSfx"]').isChecked(),false);await sfxSwitch.press('Space');assert.equal(await sfxSwitch.getAttribute('aria-pressed'),'true');
   const autoPlanSwitch=page.getByRole('button',{name:'Auto-plan new replies',exact:true});
+  assert.ok((await page.locator('[data-choir-mixer]').boundingBox()).width<=300,'The desktop mixer should stay compact.');
+  assert.equal(await page.locator('.cm-auto-plan button').evaluateAll(nodes=>new Set(nodes.map(node=>Math.round(node.getBoundingClientRect().top))).size),1,'All five desktop switches should fit one row.');
   assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'true');
   await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').autoPlan===true);await autoPlanSwitch.click();assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'false');
   const autoPlaySwitch=page.getByRole('button',{name:'Auto-play new replies',exact:true}),autoPlaySetting=page.getByRole('checkbox',{name:'Auto-play new replies',exact:true});
@@ -169,7 +171,7 @@ try{
   await page.locator('[data-et="showAutoPlanAction"]').uncheck();assert.equal(await chatShortcut.count(),0);
   const master=page.getByRole('slider',{name:'Master volume',exact:true});await master.press('Home');await master.press('ArrowRight');
   assert.equal(await master.getAttribute('aria-valuetext'),'1 percent');assert.equal(await page.locator('.cm-master .cm-percent').innerText(),'1%');await master.press('End');
-  const desktopPercent=page.getByRole('spinbutton',{name:'Master volume percent',exact:true});assert.equal(await desktopPercent.isVisible(),true);assert.ok((await master.boundingBox()).height>=36);await desktopPercent.fill('72');assert.equal(await master.inputValue(),'0.72');await master.dblclick();assert.equal(await desktopPercent.inputValue(),'100');
+  const desktopPercent=page.getByRole('spinbutton',{name:'Master volume percent',exact:true});assert.equal(await desktopPercent.isVisible(),true);assert.ok((await master.boundingBox()).height>=28);await desktopPercent.fill('72');assert.equal(await master.inputValue(),'0.72');await master.dblclick();assert.equal(await desktopPercent.inputValue(),'100');
   await planLatest.click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Ready:'));
   assert.equal(await page.evaluate(()=>window.audios.length),0);assert.deepEqual(await page.locator('.cm-channel[data-kind="voice"]').evaluateAll(nodes=>nodes.map(node=>node.dataset.speaker)),['Narrator','Mira']);
   const planBounds=await planLatest.boundingBox(),previousBounds=await page.getByRole('button',{name:'Previous spoken block',exact:true}).boundingBox();assert.ok(planBounds.x+planBounds.width<=previousBounds.x);

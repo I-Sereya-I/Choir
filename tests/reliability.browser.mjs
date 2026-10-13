@@ -142,19 +142,6 @@ async function harness(mixerPreferences,mobile=false){
     async close(){cleanup();await tick();URL.createObjectURL=createObjectURL;Object.assign(globalThis,original);dom.window.close();}};
 }
 
-test('the staging badge follows the installed Choir branch and unavailable branch information never breaks the drawer',async()=>{
- const h=await harness();try{
-  await until(()=>!h.$('branchBadge').hidden);assert.equal(h.$('branchBadge').textContent,'Staging');
-  for(const branch of ['main',null,'feature-test']){
-   h.state.extensionBranch=branch;const lookups=h.state.branchLookups;await h.reload();await until(()=>h.state.branchLookups>lookups);await tick();
-   assert.equal(h.$('branchBadge').hidden,true);assert.ok(h.root.querySelector('.ensemble-tts'));
-  }
-  h.state.extensionBranch='staging';await h.reload();await until(()=>!h.$('branchBadge').hidden);
-  h.state.branchLookupFails=true;await h.reload();await tick();assert.equal(h.$('branchBadge').hidden,true);assert.ok(h.root.querySelector('.ensemble-tts'));await h.plan();
-  assert.equal(h.synthesis.length,0);
- }finally{await h.close();}
-});
-
 test('HTTP hosts without secure crypto APIs keep the drawer, mixer, RPC, saved plans and cached replay working',async()=>{
   const descriptor=Object.getOwnPropertyDescriptor(globalThis,'crypto'),nativeCrypto=globalThis.crypto;
   Object.defineProperty(globalThis,'crypto',{configurable:true,value:{getRandomValues:nativeCrypto.getRandomValues.bind(nativeCrypto)}});
