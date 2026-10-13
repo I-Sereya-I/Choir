@@ -799,14 +799,15 @@ function soundCueLimit(segments) {
   return Math.min(12, Math.max(2, Math.ceil(characters / 400)));
 }
 
-function soundCuePrompt(segments, {music=false}={}) {
+function soundCuePrompt(segments, {music=false, currentMusic=null}={}) {
+  const playing = music && currentMusic ? [currentMusic.title && `"${currentMusic.title}"`, currentMusic.feels?.length && `(${currentMusic.feels.join(', ')})`].filter(Boolean).join(' ') : '';
   return [
     {role:'system',content:`You are the Foley editor for an audiobook. Choose short sound effects and looping background ambience that make the scene audible. Return ONLY JSON {"cues":[{"segment":0,"trigger":"exact words","query":"freesound search"}],"ambience":[{"segment":0,"trigger":"exact words","query":"freesound search"},{"segment":3,"trigger":"exact words","stop":true}]${music?',"music":[{"segment":0,"trigger":"exact words","feels":["Mysterious"],"genres":["Soundtrack"],"keywords":["harp","forest"]}]':''}}.
 Choose only concrete physical sounds that happen in the scene as it is told: objects, movement, impacts, doors, footsteps, weather, fire, water, animals, vehicles, machines, weapons, crowds. Skip sounds that are remembered, imagined, hypothetical, negated or metaphorical. Skip voices and vocal sounds such as speech, laughter, sighs, gasps, screams and singing, because the voice actors perform those. Skip music.
 segment is the index of the numbered segment where the sound happens. trigger copies 2 to 6 consecutive words exactly as written in that segment, in the original language, from the start of the sentence or clause where the sound happens; the effect plays right before those words. query is an English Freesound search of 1 to 3 words naming the sound source and action the way sound files are named, such as "door slam", "bottle clink", "egg crack" or "sword clash", whatever language the story uses. Never add places or scene details: every search word must match.
 Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments.
 ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.${music?`
-music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments or the setting, such as "piano", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Return at most ${MUSIC_LIMIT} music entries in story order, usually one at the start, and change music only when the mood clearly shifts.`:''}
+music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments or the setting, such as "piano", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Return at most ${MUSIC_LIMIT} music entries in story order, usually one at the start, and change music only when the mood clearly shifts.${playing?` Music ${playing} is already playing from the previous text and carries on: return a music entry only when this text clearly changes the mood or setting, otherwise return no music entries.`:''}`:''}
 Return {"cues":[],"ambience":[]${music?',"music":[]':''}} when nothing fits.`},
     {role:'user',content:JSON.stringify({segments:segments.map((segment, index) => ({index, speaker:segment.speaker, text:segment.text}))})}
   ];
@@ -1395,7 +1396,8 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
       if(controller.signal.aborted)return;
       if(!connection?.model)throw new Error('Select a Planner LLM connection with a text-generation model to choose sound effects.');
-      const messages=soundCuePrompt(segments,{music:input.music===true});let failure,finishReason;
+      const currentMusic=input.currentMusic && typeof input.currentMusic==='object'?{title:String(input.currentMusic.title || ''),feels:Array.isArray(input.currentMusic.feels)?input.currentMusic.feels.map(String):[]}:null;
+      const messages=soundCuePrompt(segments,{music:input.music===true,currentMusic});let failure,finishReason;
       for(let attempt=0;attempt<2;attempt++){
         if(controller.signal.aborted)return;
         progress({stage:`Waiting for sound effect choices (attempt ${attempt+1}/2)`,provider:connection.provider,model:connection.model});

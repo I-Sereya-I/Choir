@@ -799,14 +799,15 @@ function soundCueLimit(segments) {
   return Math.min(12, Math.max(2, Math.ceil(characters / 400)));
 }
 
-function soundCuePrompt(segments, {music=false}={}) {
+function soundCuePrompt(segments, {music=false, currentMusic=null}={}) {
+  const playing = music && currentMusic ? [currentMusic.title && `"${currentMusic.title}"`, currentMusic.feels?.length && `(${currentMusic.feels.join(', ')})`].filter(Boolean).join(' ') : '';
   return [
     {role:'system',content:`You are the Foley editor for an audiobook. Choose short sound effects and looping background ambience that make the scene audible. Return ONLY JSON {"cues":[{"segment":0,"trigger":"exact words","query":"freesound search"}],"ambience":[{"segment":0,"trigger":"exact words","query":"freesound search"},{"segment":3,"trigger":"exact words","stop":true}]${music?',"music":[{"segment":0,"trigger":"exact words","feels":["Mysterious"],"genres":["Soundtrack"],"keywords":["harp","forest"]}]':''}}.
 Choose only concrete physical sounds that happen in the scene as it is told: objects, movement, impacts, doors, footsteps, weather, fire, water, animals, vehicles, machines, weapons, crowds. Skip sounds that are remembered, imagined, hypothetical, negated or metaphorical. Skip voices and vocal sounds such as speech, laughter, sighs, gasps, screams and singing, because the voice actors perform those. Skip music.
 segment is the index of the numbered segment where the sound happens. trigger copies 2 to 6 consecutive words exactly as written in that segment, in the original language, from the start of the sentence or clause where the sound happens; the effect plays right before those words. query is an English Freesound search of 1 to 3 words naming the sound source and action the way sound files are named, such as "door slam", "bottle clink", "egg crack" or "sword clash", whatever language the story uses. Never add places or scene details: every search word must match.
 Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments.
 ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.${music?`
-music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments or the setting, such as "piano", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Return at most ${MUSIC_LIMIT} music entries in story order, usually one at the start, and change music only when the mood clearly shifts.`:''}
+music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments or the setting, such as "piano", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Return at most ${MUSIC_LIMIT} music entries in story order, usually one at the start, and change music only when the mood clearly shifts.${playing?` Music ${playing} is already playing from the previous text and carries on: return a music entry only when this text clearly changes the mood or setting, otherwise return no music entries.`:''}`:''}
 Return {"cues":[],"ambience":[]${music?',"music":[]':''}} when nothing fits.`},
     {role:'user',content:JSON.stringify({segments:segments.map((segment, index) => ({index, speaker:segment.speaker, text:segment.text}))})}
   ];
@@ -1392,7 +1393,12 @@ export async function setup(ctx) {
   const bedVolume=layer=>{if(layer.audio)layer.audio.volume=effectVolume(layer.kind)*BED_LEVEL[layer.kind]*layer.level;};
   const bedEnabled=kind=>kind==='music'?config?.enableMusic===true:config?.enableAmbience!==false;
   const isBed=segment=>segment?.kind==='ambience' || segment?.kind==='music';
-  function showMusicCredit(){if(disposed)return;const title=beds.music?.audio && beds.music.title;$('musicCredit').hidden=!title;$('musicCredit').textContent=title?`"${title}" Kevin MacLeod (incompetech.com) · CC BY 4.0`:'';}
+  let announcedMusic;
+  const currentMusic=()=>{const title=beds.music?.audio && beds.music.title;return title?{title,credit:`"${title}" Kevin MacLeod (incompetech.com) · CC BY 4.0`}:null;};
+  function showMusicCredit(){
+    if(disposed)return;const music=currentMusic();$('musicCredit').hidden=!music;$('musicCredit').textContent=music?.credit || '';
+    if(music?.title!==announcedMusic){announcedMusic=music?.title;globalThis.dispatchEvent?.(new (globalThis.CustomEvent || CustomEvent)('choir-music-v1',{detail:music}));}
+  }
   function fadeBed(layer,to,done){
     clearInterval(layer.timer);const from=layer.level,start=Date.now();
     layer.timer=setInterval(()=>{const progress=Math.min(1,(Date.now()-start)/AMBIENCE_FADE_MS);layer.level=progress<1?from+(to-from)*progress:to;bedVolume(layer);if(progress===1){clearInterval(layer.timer);done?.();}},50);
@@ -1416,7 +1422,7 @@ export async function setup(ctx) {
     if(key===(beds[kind]?.key || ''))return;
     if(beds[kind]){const old=beds[kind];fadingBeds.add(old);fadeBed(old,0,()=>dropBed(old));}
     // A carried bed keeps loading after the paragraph that started it is cancelled.
-    const layer=beds[kind]=key?{kind,key,query:entry.query || [...entry.feels,...entry.genres].join(', '),level:0,loading:new AbortController()}:null;showMusicCredit();updateTransport();
+    const layer=beds[kind]=key?{kind,key,query:entry.query || [...entry.feels,...entry.genres].join(', '),feels:entry.feels,level:0,loading:new AbortController()}:null;showMusicCredit();updateTransport();
     if(layer)load(layer.loading.signal).then(source=>{
       if(beds[kind]!==layer)return;
       layer.title=source.title;layer.audio=new Audio(source.url || (layer.url=URL.createObjectURL(source)));layer.audio.loop=true;bedVolume(layer);
@@ -3117,9 +3123,9 @@ export async function setup(ctx) {
   const soundsEnabled=snapshot=>snapshot.enableSfx!==false || snapshot.enableAmbience!==false;
   const soundCuesWanted=snapshot=>soundsEnabled(snapshot) && Boolean(freesoundKey(snapshot)) || snapshot.enableMusic===true;
   const missingFoleyKey=snapshot=>soundsEnabled(snapshot) && !freesoundKey(snapshot)?'Sound effects and ambience need a Freesound API key in Advanced settings. Speech continues.':'';
-  async function chooseSoundCues(segments,signal,onStage=status){
+  async function chooseSoundCues(segments,signal,onStage=status,currentMusic){
     onStage('Choosing sound effects…');
-    const result=await rpc('sfx',{segments:segments.map(({speaker,text})=>({speaker,text})),connectionId:config.planner,music:config.enableMusic===true},signal,60000,
+    const result=await rpc('sfx',{segments:segments.map(({speaker,text})=>({speaker,text})),connectionId:config.planner,music:config.enableMusic===true,...(currentMusic?{currentMusic}:{})},signal,60000,
       progress=>onStage(`Choosing sound effects: ${progress.stage}${progress.model?` · ${progress.model}`:''}`));
     // Music alone needs no Freesound key; Freesound sounds without one would only fail later.
     return freesoundKey(config)?result:{...result,cues:[],ambience:[]};
@@ -3965,7 +3971,9 @@ const paragraphAudioCache = new Map();
   async function loadParagraphCues(rawText, snap, preferredSpeaker, signal) {
     const {segments, cleanPara, fromPlan} = paragraphSegments(rawText, snap, preferredSpeaker);
     if (fromPlan || !segments.length || paragraphCues.has(cleanPara) || !soundCuesWanted(snap)) return;
-    paragraphCues.set(cleanPara, await chooseSoundCues(segments, signal, () => {}));
+    // Cue carries the playing track into later paragraphs, so the planner changes it only when the scene does.
+    const playing = beds.music && {title: beds.music.title || '', feels: beds.music.feels};
+    paragraphCues.set(cleanPara, await chooseSoundCues(segments, signal, () => {}, playing));
     if (paragraphCues.size > 80) paragraphCues.delete(paragraphCues.keys().next().value);
   }
 
@@ -3983,6 +3991,11 @@ const paragraphAudioCache = new Map();
       generationPolicyChanged?.();if(muted && normalizeName(currentSpeaker)==='narrator')advancePlayback?.();
       scheduleSettingsSave();if(plan)renderPreview();void flushSettings().catch(()=>{});
     },
+    setSoundEnabled: (on) => {
+      for (const name of ['enableSfx','enableAmbience','enableMusic']) { $(name).checked = Boolean(on); if (config) config[name] = Boolean(on); }
+      scheduleSettingsSave(); syncSfxPlayback(); syncAmbiencePlayback(); syncMusicPlayback(); void flushSettings().catch(()=>{});
+    },
+    getMusic: () => currentMusic(),
     openDrawer: () => tab?.activate(),
     stop: () => stop(true),
     planParagraph: (text, speaker) => {

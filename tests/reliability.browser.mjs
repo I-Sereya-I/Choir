@@ -736,6 +736,26 @@ test('a music marker streams the chosen incompetech track under speech with its 
  }finally{await h.close();}
 });
 
+test('Cue carries the playing music into later paragraphs, announces it and one bridge toggle turns all Choir sound off',async()=>{
+ const h=await harness();try{
+  const events=[],target=new EventTarget();target.addEventListener('choir-music-v1',event=>events.push(event.detail));globalThis.dispatchEvent=event=>target.dispatchEvent(event);
+  try{
+   await configureFoley(h);await toggle(h,'enableMusic',true);const bridge=globalThis.__CHOIR_API__;assert.equal(bridge.getMusic(),null);
+   await bridge.playParagraph({text:'Night fell over the road.'});await until(()=>beds(h).length===1 && !beds(h)[0].paused);const music=beds(h)[0];
+   const playing={title:'Crypto',credit:'"Crypto" Kevin MacLeod (incompetech.com) · CC BY 4.0'};
+   await until(()=>bridge.getMusic()?.title==='Crypto');assert.deepEqual(bridge.getMusic(),playing);assert.deepEqual(events,[playing]);
+   assert.equal(h.requests.filter(request=>request.action==='sfx')[0].input.currentMusic,undefined);
+   await bridge.playParagraph({text:'Rain drummed on the roof.'});await until(()=>beds(h).length===2);
+   assert.deepEqual(h.requests.filter(request=>request.action==='sfx')[1].input.currentMusic,{title:'Crypto',feels:['Dark']});
+   assert.equal(music.paused,false);assert.equal(h.requests.filter(request=>request.action==='music').length,1);
+   bridge.setSoundEnabled(false);assert.ok(beds(h).every(audio=>audio.paused));assert.equal(bridge.getMusic(),null);assert.deepEqual(events,[playing,null]);
+   assert.deepEqual(['enableSfx','enableAmbience','enableMusic'].map(name=>h.$(name).checked),[false,false,false]);
+   await until(()=>['enableSfx','enableAmbience','enableMusic'].every(name=>h.store.get('chat:chat-a')[name]===false));
+   bridge.setSoundEnabled(true);await until(()=>['enableSfx','enableAmbience','enableMusic'].every(name=>h.store.get('chat:chat-a')[name]===true));assert.equal(h.$('enableMusic').checked,true);
+  }finally{delete globalThis.dispatchEvent;}
+ }finally{await h.close();}
+});
+
 test('Cue keeps a bed across paragraphs until a stop entry, stop() or cancellation, and a failed bed never blocks speech',async()=>{
  const h=await harness();try{
   await configureFoley(h);const bridge=globalThis.__CHOIR_API__;

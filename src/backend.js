@@ -542,7 +542,8 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
       if(controller.signal.aborted)return;
       if(!connection?.model)throw new Error('Select a Planner LLM connection with a text-generation model to choose sound effects.');
-      const messages=soundCuePrompt(segments,{music:input.music===true});let failure,finishReason;
+      const currentMusic=input.currentMusic && typeof input.currentMusic==='object'?{title:String(input.currentMusic.title || ''),feels:Array.isArray(input.currentMusic.feels)?input.currentMusic.feels.map(String):[]}:null;
+      const messages=soundCuePrompt(segments,{music:input.music===true,currentMusic});let failure,finishReason;
       for(let attempt=0;attempt<2;attempt++){
         if(controller.signal.aborted)return;
         progress({stage:`Waiting for sound effect choices (attempt ${attempt+1}/2)`,provider:connection.provider,model:connection.model});

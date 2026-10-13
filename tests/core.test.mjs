@@ -509,6 +509,9 @@ test('music entries are asked for only when enabled, keep known feels and genres
   assert.doesNotMatch(soundCuePrompt(segments)[0].content,/music entries/);
   const prompt=soundCuePrompt(segments,{music:true})[0].content;
   assert.match(prompt,/music entries follow/);assert.match(prompt,/Suspenseful/);assert.match(prompt,/Silent Film Score/);assert.match(prompt,/"music":\[\]/);
+  assert.doesNotMatch(prompt,/already playing/);
+  assert.match(soundCuePrompt(segments,{music:true,currentMusic:{title:'Crypto',feels:['Dark']}})[0].content,/Music "Crypto" \(Dark\) is already playing from the previous text and carries on: return a music entry only when this text clearly changes the mood or setting/);
+  assert.doesNotMatch(soundCuePrompt(segments,{currentMusic:{title:'Crypto',feels:['Dark']}})[0].content,/already playing/);
   const {music}=parseSoundCues(JSON.stringify({cues:[],music:[
     {segment:0,trigger:'The forest',feels:['eerie','Spooky','Dark','Mysterious','Intense'],genres:['soundtrack','Horror','Jazz'],keywords:[' harp ','forest','','x','y','z','w']},
     {segment:0,trigger:'Then the sun',stop:true},

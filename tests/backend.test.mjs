@@ -825,6 +825,9 @@ test('enabled music adds incompetech feels and genres to the sound request',asyn
   h.send('sfx',{segments:[{speaker:'Narrator',text:'Night fell.'}],connectionId:'llm-a',music:true});
   assert.deepEqual([...(await h.result()).message.result.music].map(entry=>({...entry,feels:[...entry.feels],genres:[...entry.genres],keywords:[...entry.keywords]})),[{segment:0,feels:['Dark'],genres:['Horror'],keywords:['organ'],trigger:'Night fell'}]);
   assert.match(request.messages[0].content,/music entries follow/);
+  const carried=await harness(async input=>{request=input;return {content:'{"cues":[]}'};},null,'openai');
+  carried.send('sfx',{segments:[{speaker:'Narrator',text:'Night fell.'}],connectionId:'llm-a',music:true,currentMusic:{title:'Crypto',feels:['Dark']}});await carried.result();
+  assert.match(request.messages[0].content,/Music "Crypto" \(Dark\) is already playing/);
 });
 
 const pieces=[
