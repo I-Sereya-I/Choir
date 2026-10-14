@@ -136,6 +136,9 @@ test('API errors preserve provider details across Lumiverse and gateway response
   assert.match(apiErrorMessage('',502),/returned no error details/);
   assert.ok(!apiErrorMessage('{"error":{}}',502).includes('[object Object]'));
   assert.ok(apiErrorMessage('x'.repeat(10000),502).length<600);
+  const gateway=apiErrorMessage('<h1>Bad gateway</h1><p>Browser Working Cloudflare Working Host Error</p><p>Cloudflare Ray ID: a4a7b9746d6c55f3</p><p>Your IP: private-address</p>',502);
+  assert.match(gateway,/HTTP 502: Cloudflare reports a Lumiverse host or gateway failure/);
+  assert.match(gateway,/Ray ID: a4a7b9746d6c55f3/);assert.ok(!gateway.includes('private-address'));
 });
 
 test('larger speech chunks respect provider limits while retaining a conservative unknown-provider limit',()=>{
@@ -144,6 +147,10 @@ test('larger speech chunks respect provider limits while retaining a conservativ
   assert.equal(speechRequestLimits('elevenlabs','eleven_v3').maxChars,5000);
   assert.equal(speechRequestLimits('custom').maxChars,2000);
   assert.equal(speechRequestLimits('google_vertex_tts').maxBytes,6000);
+  assert.equal(speechRequestLimits('openrouter_tts','fish-audio/s2.1-pro-free:free').maxChars,10000);
+  assert.equal(speechRequestLimits('openrouter_tts','google/gemini-3.8-flash-tts').maxBytes,6000);
+  assert.equal(speechRequestLimits('openrouter_tts','openai/gpt-4o-mini-tts').maxChars,4096);
+  assert.equal(speechRequestLimits('openrouter_tts','unrecognized/model').maxChars,2000);
   const text='A long neutral phrase '.repeat(400);
   const batches=speechBatches([{speaker:'Narrator',voice:'n',text}],10000,'native:a',false,()=>speechRequestLimits('openai_tts'));
   assert.ok(batches.length>1);assert.ok(batches.every(batch=>batch.text.length<=4096));

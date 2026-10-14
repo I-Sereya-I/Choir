@@ -1542,6 +1542,54 @@ async function fishGroupingHarness(mixer){
   for(const actor of saved.fixed){delete actor.route;delete actor.accent;delete actor.pronunciation;}
   h.store.set('chat:chat-a',saved);await h.reload();return h;
 }
+async function openRouterGroupingHarness(family='fish_audio',patched=true){
+ const h=await harness(),fishModel='fish-audio/s2.1-pro-free:free',googleModel='google/gemini-3.8-flash-lite-tts';
+ const fishIds=['1','2','3','4'].map(char=>char.repeat(32)),ids=family==='fish_audio'?fishIds:['Charon','Kore','Puck','Zephyr'];
+ h.connections[0].provider='openrouter_tts';h.connections[0].model=family==='fish_audio'?fishModel:googleModel;
+ const mixed=[{id:'alloy',name:'Alloy (OpenAI)'},...['Puck','Kore','Charon','Zephyr'].map(id=>({id,name:`${id} (Gemini)`}))];
+ h.state.providers=[{id:'openrouter_tts',capabilities:{parameters:{instructions:{type:'string'},speech_style:{type:'string'}},staticVoices:mixed,...(patched?{multiSpeaker:{maxSpeakers:5,models:[fishModel,googleModel],maxSpeakersByModel:{[fishModel]:5,[googleModel]:2}}}:{})}}];
+ h.state.catalogues={a:{voices:mixed}};h.state.planForCatalogue=true;
+ const saved=h.store.get('chat:chat-a');saved.connectionMode='one';saved.batchSpeech=true;saved.enableSfx=false;saved.enableAmbience=false;saved.useStyle=true;
+ saved.fixed.forEach((actor,i)=>{actor.voice=ids[i];delete actor.route;delete actor.accent;delete actor.pronunciation;});saved.casts={'native:a':[{speaker:'Guard',voice:ids[3],style:''}]};
+ if(family==='fish_audio'){saved.extraVoices=fishIds.map(id=>`${id} | A warm storyteller.`).join('\n');saved.extraVoiceRoutes=Object.fromEntries(fishIds.map(id=>[id,['native:a']]));}
+ h.store.set('chat:chat-a',saved);await h.reload();return h;
+}
+
+test('OpenRouter Fish grouping uses Fish voice IDs and exposes Fish catalogue tools without Gemini or GPT voices',async()=>{
+ const h=await openRouterGroupingHarness();try{
+  const options=[...h.$('fixed').querySelector('[data-choir-voice]').options].map(option=>option.value);
+  assert.ok(!options.includes('Puck'));assert.ok(!options.includes('alloy'));assert.ok(options.includes('1'.repeat(32)));
+  h.$('captureDefaults').click();const dialog=document.querySelector('[role="dialog"][aria-label="Set default"]');
+  assert.equal(dialog.querySelector('[aria-label="Browse Fish voice catalogue for Default Narrator voice"]').parentElement.hidden,false);
+  [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Cancel').click();
+  await h.plan();await h.play();assert.equal(h.synthesis.length,1);
+  assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>turn.voice),['1','3','4','1'].map(char=>char.repeat(32)));
+  assert.equal(h.synthesis[0].parameters.turns.map(turn=>turn.text).join(' '),h.message.content);
+  assert.match(h.$('groupingStatus').textContent,/up to 5 voices per call/);
+  await h.reload();await h.play();assert.equal(h.synthesis.length,1);
+ }finally{await h.close();}
+});
+
+test('OpenRouter Gemini groups only two preset voices per call despite the provider also supporting five Fish voices',async()=>{
+ const h=await openRouterGroupingHarness('gemini');try{
+  const options=[...h.$('fixed').querySelector('[data-choir-voice]').options].map(option=>option.value);
+  assert.ok(options.includes('Puck'));assert.ok(!options.includes('alloy'));
+  assert.match(h.$('groupingStatus').textContent,/up to 2 preset voices per call/);
+  await h.plan();await h.play();assert.equal(h.synthesis.length,2);
+  assert.deepEqual(h.synthesis.flatMap(request=>request.parameters.turns.map(turn=>turn.voice)),['Charon','Puck','Zephyr','Charon']);
+  assert.ok(h.synthesis.every(request=>new Set(request.parameters.turns.map(turn=>turn.voice)).size<=2));
+ }finally{await h.close();}
+});
+
+test('an unpatched OpenRouter relay keeps Fish voices model-specific and uses separate calls for different speakers',async()=>{
+ const h=await openRouterGroupingHarness('fish_audio',false);try{
+  assert.match(h.$('groupingStatus').textContent,/relay advertises one voice per call/);
+  await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+  assert.ok(h.synthesis.every(request=>!request.parameters.turns && /^[1-4]{32}$/.test(request.voice)));
+  assert.equal(h.synthesis[0].text,'At dawn.');assert.equal(h.synthesis[0].parameters.instructions,'Calm');
+ }finally{await h.close();}
+});
+
 test('optional Fish grouping sends four turns in one request and cached replay makes no new calls',async()=>{
   const h=await fishGroupingHarness();try{
     assert.equal(h.$('batchSpeech').checked,true);await h.plan();await h.play();

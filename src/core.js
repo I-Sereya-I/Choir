@@ -78,7 +78,12 @@ export function apiErrorMessage(raw,status) {
     detail=[body?.error?.message,body?.error?.detail,body?.error,body?.message,body?.detail,body?.error_description,typeof body==='string'?body:''].find(value=>typeof value==='string' && value.trim()) || '';
   } catch {detail=String(raw || '');}
   detail=detail.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>|<style\b[^>]*>[\s\S]*?<\/style\s*>/gi,' ')
-    .replace(/<[^>]*>/g,' ').replace(/&nbsp;|&#160;/gi,' ').replace(/&amp;/gi,'&').replace(/\s+/g,' ').trim().slice(0,500);
+    .replace(/<[^>]*>/g,' ').replace(/&nbsp;|&#160;/gi,' ').replace(/&amp;/gi,'&').replace(/\s+/g,' ').trim();
+  if([502,504].includes(status) && /cloudflare/i.test(detail) && /Host Error/i.test(detail)){
+    const ray=/Cloudflare Ray ID:\s*([a-f0-9]+)/i.exec(detail)?.[1];
+    detail=`Cloudflare reports a Lumiverse host or gateway failure. Check Lumiverse and reverse proxy logs to identify the cause.${ray?` Cloudflare Ray ID: ${ray}.`:''}`;
+  }
+  detail=detail.slice(0,500);
   return `Lumiverse API HTTP ${status}${detail?`: ${detail}`:': The server or gateway returned no error details.'}`;
 }
 
@@ -580,8 +585,20 @@ export function planningSections(transcript,maxChars=1200,maxUnits=8) {
 export const MAX_SPEECH_CHARS = 10000;
 export const GEMINI_SPEECH_BYTES = 6000;
 
-export function speechRequestLimits(provider = '', model = '') {
+export function speechProviderFamily(provider='',model='') {
   const name=String(provider).toLowerCase();
+  if(name==='openrouter_tts'){
+    if(/^fish-audio\//i.test(model))return 'fish_audio';
+    if(/^google\/gemini-.*tts/i.test(model))return 'gemini';
+    if(/^openai\//i.test(model))return 'openai_tts';
+  }
+  if(name.includes('fish'))return 'fish_audio';
+  if(['google_tts','google_vertex_tts','google','aistudio','vertex','google-ai-studio','vertex-ai','gemini'].includes(name) || name.includes('vertex') || name.includes('aistudio'))return 'gemini';
+  return name;
+}
+
+export function speechRequestLimits(provider = '', model = '') {
+  const name=speechProviderFamily(provider,model);
   if(name.includes('openai'))return {maxChars:4096};
   if(name.includes('fish'))return {maxChars:MAX_SPEECH_CHARS};
   if(name.includes('eleven'))return {maxChars:String(model).startsWith('eleven_v3')?5000:MAX_SPEECH_CHARS};

@@ -1,4 +1,4 @@
-import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, reconcileCardCast, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, planningSections, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset } from './core.js';
+import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, reconcileCardCast, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, planningSections, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset } from './core.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
 const ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
@@ -762,10 +762,7 @@ export async function setup(ctx) {
     if (route === 'gemini') return 'gemini';
     const connectionId = route.startsWith('native:') ? route.slice(7) : route;
     const conn = nativeConnections.find(c => c.id === connectionId);
-    const p = String(conn?.provider || '').toLowerCase();
-    if (p.includes('fish')) return 'fish_audio';
-    if (['google_tts','google_vertex_tts','google','aistudio','vertex','google-ai-studio','vertex-ai','gemini'].includes(p) || p.includes('vertex') || p.includes('aistudio')) return 'gemini';
-    return p || 'generic';
+    return speechProviderFamily(conn?.provider,conn?.model) || 'generic';
   };
   function extraVoiceRoutes(id) {
     return Object.hasOwn(config.extraVoiceRoutes || {},id) && Array.isArray(config.extraVoiceRoutes[id])?config.extraVoiceRoutes[id]:[];
@@ -809,7 +806,7 @@ export async function setup(ctx) {
     if(disposed || version!==loadVersion)return [];
     if(voiceCatalogues.has(route))return voiceCatalogues.get(route);
     scopeLegacyExtraVoices();
-    const extra=[...additionalVoices(config.extraVoices).filter(voice=>extraVoiceRoutes(voice.id).includes(route)),...(capturedDefaults?.voiceCatalogue || []).filter(voice=>voice.route===route)];
+    let extra=[...additionalVoices(config.extraVoices).filter(voice=>extraVoiceRoutes(voice.id).includes(route)),...(capturedDefaults?.voiceCatalogue || []).filter(voice=>voice.route===route)];
     if(route==='gemini'){
       const catalogue=normalizeVoiceCatalogue([...new Map([...GEMINI_VOICES,...extra].map(voice=>[voice.id,voice])).values()]);
       voiceCatalogues.set(route,catalogue);return catalogue;
@@ -825,6 +822,10 @@ export async function setup(ctx) {
     if(disposed || version!==loadVersion)return [];
     let baseVoices=data.voices || [];
     if(!baseVoices.length)baseVoices=fallback.length?fallback:provider==='openai_tts'?OPENAI_VOICES:[];
+    if(conn.provider==='openrouter_tts'){
+      const compatible=voice=>provider==='fish_audio'?!GEMINI_VOICES.some(item=>item.id===voice.id) && !OPENAI_VOICES.some(item=>item.id===voice.id):provider==='gemini'?GEMINI_VOICES.some(item=>item.id===voice.id) || voice.id.startsWith('voice_'):provider==='openai_tts'?OPENAI_VOICES.some(item=>item.id===voice.id):true;
+      baseVoices=baseVoices.filter(compatible);extra=extra.filter(compatible);
+    }
     if(provider==='gemini' && !baseVoices.some(v=>GEMINI_VOICES.some(gv=>gv.id===v.id))) {
       baseVoices=[...baseVoices,...GEMINI_VOICES];
     }
@@ -1100,6 +1101,7 @@ export async function setup(ctx) {
     // Bound both the relay response and its audio download; do not retry paid requests automatically.
     const timeout=setTimeout(()=>{timedOut=true;request.abort();},185000);
     try{
+      if(speechProviderFamily(connection.provider,connection.model)==='fish_audio' && [...GEMINI_VOICES,...OPENAI_VOICES].some(item=>item.id===voice))throw new Error(`Fish Audio requires a Fish voice ID; ${voice} belongs to Gemini or OpenAI. Edit this speaker and choose a Fish voice.`);
       const response=await api('/tts/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({connectionId:connection.id,model:connection.model,voice,text,parameters}),signal:request.signal});
       return await response.blob();
@@ -1531,7 +1533,7 @@ export async function setup(ctx) {
           const conn=nativeConnections.find(c=>c.id===connectionId) || nativeConnections[0];
           if(!conn)throw new Error('TTS connection not available for audition.');
           const isFish=cardProvider==='fish_audio';
-          const textToSend=isFish ? `[cheerful] ${sampleText}` : sampleText;
+          const textToSend=isFish && conn.provider!=='openrouter_tts' ? `[cheerful] ${sampleText}` : sampleText;
           blob=await nativeSpeech(conn,{voice:selectedVoice,text:textToSend,parameters:previewRequest.parameters},ctrl.signal,name.value || 'Voice');
         }
         if(token!==revision || ctrl.signal.aborted)return;
@@ -2430,7 +2432,8 @@ export async function setup(ctx) {
     const route=segment.route || scope(snapshot),actor=actorFor(segment,snapshot);
     const connection=nativeConnections.find(c=>`native:${c.id}`===route);
     const supported=nativeProviders.find(provider=>provider.id===connection?.provider)?.capabilities?.parameters || {};
-    const styleParam=snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:route!==scope(snapshot)?['instructions','instruct','prompt'].find(p=>supported[p]):undefined;
+    const family=detectProvider(route),openRouterStyle=connection?.provider==='openrouter_tts' && ['fish_audio','gemini'].includes(family);
+    const styleParam=snapshot.styleParam && supported[snapshot.styleParam]?snapshot.styleParam:openRouterStyle?'instructions':route!==scope(snapshot)?['instructions','instruct','prompt'].find(p=>supported[p]):undefined;
     const parameters={};
     if(actor?.accent && supported.accent){
       const allowed=supported.accent.enum || supported.accent.options;
@@ -2439,32 +2442,34 @@ export async function setup(ctx) {
     }
     const instructions=[snapshot.useStyle?segment.style:'',actor?.pronunciation,actor?.accent && !supported.accent?`Accent: ${actor.accent}`:''].filter(Boolean).join('. ');
     if(styleParam && instructions)parameters[styleParam]=instructions;
-    return {segment:{...segment,route,style:route==='gemini'?instructions:detectProvider(route)==='fish_audio' && snapshot.useStyle?segment.style:''},connection,parameters};
+    return {segment:{...segment,route,style:route==='gemini' || openRouterStyle?instructions:family==='fish_audio' && snapshot.useStyle?segment.style:''},connection,parameters};
   }
   function cacheKey(segment,snapshot){
     if(segment.kind)return `${segment.kind}:${foleyKey(segment[segment.kind])}`;
     const request=synthesisSettings(segment,snapshot);
     return passageKey(request.segment,{...snapshot,defaultRoute:scope(snapshot)},request.connection,request.parameters);
   }
+  function nativeSpeakerLimit(connection){
+    const capability=nativeProviders.find(item=>item.id===connection?.provider)?.capabilities?.multiSpeaker;
+    return capability && (!capability.models || capability.models.includes(connection?.model))?capability.maxSpeakersByModel?.[connection.model] ?? capability.maxSpeakers:0;
+  }
   function groupedLimits(segment,route,snapshot){
     const request=synthesisSettings(segment,snapshot),connection=request.connection;
     const provider=nativeProviders.find(item=>item.id===connection?.provider);
-    const limits=speechRequestLimits(route==='gemini'?'gemini':connection?.provider,connection?.model || snapshot.model);
-    const capability=provider?.capabilities?.multiSpeaker;
+    const family=detectProvider(route),limits=speechRequestLimits(route==='gemini'?'gemini':connection?.provider,connection?.model || snapshot.model);
     const prebuilt=GEMINI_VOICES.some(voice=>voice.id===segment.voice);
-    const maxSpeakers=route==='gemini'?prebuilt?2:0:capability && (!capability.models || capability.models.includes(connection.model)) &&
-      (connection.provider==='fish_audio' || provider.capabilities.staticVoices?.some(voice=>voice.id===segment.voice))?capability.maxSpeakers:0;
+    const maxSpeakers=route==='gemini'?prebuilt?2:0:family==='fish_audio' || family==='gemini' && prebuilt || provider?.capabilities.staticVoices?.some(voice=>voice.id===segment.voice)?nativeSpeakerLimit(connection):0;
     const parameters={...request.parameters};
-    if(maxSpeakers && connection?.provider.startsWith('google')){delete parameters.speech_style;delete parameters.instructions;}
+    if(maxSpeakers && (family==='gemini' || connection?.provider==='openrouter_tts')){delete parameters.speech_style;delete parameters.instructions;}
     const level=mixerVolume(1,segment.speaker,mixerState.channels);
     return {...limits,maxSpeakers,group:JSON.stringify([parameters,level,maxSpeakers]),
       measure:turns=>{
         const styled=turns.map(turn=>synthesisSettings(turn,snapshot).segment);
-        const text=styled.map((turn,index)=>connection?.provider==='fish_audio'
+        const text=styled.map((turn,index)=>family==='fish_audio'
           ? `${maxSpeakers?`<|speaker:${index}|>`:''}${turn.style && !turn.text.startsWith('[')?`[${turn.style.replace(/^\[|\]$/g,'')}] `:''}${turn.text}`:turn.text).join('\n');
-        const styles=connection?.provider==='fish_audio'?'':styled.map(turn=>turn.style || '').join('');
+        const styles=family==='fish_audio'?'':styled.map(turn=>turn.style || '').join('');
         const effective={...connection?.default_parameters,...request.parameters};
-        const nativeStyle=connection?.provider.startsWith('google')?String(effective.speech_style ?? effective.instructions ?? 'casual, relaxed conversation, natural pacing, understated expression'):'';
+        const nativeStyle=family==='gemini' && connection?String(effective.speech_style ?? effective.instructions ?? 'casual, relaxed conversation, natural pacing, understated expression'):'';
         return {chars:text.length,bytes:new TextEncoder().encode(text+styles+nativeStyle.repeat(turns.length)).length};
       }};
   }
@@ -2473,10 +2478,9 @@ export async function setup(ctx) {
     if(plan)$('planSummary').textContent=`Speech plan · ${plan.segments.length} spoken blocks`;
     node.hidden=!config?.batchSpeech;if(node.hidden)return;
     const route=scope(config),connection=nativeConnections.find(item=>`native:${item.id}`===route);
-    const capability=nativeProviders.find(item=>item.id===connection?.provider)?.capabilities?.multiSpeaker;
-    const maxSpeakers=route==='gemini'?2:capability && (!capability.models || capability.models.includes(connection?.model))?capability.maxSpeakers:0;
+    const maxSpeakers=route==='gemini'?2:nativeSpeakerLimit(connection);
     const name=route==='gemini'?'Gemini':connection?.name || 'This connection';
-    const support=maxSpeakers?`${name} can combine up to ${maxSpeakers} ${route==='gemini' || connection?.provider.startsWith('google')?'preset ':''}voices per call.`:`${name} accepts one voice per call; different assigned voices need separate calls.`;
+    const support=maxSpeakers?`${name} can combine up to ${maxSpeakers} ${detectProvider(route)==='gemini'?'preset ':''}voices per call.`:`${name}'s Lumiverse relay advertises one voice per call; different assigned voices need separate calls.`;
     let count='';
     if(plan?.segments?.length){
       try{const batches=playbackBatches(plan.segments.map((segment,passageIndex)=>({...segment,passageIndex})),config);
@@ -2655,7 +2659,7 @@ export async function setup(ctx) {
               if(!connection)throw new Error(`TTS connection for ${seg.speaker} is no longer available. Choose another connection and plan again.`);
               const parameters=request.parameters;
               const isFish=detectProvider(route)==='fish_audio';
-              const textToSend=isFish && snapshot.useStyle && seg.style && !seg.text.startsWith('[')
+              const textToSend=isFish && connection.provider!=='openrouter_tts' && snapshot.useStyle && seg.style && !seg.text.startsWith('[')
                 ? (seg.style.trim().startsWith('[') ? `${seg.style.trim()} ${seg.text}` : `[${seg.style.trim()}] ${seg.text}`)
                 : seg.text;
               blob=await nativeSpeech(connection,{voice:seg.voice,text:textToSend,parameters},ctrl.signal,seg.speaker);
@@ -3130,8 +3134,8 @@ export async function setup(ctx) {
         const connection=nativeConnections.find(c=>`native:${c.id}`===config.connection) || nativeConnections.find(c=>c.id===config.connection) || nativeConnections[0];
         if(!connection)throw new Error('TTS connection is not available for audition.');
         const isFish=detectProvider(config)==='fish_audio';
-        const textToSend=isFish ? `[cheerful] ${sampleText}` : sampleText;
-        blob=await nativeSpeech(connection,{voice:voiceId,text:textToSend,parameters:{}},ctrl.signal,'Audition');
+        const textToSend=isFish && connection.provider!=='openrouter_tts' ? `[cheerful] ${sampleText}` : sampleText;
+        blob=await nativeSpeech(connection,{voice:voiceId,text:textToSend,parameters:isFish && connection.provider==='openrouter_tts'?{instructions:'cheerful'}:{}},ctrl.signal,'Audition');
       }
       if(token!==revision || ctrl.signal.aborted)return;
       status(`Auditioning voice: ${voiceId}`);
@@ -3367,7 +3371,7 @@ export async function setup(ctx) {
       const connection=nativeConnections.find(c=>`native:${c.id}`===route);
       if(!connection)throw new Error(`TTS connection for ${seg.speaker} is no longer available. Choose another connection and plan again.`);
       const isFish=detectProvider(route)==='fish_audio';
-      const textToSend=isFish && snapshot.useStyle && seg.style && !seg.text.startsWith('[')
+      const textToSend=isFish && connection.provider!=='openrouter_tts' && snapshot.useStyle && seg.style && !seg.text.startsWith('[')
         ? (seg.style.trim().startsWith('[') ? `${seg.style.trim()} ${seg.text}` : `[${seg.style.trim()}] ${seg.text}`)
         : seg.text;
       return await nativeSpeech(connection,{voice:seg.voice,text:textToSend,parameters:request.parameters},signal,seg.speaker);
