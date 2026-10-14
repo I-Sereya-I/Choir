@@ -1,4 +1,4 @@
-import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, reconcileCardCast, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, planningSections, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset } from './core.js';
+import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, reconcileCardCast, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, planningSections, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset } from './core.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
 const ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
@@ -2233,7 +2233,7 @@ export async function setup(ctx) {
         const signature=JSON.stringify([snapshot.mode,snapshot.model,snapshot.connection,snapshot.styleParam,playedBatches,
           playedBatches.map(segment=>nativeConnections.find(c=>`native:${c.id}`===(segment.route || scope(snapshot)))?.model)]);
         let storageError='';
-        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content,transcript,signature,segments:playedBatches,blobs,retention:config.retention});}
+        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content,transcript,signature,segments:playedBatches,blobs,sfxPlacement:SFX_PLACEMENT_VERSION,retention:config.retention});}
         catch(error){storageError=error.message;}
         if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:config.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
       }
@@ -2449,6 +2449,8 @@ export async function setup(ctx) {
       return limits;
     });
   }
+  const SFX_PLACEMENT_VERSION=1;
+  const outdatedSfxRecording=recording=>config.enableSfx!==false && recording.sfxPlacement!==SFX_PLACEMENT_VERSION && recording.segments?.some(segment=>segment.kind==='sfx');
   function playbackBatches(segments,snapshot,{filterMuted=true,batchGemini=false,startup=true}={}){
     const sound=(kind,speaker,text,cue)=>({kind,speaker,voice:'',text,route:kind,[kind]:cue});
     const expanded=segments.flatMap(segment=>{
@@ -2459,12 +2461,15 @@ export async function setup(ctx) {
         ...(snapshot.enableSfx===false?[]:sfx || []).map(cue=>sound('sfx','SFX',`[SFX: ${cue.query}]`,cue))
       ];
       if(!points.length)return [speech];
-      // Beds switch and effects play right before the words they were anchored to.
+      // Effects use complete phrase boundaries; background beds keep their exact anchors.
       const parts=[];let start=0;
-      for(const {part,at} of points.map(part=>({part,at:Math.max(0,cueOffset(speech.text,part[part.kind].trigger))})).sort((a,b)=>a.at-b.at)){
+      for(const {part,at,anchor} of points.map(part=>{
+        const anchor=Math.max(0,cueOffset(speech.text,part[part.kind].trigger));
+        return {part,anchor,at:part.kind==='sfx'?sfxCueOffset(speech.text,part.sfx.trigger):anchor};
+      }).sort((a,b)=>a.at-b.at)){
         const head=speech.text.slice(start,Math.max(start,at)).trim();
         if(head)parts.push({...speech,text:head});
-        parts.push({...part,passageIndex:segment.passageIndex,moment:speech.text.slice(Math.max(0,at-60),at+240)});
+        parts.push({...part,passageIndex:segment.passageIndex,moment:speech.text.slice(Math.max(0,anchor-60),anchor+240)});
         start=Math.max(start,at);
       }
       const tail=speech.text.slice(start).trim();
@@ -2534,7 +2539,7 @@ export async function setup(ctx) {
     // Upgrade old complete recordings without discarding their audio.
     if(!cached?.passages)for(const [index,segment] of (cached?.segments || []).entries())if(cached.blobs?.[index] && (!segment.turns || segment.turns.length===1))passages[cacheKey(segment,snapshot)]=cached.blobs[index];
     const persist=()=>{
-      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],passages:{...passages},retention:snapshot.retention};
+      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],passages:{...passages},sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
       saveQueue=saveQueue.then(()=>recordingStore('put',recordingKey(source.chatId,source.messageId),value)).catch(error=>{saveError=error.message;});
       return saveQueue;
     };
@@ -2721,7 +2726,7 @@ export async function setup(ctx) {
     status('Checking saved audio…');
     try{cached=await recordingStore('get',key);}catch(error){storageError=error.message;}
     if(token!==revision || ctrl.signal.aborted)throw abortError();
-    if(source.resume && cached?.signature!==signature && (snapshot.batchSpeech || cached?.segments?.some(segment=>segment.turns?.length>1)))source.resume=null;
+    if(source.resume && cached?.signature!==signature && (snapshot.batchSpeech || cached?.segments?.some(segment=>segment.turns?.length>1) || outdatedSfxRecording(cached || {})))source.resume=null;
     const apiKey=$('key').value.trim();
     if(segments.some(segment=>!speakerExcluded(segment.speaker) && (segment.route || scope(snapshot))==='gemini' && !cached?.passages?.[cacheKey(segment,snapshot)]) && !apiKey){controller=null;throw new Error('Enter your Gemini API key for missing passages using the Gemini adapter. It is held only in this page session.');}
     setBusy(true);
@@ -2732,7 +2737,7 @@ export async function setup(ctx) {
       const {blobs,warnings}=await player.playbackPromise;
       {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,retention:snapshot.retention});storageError='';}
+        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
       if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
@@ -2750,6 +2755,10 @@ export async function setup(ctx) {
       if(mergedCardRecording(recording))throw new Error('This recording combines several card characters into one voice. Plan and play the message again to separate them.');
       if(aliasedLeadRecording(recording))throw new Error('This recording treats a lead character alias as a separate speaker. Plan and play the message again to use the lead voice.');
       if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to apply the current filters or persona name.');
+      if(outdatedSfxRecording(recording)){
+        if(await restoreSavedPlan(messageId)){await play();return;}
+        throw new Error('Saved sound-effect timing needs updating. Plan and play this reply to place effects between phrases.');
+      }
       if(recording.segments.some(segment=>segment.dialogue && (!config.batchSpeech || segment.turns.some(turn=>speakerExcluded(turn.speaker) || mixerVolume(1,turn.speaker,mixerState.channels)!==mixerVolume(1,segment.turns[0].speaker,mixerState.channels))))){
         if(await restoreSavedPlan(messageId)){await play();return;}
         throw new Error('Speaker controls changed. Plan and play this reply to rebuild its grouped audio.');
@@ -2794,7 +2803,7 @@ export async function setup(ctx) {
         if(!valid())return;
         const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
         const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind).map(segment=>segment.text).join(' ');
-        if(canonical(recordedText)===canonical(recording.transcript || transcriptFromMessage(content,config?.ignoredTags)) && Array.from(recording.blobs || []).every(Boolean) && recording.blobs?.length===recording.segments?.length){await replayRecording(messageId);return;}
+        if(!outdatedSfxRecording(recording) && canonical(recordedText)===canonical(recording.transcript || transcriptFromMessage(content,config?.ignoredTags)) && Array.from(recording.blobs || []).every(Boolean) && recording.blobs?.length===recording.segments?.length){await replayRecording(messageId);return;}
       }
       if(valid())await prepare(messageId,true);
     } finally {if(messageOperation===operation)messageOperation=null;}

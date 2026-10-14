@@ -920,6 +920,28 @@ function cueOffset(text, trigger) {
   return exact >= 0 ? exact : text.toLowerCase().indexOf(trigger.toLowerCase());
 }
 
+// An action-word anchor must not cut its subject off from the verb. Keep an
+// explicitly anchored conjunction clause, otherwise back up to punctuation.
+function sfxCueOffset(text, trigger) {
+  let target=Math.max(0,cueOffset(text,trigger));
+  if(!target)return 0;
+  const quotations=[...text.matchAll(/"[^"]*(?:"|$)|“[^”]*(?:”|$)/g)];
+  const utterance=quotations.find(quote=>target>=quote.index && target<quote.index+quote[0].length);
+  if(utterance)target=utterance.index;
+  if(/^(?:and|but|or|then|as|when|while|before|after|once|until|unless|because|although|though|since)\s+\S+/i.test(text.slice(target)) && !/[\p{L}\p{N}]/u.test(text[target-1]))return target;
+  let boundary=0;
+  for(const match of text.matchAll(/(?:[.!?…。！？,;:，；：—–]+["'”’\)\]]*\s+|\n[ \t]*\n+)/g)){
+    const next=match.index+match[0].length;
+    if(next>target)break;
+    if(quotations.some(quote=>match.index>quote.index && next<quote.index+quote[0].length))continue;
+    // A title, initial or decimal is part of its phrase, not a sentence break.
+    if(match[0].startsWith('.') && /\b(?:mr|mrs|ms|dr|prof|sr|jr|st|vs|etc|e\.g|i\.e|[a-z])\.$/i.test(text.slice(0,match.index+1)))continue;
+    if(/^[.,]/.test(match[0]) && /\d/.test(text[match.index-1] || '') && /\d/.test(text[next] || ''))continue;
+    boundary=next;
+  }
+  return boundary;
+}
+
 // Read-along compares only letters, digits and marks, so rendered markdown, quote styles and
 // entities line up with the plain transcript. Case folding keeps UTF-16 offsets one-for-one.
 const READABLE = /[\p{L}\p{N}\p{M}]/u;
@@ -1023,6 +1045,7 @@ function soundCuePrompt(segments, {music=false, currentMusic=null}={}) {
     {role:'system',content:`You are the Foley editor for an audiobook. Choose short sound effects and looping background ambience that make the scene audible. Return ONLY JSON {"cues":[{"segment":0,"trigger":"exact words","query":"freesound search"}],"ambience":[{"segment":0,"trigger":"exact words","query":"freesound search"},{"segment":3,"trigger":"exact words","stop":true}]${music?',"music":[{"segment":0,"trigger":"exact words","feels":["Mysterious"],"genres":["Soundtrack"],"keywords":["harp","forest"]}]':''}}.
 Choose only concrete physical sounds that happen in the scene as it is told: objects, movement, impacts, doors, footsteps, weather, fire, water, animals, vehicles, machines, weapons, crowds. Skip sounds that are remembered, imagined, hypothetical, negated or metaphorical. Skip voices and vocal sounds such as speech, laughter, sighs, gasps, screams and singing, because the voice actors perform those. Skip music.
 segment is the index of the numbered segment where the sound happens. trigger copies 2 to 6 consecutive words exactly as written in that segment, in the original language, from the start of the sentence or clause where the sound happens; the effect plays right before those words. query is an English Freesound search of 1 to 3 words naming the sound source and action the way sound files are named, such as "door slam", "bottle clink", "egg crack" or "sword clash", whatever language the story uses. Never add places or scene details: every search word must match.
+For sound effects, keep each spoken phrase intact. Anchor at a sentence start, after clause punctuation (comma, semicolon, colon or dash), or at a conjunction that begins a complete action group, such as "and slid" or "as the glass shattered". Include the subject with its action; never insert an effect between a name/pronoun and its verb, inside a noun phrase, or inside a quoted utterance. For "Once she took the bite, Kellin set the plate back on the walnut edge and slid his hand beneath the hoodie", use "Kellin set the plate" or "and slid his hand", never "set the plate" after Kellin. If the action has no nearby clean break, use the start of its sentence.
 Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments.
 ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.${music?`
 music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments or the setting, such as "piano", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Return at most ${MUSIC_LIMIT} music entries in story order, usually one at the start, and change music only when the mood clearly shifts.${playing?` Music ${playing} is already playing from the previous text and carries on: return a music entry only when this text clearly changes the mood or setting, otherwise return no music entries.`:''}`:''}
@@ -1527,7 +1550,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.6-staging.14',ready:true}});return;
+      send({result:{version:'1.1.6-staging.15',ready:true}});return;
     }
     if(message.action==='testPlanner') {
       const mode=resolvePlannerMode(input);

@@ -102,7 +102,7 @@ async function harness(mixerPreferences,mobile=false){
         else if(request.action==='sfx'){
           if(state.sfxError){backend({namespace:'choir',id:request.id,error:state.sfxError});return;}
           const anchored=entries=>request.input.segments.flatMap((segment,index)=>Object.entries(entries).filter(([trigger])=>segment.text.includes(trigger)).map(([trigger,query])=>({segment:index,trigger,...(query?{query}:{stop:true})})));
-          result={cues:anchored({'page snapped':'page turn','glass shattered':'glass shatter'}),ambience:anchored({'Rain drummed':'rain','The tavern':'tavern crowd','Silence fell':''}),
+          result=state.soundCues || {cues:anchored({'page snapped':'page turn','glass shattered':'glass shatter'}),ambience:anchored({'Rain drummed':'rain','The tavern':'tavern crowd','Silence fell':''}),
             music:request.input.music?anchored({'Night fell':'Dark','The storm broke':'Intense','Dawn broke':'Bright','Music stopped':''}).map(({query,...entry})=>query?({...entry,feels:[query],genres:['Soundtrack'],keywords:['organ']}):entry):[]};
         }
         else if(request.action==='music'){
@@ -547,7 +547,7 @@ test('Freesound failures stay visible, continue speech, and retry without regene
    assert.match(['key','choice'].includes(failure)?h.$('sfxStatus').textContent:h.$('status').textContent,failure==='key'?/Freesound API key/:/SFX skipped/);assert.equal(h.$('sfxStatus').hidden,false);assert.match(h.$('sfxStatus').textContent,/Speech continues/);
    const generated=h.synthesis.length;h.state.sfxError=null;h.state.foleyError=null;h.state.noFoleyResults=false;h.state.previewStatus=200;h.state.previewType='audio/mpeg';if(failure==='key')await configureFoley(h);
    if(['key','choice'].includes(failure))await h.plan();
-   await h.play();assert.equal(await playedFoley(h),1);assert.equal(h.synthesis.length,['key','choice'].includes(failure)?generated+2:generated);assert.equal(h.$('sfxStatus').hidden,true);
+   await h.play();assert.equal(await playedFoley(h),1);assert.equal(h.synthesis.length,generated);assert.equal(h.$('sfxStatus').hidden,true);
   }finally{await h.close();}
  }
 });
@@ -571,7 +571,7 @@ test('SFX mixer switch retains its level when off, stops live effects, applies t
   const level=(actual,expected)=>assert.ok(Math.abs(actual-expected)<0.000001,`Expected volume ${expected}, got ${actual}`);
   h.$('showMixer').click();const mixer=document.querySelector('[data-choir-mixer]'),sfx=()=>document.querySelector('[data-choir-mixer] [data-choir-action="sfx"]');
   assert.equal(mixer.querySelector('[aria-label="SFX volume"]').value,'1');assert.equal(sfx().parentElement.className,'cm-auto-plan');assert.equal(sfx().textContent,'SFX');
-  await configureFoley(h);h.message.content='The page snapped under her thumb.';await h.plan();h.state.blockAudio=true;h.$('play').click();
+  await configureFoley(h);h.message.content='She listened; the page snapped under her thumb.';await h.plan();h.state.blockAudio=true;h.$('play').click();
   await until(()=>h.audios.length===1 && !h.audios[0].paused);const narrator=h.audios[0];assert.equal(narrator.volume,0.5);narrator.onended();
   await until(()=>h.audios.length===2 && !h.audios[1].paused);const effect=h.audios[1];level(effect.volume,0.225);
   const sfxVolume=mixer.querySelector('[aria-label="SFX volume"]');sfxVolume.value='0.4';sfxVolume.dispatchEvent(new h.dom.window.Event('input'));sfxVolume.dispatchEvent(new h.dom.window.Event('change'));level(effect.volume,0.09);assert.equal(narrator.volume,0.5);
@@ -605,7 +605,7 @@ test('mixer plans silently, plays the latest reply, filters voices by plan and r
 
 test('SFX can be reenabled before its cue after prefetch skipped it, and disabling cached effects preserves pause',async()=>{
  const h=await harness();try{
-  await configureFoley(h);h.message.content='The page snapped under her thumb.';h.$('prefetch').value='1';await h.plan();h.state.delay=50;h.state.blockAudio=true;h.$('play').click();
+  await configureFoley(h);h.message.content='She listened; the page snapped under her thumb.';h.$('prefetch').value='1';await h.plan();h.state.delay=50;h.state.blockAudio=true;h.$('play').click();
   await until(()=>h.synthesis.length===1);h.$('sfx').click();await until(()=>h.audios[0]?.paused===false);assert.equal(h.requests.filter(request=>request.action==='freesound').length,0);h.$('sfx').click();
   h.state.blockAudio=false;h.audios[0].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(await playedFoley(h),1);
   const start=h.audios.length;h.state.blockAudio=true;const replay=[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay');replay.click();await until(()=>h.audios.length===start+1 && !h.audios.at(-1).paused);h.audios.at(-1).onended();
@@ -656,8 +656,8 @@ test('Cue fetches real preview blobs, retries failed SFX and honors companion ca
  const h=await harness();try{
   await configureFoley(h);const bridge=globalThis.__CHOIR_API__,text='The page snapped under her thumb.';
   h.state.foleyError='Freesound HTTP 401';const statuses=[];
-  const failed=await bridge.playParagraph({text,onStatus:status=>statuses.push(status)});assert.equal(failed.played,2);assert.match(failed.warnings[0],/401/);assert.equal(await playedFoley(h),0);assert.match(statuses.at(-1).message,/SFX skipped/);
-  h.state.foleyError=null;const result=await bridge.playParagraph({text});assert.equal(result.played,3);assert.equal(await playedFoley(h),1);assert.equal(h.state.previewFetches.length,1);assert.equal(h.synthesis.length,2);
+  const failed=await bridge.playParagraph({text,onStatus:status=>statuses.push(status)});assert.equal(failed.played,1);assert.match(failed.warnings[0],/401/);assert.equal(await playedFoley(h),0);assert.match(statuses.at(-1).message,/SFX skipped/);
+  h.state.foleyError=null;const result=await bridge.playParagraph({text});assert.equal(result.played,2);assert.equal(await playedFoley(h),1);assert.equal(h.state.previewFetches.length,1);assert.equal(h.synthesis.length,1);
   await bridge.playParagraph({text});assert.equal(await playedFoley(h),2);assert.equal(h.requests.filter(request=>request.action==='freesound').length,2);
   const ctrl=new AbortController();ctrl.abort();const searches=h.requests.length;await assert.rejects(bridge.playParagraph({text,signal:ctrl.signal}),{name:'AbortError'});assert.equal(h.requests.length,searches);
   h.state.holdPreview=true;const pendingCtrl=new AbortController();const pending=bridge.playParagraph({text:'The glass shattered.',signal:pendingCtrl.signal});const stopped=assert.rejects(pending,{name:'AbortError'});
@@ -1139,6 +1139,9 @@ test('each Freesound search carries the story moment at its anchor, its sound ki
   assert.deepEqual(searches.sort((a,b)=>a.query.localeCompare(b.query)),[
    {query:'page turn',kind:'sfx',moment:'k ticked, the candles burned low and she listened until the page snapped under her thumb.',decisionConnection:'decision-b'},
    {query:'rain',kind:'ambience',moment:h.message.content,decisionConnection:'decision-b'}]);
+  h.message.content='She watched the shelf '.repeat(60)+'until the page snapped under her thumb.';await h.plan();await h.play();
+  const moved=h.requests.filter(request=>request.action==='freesound').at(-1).input;
+  assert.ok(moved.moment.includes('page snapped under her thumb.'));assert.ok(moved.moment.length<300);assert.equal(moved.decisionConnection,'decision-b');
  }finally{await h.close();}
 });
 
@@ -2377,20 +2380,53 @@ test('invalid TTS chunk edits never overwrite saved settings and valid boundarie
  }finally{await h.close();}
 });
 
-test('several LLM sound effects in one passage play in story order before their anchor words',async()=>{
+test('several LLM sound effects in one passage play in story order between complete clauses',async()=>{
  const h=await harness();try{
-  await configureFoley(h);h.message.content='The page snapped as the glass shattered on the floor.';
+  await configureFoley(h);h.message.content='The page snapped; the glass shattered on the floor.';
   await h.plan();await h.play();
   assert.deepEqual(h.requests.filter(request=>request.action==='freesound').map(request=>request.input.query),['page turn','glass shatter']);
   const order=(await Promise.all(h.audioBlobs.map(blob=>blob.text()))).map(text=>text==='FREESOUND_PREVIEW'?'sfx':'speech');
-  assert.deepEqual(order,['speech','sfx','speech','sfx','speech']);
-  assert.deepEqual(h.synthesis.map(request=>request.text),['The','page snapped as the','glass shattered on the floor.']);
+  assert.deepEqual(order,['sfx','speech','sfx','speech']);
+  assert.deepEqual(h.synthesis.map(request=>request.text),['The page snapped;','the glass shattered on the floor.']);
+ }finally{await h.close();}
+});
+
+const sfxSentence='Once she took the bite, Kellin set the plate back on the walnut edge and slid his hand across the table.';
+test('SFX preserves action groups in normal, grouped and Cue playback with no extra speech or planning on replay',async()=>{
+ for(const grouped of [false,true])for(const trigger of ['set the plate','and slid his hand']){
+  const h=await harness();try{
+   await configureFoley(h);await toggle(h,'batchSpeech',grouped);h.message.content=sfxSentence;
+   h.state.soundCues={cues:[{segment:0,trigger,query:'plate clink'}],ambience:[],music:[]};
+   const expected=trigger.startsWith('and')?['Once she took the bite, Kellin set the plate back on the walnut edge','and slid his hand across the table.']:['Once she took the bite,','Kellin set the plate back on the walnut edge and slid his hand across the table.'];
+   await h.plan();await h.play();assert.deepEqual(h.synthesis.map(request=>request.text),expected);
+   assert.deepEqual((await Promise.all(h.audioBlobs.map(blob=>blob.text()))).map(text=>text==='FREESOUND_PREVIEW'?'sfx':'speech'),['speech','sfx','speech']);
+   const generated=h.synthesis.length,planned=h.requests.length;await h.reload();await h.play();assert.equal(h.synthesis.length,generated);assert.equal(h.requests.length,planned);
+   await globalThis.__CHOIR_API__.playParagraph({text:sfxSentence});assert.deepEqual(h.synthesis.slice(generated).map(request=>request.text),expected);
+  }finally{await h.close();}
+ }
+});
+
+test('Replay rebuilds legacy SFX cuts from saved attribution and retains the effect without another planner call',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);h.message.content=sfxSentence;h.state.soundCues={cues:[{segment:0,trigger:'set the plate',query:'plate clink'}],ambience:[],music:[]};
+  await h.plan();await h.play();const generated=h.synthesis.length,planned=h.requests.filter(request=>request.action==='plan' || request.action==='sfx').length;
+  const database=await new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',1);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+  await new Promise((resolve,reject)=>{
+   const transaction=database.transaction('recordings','readwrite'),request=transaction.objectStore('recordings').openCursor();
+   request.onsuccess=()=>{const cursor=request.result;if(!cursor)return;const saved=cursor.value,cut=sfxSentence.indexOf('set the plate');
+    const {sfxPlacement,passages,...legacy}=saved;cursor.update({...legacy,segments:[{...saved.segments[0],text:sfxSentence.slice(0,cut).trim()},saved.segments[1],{...saved.segments[2],text:sfxSentence.slice(cut)}]});cursor.continue();};
+   transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);
+  });database.close();await h.reload();
+  [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.deepEqual(h.synthesis.slice(generated).map(request=>request.text),['Once she took the bite,','Kellin set the plate back on the walnut edge and slid his hand across the table.']);
+  assert.equal(h.requests.filter(request=>request.action==='plan' || request.action==='sfx').length,planned);assert.equal(h.state.previewFetches.length,1);
+  const rebuilt=h.synthesis.length;await h.reload();await h.play();assert.equal(h.synthesis.length,rebuilt);
  }finally{await h.close();}
 });
 
 test('a cached or fresh SFX cannot hide the speech request waiting after it under parallel prefetch',async()=>{
  const h=await harness();try{
-  await configureFoley(h);h.message.content='The page snapped under her thumb. "Hello." The light faded.';
+  await configureFoley(h);h.message.content='She listened; the page snapped under her thumb. "Hello." The light faded.';
   h.$('concurrency').value='3';h.$('prefetch').value='3';h.$('chunk').value='6000';await h.plan();
   for(const cached of [false,true]){
    if(cached){h.connections[0].default_parameters={speed:1.2};await h.reload();}
@@ -2409,7 +2445,7 @@ test('native speech times out during headers or audio download, reports the spea
  const actualSetTimeout=globalThis.setTimeout;
  for(const body of [false,true]){
   const h=await harness();try{
-   await configureFoley(h);h.message.content='The page snapped under her thumb. "Hello." The light faded.';
+   await configureFoley(h);h.message.content='She listened; the page snapped under her thumb. "Hello." The light faded.';
    h.$('concurrency').value='3';h.$('prefetch').value='3';await h.plan();
    h.state.holdSynthesisAt=2;h.state.holdSynthesisBody=body;
    globalThis.setTimeout=(fn,delay,...args)=>actualSetTimeout(fn,delay===185000?80:delay,...args);
@@ -2419,8 +2455,12 @@ test('native speech times out during headers or audio download, reports the spea
    assert.match(h.$('status').textContent,/model model-a; voice n/);
    assert.match(h.$('status').textContent,/Completed passages were retained/);assert.equal(h.state.aborted,1);
    assert.equal(h.$('play').disabled,false);assert.ok(h.audios.every(audio=>audio.paused));
-   const requests=h.synthesis.length;h.state.holdSynthesisAt=null;await h.play();
-   assert.equal(h.synthesis.length,requests+1);assert.equal(h.state.previewFetches.length,1);
+   const failedText=h.synthesis[1].text;h.state.holdSynthesisAt=null;await h.play();
+   // Some later passages may not have been scheduled when the timeout fired.
+   // Retry the failed passage and generate those once; completed text stays cached.
+   const texts=[...new Set(h.synthesis.map(request=>request.text))];assert.equal(texts.join(' '),h.message.content);
+   for(const text of texts)assert.equal(h.synthesis.filter(request=>request.text===text).length,text===failedText?2:1);
+   assert.equal(h.state.previewFetches.length,1);
   }finally{globalThis.setTimeout=actualSetTimeout;await h.close();}
  }
 });

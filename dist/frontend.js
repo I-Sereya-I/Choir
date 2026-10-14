@@ -920,6 +920,28 @@ function cueOffset(text, trigger) {
   return exact >= 0 ? exact : text.toLowerCase().indexOf(trigger.toLowerCase());
 }
 
+// An action-word anchor must not cut its subject off from the verb. Keep an
+// explicitly anchored conjunction clause, otherwise back up to punctuation.
+function sfxCueOffset(text, trigger) {
+  let target=Math.max(0,cueOffset(text,trigger));
+  if(!target)return 0;
+  const quotations=[...text.matchAll(/"[^"]*(?:"|$)|“[^”]*(?:”|$)/g)];
+  const utterance=quotations.find(quote=>target>=quote.index && target<quote.index+quote[0].length);
+  if(utterance)target=utterance.index;
+  if(/^(?:and|but|or|then|as|when|while|before|after|once|until|unless|because|although|though|since)\s+\S+/i.test(text.slice(target)) && !/[\p{L}\p{N}]/u.test(text[target-1]))return target;
+  let boundary=0;
+  for(const match of text.matchAll(/(?:[.!?…。！？,;:，；：—–]+["'”’\)\]]*\s+|\n[ \t]*\n+)/g)){
+    const next=match.index+match[0].length;
+    if(next>target)break;
+    if(quotations.some(quote=>match.index>quote.index && next<quote.index+quote[0].length))continue;
+    // A title, initial or decimal is part of its phrase, not a sentence break.
+    if(match[0].startsWith('.') && /\b(?:mr|mrs|ms|dr|prof|sr|jr|st|vs|etc|e\.g|i\.e|[a-z])\.$/i.test(text.slice(0,match.index+1)))continue;
+    if(/^[.,]/.test(match[0]) && /\d/.test(text[match.index-1] || '') && /\d/.test(text[next] || ''))continue;
+    boundary=next;
+  }
+  return boundary;
+}
+
 // Read-along compares only letters, digits and marks, so rendered markdown, quote styles and
 // entities line up with the plain transcript. Case folding keeps UTF-16 offsets one-for-one.
 const READABLE = /[\p{L}\p{N}\p{M}]/u;
@@ -1023,6 +1045,7 @@ function soundCuePrompt(segments, {music=false, currentMusic=null}={}) {
     {role:'system',content:`You are the Foley editor for an audiobook. Choose short sound effects and looping background ambience that make the scene audible. Return ONLY JSON {"cues":[{"segment":0,"trigger":"exact words","query":"freesound search"}],"ambience":[{"segment":0,"trigger":"exact words","query":"freesound search"},{"segment":3,"trigger":"exact words","stop":true}]${music?',"music":[{"segment":0,"trigger":"exact words","feels":["Mysterious"],"genres":["Soundtrack"],"keywords":["harp","forest"]}]':''}}.
 Choose only concrete physical sounds that happen in the scene as it is told: objects, movement, impacts, doors, footsteps, weather, fire, water, animals, vehicles, machines, weapons, crowds. Skip sounds that are remembered, imagined, hypothetical, negated or metaphorical. Skip voices and vocal sounds such as speech, laughter, sighs, gasps, screams and singing, because the voice actors perform those. Skip music.
 segment is the index of the numbered segment where the sound happens. trigger copies 2 to 6 consecutive words exactly as written in that segment, in the original language, from the start of the sentence or clause where the sound happens; the effect plays right before those words. query is an English Freesound search of 1 to 3 words naming the sound source and action the way sound files are named, such as "door slam", "bottle clink", "egg crack" or "sword clash", whatever language the story uses. Never add places or scene details: every search word must match.
+For sound effects, keep each spoken phrase intact. Anchor at a sentence start, after clause punctuation (comma, semicolon, colon or dash), or at a conjunction that begins a complete action group, such as "and slid" or "as the glass shattered". Include the subject with its action; never insert an effect between a name/pronoun and its verb, inside a noun phrase, or inside a quoted utterance. For "Once she took the bite, Kellin set the plate back on the walnut edge and slid his hand beneath the hoodie", use "Kellin set the plate" or "and slid his hand", never "set the plate" after Kellin. If the action has no nearby clean break, use the start of its sentence.
 Return at most ${soundCueLimit(segments)} cues in story order, at most one per sentence. Prefer fewer, clearly audible moments.
 ambience entries follow the same segment, trigger and query rules but start a quiet looping background bed for a sustained environment the scene clearly stays in, such as "rain", "tavern crowd", "forest birds", "wind" or "fire crackle". A bed starts right before its trigger words and lasts until the next ambience entry or the end of the text; an entry with "stop":true instead of a query ends it when the scene moves somewhere quiet. Return at most ${AMBIENCE_LIMIT} ambience entries in story order, none for brief sounds.${music?`
 music entries follow the same segment and trigger rules but start instrumental background music that sits quietly under the narration and suits the mood and setting. feels lists 1 to 3 of: ${MUSIC_FEELS.join(', ')}. genres lists 1 or 2 of: ${Object.values(MUSIC_GENRES).join(', ')}. keywords lists 2 to 5 English words naming fitting instruments or the setting, such as "piano", "lute", "tavern" or "space". Music lasts until the next music entry or the end of the text; an entry with "stop":true instead ends it. Return at most ${MUSIC_LIMIT} music entries in story order, usually one at the start, and change music only when the mood clearly shifts.${playing?` Music ${playing} is already playing from the previous text and carries on: return a music entry only when this text clearly changes the mood or setting, otherwise return no music entries.`:''}`:''}
@@ -3305,7 +3328,7 @@ export async function setup(ctx) {
         const signature=JSON.stringify([snapshot.mode,snapshot.model,snapshot.connection,snapshot.styleParam,playedBatches,
           playedBatches.map(segment=>nativeConnections.find(c=>`native:${c.id}`===(segment.route || scope(snapshot)))?.model)]);
         let storageError='';
-        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content,transcript,signature,segments:playedBatches,blobs,retention:config.retention});}
+        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content,transcript,signature,segments:playedBatches,blobs,sfxPlacement:SFX_PLACEMENT_VERSION,retention:config.retention});}
         catch(error){storageError=error.message;}
         if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:config.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
       }
@@ -3521,6 +3544,8 @@ export async function setup(ctx) {
       return limits;
     });
   }
+  const SFX_PLACEMENT_VERSION=1;
+  const outdatedSfxRecording=recording=>config.enableSfx!==false && recording.sfxPlacement!==SFX_PLACEMENT_VERSION && recording.segments?.some(segment=>segment.kind==='sfx');
   function playbackBatches(segments,snapshot,{filterMuted=true,batchGemini=false,startup=true}={}){
     const sound=(kind,speaker,text,cue)=>({kind,speaker,voice:'',text,route:kind,[kind]:cue});
     const expanded=segments.flatMap(segment=>{
@@ -3531,12 +3556,15 @@ export async function setup(ctx) {
         ...(snapshot.enableSfx===false?[]:sfx || []).map(cue=>sound('sfx','SFX',`[SFX: ${cue.query}]`,cue))
       ];
       if(!points.length)return [speech];
-      // Beds switch and effects play right before the words they were anchored to.
+      // Effects use complete phrase boundaries; background beds keep their exact anchors.
       const parts=[];let start=0;
-      for(const {part,at} of points.map(part=>({part,at:Math.max(0,cueOffset(speech.text,part[part.kind].trigger))})).sort((a,b)=>a.at-b.at)){
+      for(const {part,at,anchor} of points.map(part=>{
+        const anchor=Math.max(0,cueOffset(speech.text,part[part.kind].trigger));
+        return {part,anchor,at:part.kind==='sfx'?sfxCueOffset(speech.text,part.sfx.trigger):anchor};
+      }).sort((a,b)=>a.at-b.at)){
         const head=speech.text.slice(start,Math.max(start,at)).trim();
         if(head)parts.push({...speech,text:head});
-        parts.push({...part,passageIndex:segment.passageIndex,moment:speech.text.slice(Math.max(0,at-60),at+240)});
+        parts.push({...part,passageIndex:segment.passageIndex,moment:speech.text.slice(Math.max(0,anchor-60),anchor+240)});
         start=Math.max(start,at);
       }
       const tail=speech.text.slice(start).trim();
@@ -3606,7 +3634,7 @@ export async function setup(ctx) {
     // Upgrade old complete recordings without discarding their audio.
     if(!cached?.passages)for(const [index,segment] of (cached?.segments || []).entries())if(cached.blobs?.[index] && (!segment.turns || segment.turns.length===1))passages[cacheKey(segment,snapshot)]=cached.blobs[index];
     const persist=()=>{
-      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],passages:{...passages},retention:snapshot.retention};
+      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],passages:{...passages},sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
       saveQueue=saveQueue.then(()=>recordingStore('put',recordingKey(source.chatId,source.messageId),value)).catch(error=>{saveError=error.message;});
       return saveQueue;
     };
@@ -3793,7 +3821,7 @@ export async function setup(ctx) {
     status('Checking saved audio…');
     try{cached=await recordingStore('get',key);}catch(error){storageError=error.message;}
     if(token!==revision || ctrl.signal.aborted)throw abortError();
-    if(source.resume && cached?.signature!==signature && (snapshot.batchSpeech || cached?.segments?.some(segment=>segment.turns?.length>1)))source.resume=null;
+    if(source.resume && cached?.signature!==signature && (snapshot.batchSpeech || cached?.segments?.some(segment=>segment.turns?.length>1) || outdatedSfxRecording(cached || {})))source.resume=null;
     const apiKey=$('key').value.trim();
     if(segments.some(segment=>!speakerExcluded(segment.speaker) && (segment.route || scope(snapshot))==='gemini' && !cached?.passages?.[cacheKey(segment,snapshot)]) && !apiKey){controller=null;throw new Error('Enter your Gemini API key for missing passages using the Gemini adapter. It is held only in this page session.');}
     setBusy(true);
@@ -3804,7 +3832,7 @@ export async function setup(ctx) {
       const {blobs,warnings}=await player.playbackPromise;
       {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,retention:snapshot.retention});storageError='';}
+        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
       if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
@@ -3822,6 +3850,10 @@ export async function setup(ctx) {
       if(mergedCardRecording(recording))throw new Error('This recording combines several card characters into one voice. Plan and play the message again to separate them.');
       if(aliasedLeadRecording(recording))throw new Error('This recording treats a lead character alias as a separate speaker. Plan and play the message again to use the lead voice.');
       if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to apply the current filters or persona name.');
+      if(outdatedSfxRecording(recording)){
+        if(await restoreSavedPlan(messageId)){await play();return;}
+        throw new Error('Saved sound-effect timing needs updating. Plan and play this reply to place effects between phrases.');
+      }
       if(recording.segments.some(segment=>segment.dialogue && (!config.batchSpeech || segment.turns.some(turn=>speakerExcluded(turn.speaker) || mixerVolume(1,turn.speaker,mixerState.channels)!==mixerVolume(1,segment.turns[0].speaker,mixerState.channels))))){
         if(await restoreSavedPlan(messageId)){await play();return;}
         throw new Error('Speaker controls changed. Plan and play this reply to rebuild its grouped audio.');
@@ -3866,7 +3898,7 @@ export async function setup(ctx) {
         if(!valid())return;
         const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
         const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind).map(segment=>segment.text).join(' ');
-        if(canonical(recordedText)===canonical(recording.transcript || transcriptFromMessage(content,config?.ignoredTags)) && Array.from(recording.blobs || []).every(Boolean) && recording.blobs?.length===recording.segments?.length){await replayRecording(messageId);return;}
+        if(!outdatedSfxRecording(recording) && canonical(recordedText)===canonical(recording.transcript || transcriptFromMessage(content,config?.ignoredTags)) && Array.from(recording.blobs || []).every(Boolean) && recording.blobs?.length===recording.segments?.length){await replayRecording(messageId);return;}
       }
       if(valid())await prepare(messageId,true);
     } finally {if(messageOperation===operation)messageOperation=null;}

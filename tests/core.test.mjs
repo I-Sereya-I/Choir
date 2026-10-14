@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
+import {sfxCueOffset} from '../src/core.js';
 import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,reconcileCardCast} from '../src/core.js';
 import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
 
@@ -679,6 +680,34 @@ test('cue triggers match across typographic and ASCII quotes and keep the story 
   assert.equal(cueOffset('He said "it\'s late" twice.','“it’s late”'),8);
   const {cues}=parseSoundCues(JSON.stringify({cues:[{segment:0,trigger:'"Don\'t go" and the door',query:'door creak'}]}),[{speaker:'Narrator',text}]);
   assert.equal(cues[0].trigger,'"Don\'t go" and the door');
+});
+
+test('SFX action anchors keep the subject and verb together and preserve complete conjunction groups',()=>{
+  const text='Once she took the bite, Kellin set the plate back on the walnut edge and slid his scarred left hand beneath the wide bottom hem of her borrowed hoodie.';
+  for(const trigger of ['set the plate','Kellin set the plate','slid his scarred'])assert.equal(sfxCueOffset(text,trigger),text.indexOf('Kellin'));
+  assert.equal(sfxCueOffset(text,'and slid his scarred'),text.indexOf('and slid'));
+  assert.equal(sfxCueOffset('The page snapped as the glass shattered.','page snapped'),0);
+  assert.equal(sfxCueOffset('The page snapped as the glass shattered.','as the glass shattered'),17);
+  assert.match(soundCuePrompt([{speaker:'Narrator',text}])[0].content,/never insert an effect between a name\/pronoun and its verb/);
+});
+
+test('SFX placement uses punctuation and paragraphs without breaking titles, initials, decimals or quoted anchors',()=>{
+  for(const [text,trigger,prefix] of [
+    ['She paused; Kellin set the plate down.','set the plate','She paused; '],
+    ['She paused — Kellin set the plate down.','set the plate','She paused — '],
+    ['She paused.\nKellin set the plate down.','set the plate','She paused.\n'],
+    ['She paused\n\nKellin set the plate down.','set the plate','She paused\n\n'],
+    ['Kellin\nset the plate down.','set the plate',''],
+    ['Dr. Kellin set the plate down.','set the plate',''],
+    ['K. Beckett set the plate down.','set the plate',''],
+    ['It measured 1. 5 inches before he moved it.','5 inches',''],
+    ['She whispered “Don’t go” and held the door.','"Don\'t go"',''],
+    ['She said “Go, and lift it” beside the table.','and lift it',''],
+    ['She said “Go, now” and set the plate down.','set the plate',''],
+    ['La puerta se cerró; Kellin dejó el plato.','dejó el plato','La puerta se cerró; ']
+  ])assert.equal(sfxCueOffset(text,trigger),prefix.length,text);
+  assert.equal(sfxCueOffset('Nothing moved.','missing words'),0);
+  assert.equal(sfxCueOffset('Nothing moved.',''),0);
 });
 
 test('rankMusic scores feels, genre, keywords and full-length tracks',()=>{
