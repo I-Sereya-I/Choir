@@ -100,7 +100,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.ok(characterVoices.some(label=>label.includes('Kore · Female')));
     assert.ok(!characterVoices.some(label=>label.includes('Puck · Male')));
     $('key').value='session-key';
-    settingsMount.querySelector('button').click();
+    assert.equal(settingsMount.children.length,0);
     assert.ok(root.querySelector('[data-et="fixed"]'));
     assert.equal($('key').value,'session-key');
     placementListeners.get('drawer')();
@@ -234,7 +234,7 @@ test('older hosts show a visible settings diagnostic rather than disappearing',a
   try {
     const cleanup=await setup({messages:{},ui:{registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),mount:()=>mount}});
     assert.match(root.textContent,/newer Lumiverse staging/);
-    assert.equal(mount.querySelector('button').textContent,'Open Choir settings');
+    assert.equal(mount.children.length,0);
     cleanup();assert.equal(root.children.length,0);assert.equal(mount.children.length,0);
   } finally {globalThis.document=previous;dom.window.close();}
 });

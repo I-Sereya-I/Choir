@@ -26,23 +26,13 @@ export async function setup(ctx) {
   tab.root.append(root);
   const placementUnsubs=[];
   if(tab.onActivate)placementUnsubs.push(tab.onActivate(()=>tab.root.replaceChildren(root)));
-  // Lumiverse's extension Settings button specifically requires this mount point.
-  const settingsMount=ctx.ui.mount?.('settings_extensions');
-  if(settingsMount) {
-    const card=document.createElement('div');card.style.padding='12px';
-    const title=document.createElement('h3');title.textContent='Choir';
-    const text=document.createElement('p');text.textContent='Configure speech providers and the voices of your narrator, persona, main characters and NPCs in the extension drawer.';
-    const open=document.createElement('button');open.type='button';open.textContent='Open Choir settings';
-    open.onclick=()=>{tab.activate();};
-    card.append(title,text,open);settingsMount.replaceChildren(card);
-  }
   const cleanupPlacements=()=>{
-    placementUnsubs.splice(0).forEach(fn=>fn());settingsMount?.replaceChildren();
+    placementUnsubs.splice(0).forEach(fn=>fn());
     root.remove();tab.destroy();
   };
   if (!ctx.settings || !ctx.messages?.getRecent || !ctx.messages?.getContent || !ctx.state) {
     const message=document.createElement('p');message.setAttribute('role','alert');
-    message.textContent='Choir needs a newer Lumiverse staging build for its message and settings APIs. Update Lumiverse staging, then reload the page. Its settings entry is available, but playback cannot start on this build.';
+    message.textContent='Choir needs a newer Lumiverse staging build for its message and settings APIs. Update Lumiverse staging, then reload the page. The Choir drawer is available, but playback cannot start on this build.';
     message.style.padding='18px';root.append(message);
     return cleanupPlacements;
   }
