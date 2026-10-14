@@ -293,7 +293,7 @@ export async function setup(ctx) {
       <label class="et-check"><input data-et="enableAmbience" type="checkbox" checked> Ambient sound</label>
       <label class="et-check" title="Kevin MacLeod's incompetech tracks, CC BY 4.0"><input data-et="enableMusic" type="checkbox"> Background music</label>
       <label class="et-check" title="Keep the track playing between replies until another music cue replaces it. Stop, music off, or changing chats ends playback."><input data-et="loopMusic" type="checkbox"> Loop music until next cue</label>
-      <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show section play buttons</label>
+      <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show message play controls</label>
       <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
       <label class="et-check" title="Scroll the chat to the passage being read. Scrolling yourself pauses this until the next Play."><input data-et="followNarration" type="checkbox"> Follow narration</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
@@ -669,8 +669,8 @@ export async function setup(ctx) {
       const dot=doc.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
       const readout=doc.createElement('span');readout.className='cm-percent';readout.setAttribute('aria-hidden','true');head.append(dot,name,readout);
       const controls=doc.createElement('div');controls.className='cm-channel-controls';
-      const volume=makeMixerVolume(speaker,channel.volume,readout,value=>{channel.volume=value;applyVolume();updateGroupingStatus();},MAX_CHANNEL_VOLUME);
-      const silent=doc.createElement('button');silent.type='button';silent.className='cm-toggle';silent.dataset.kind='silent';silent.innerHTML=channel.mute?ICON_MUTED:ICON_SOUND;silent.setAttribute('aria-label',`${speaker} silent`);silent.setAttribute('aria-pressed',String(Boolean(channel.mute)));silent.title='Silent: mute playback. Audio can still be generated and cached.';silent.onclick=()=>{channel.mute=!channel.mute;applyVolume();renderMixer();persistMixer();};
+      const volume=makeMixerVolume(speaker,channel.volume,readout,value=>{channel.volume=value;applyVolume();updateGroupingStatus();if(config?.batchSpeech)refreshSectionControls();},MAX_CHANNEL_VOLUME);
+      const silent=doc.createElement('button');silent.type='button';silent.className='cm-toggle';silent.dataset.kind='silent';silent.innerHTML=channel.mute?ICON_MUTED:ICON_SOUND;silent.setAttribute('aria-label',`${speaker} silent`);silent.setAttribute('aria-pressed',String(Boolean(channel.mute)));silent.title='Silent: mute playback. Audio can still be generated and cached.';silent.onclick=()=>{channel.mute=!channel.mute;applyVolume();renderMixer();if(config?.batchSpeech)refreshSectionControls();persistMixer();};
       controls.append(volume);head.append(silent);
       const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.innerHTML=speakerExcluded(speaker)?ICON_MIC_OFF:ICON_MIC;noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='No voice: skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));head.append(noVoice);
       row.append(head,controls);
@@ -990,6 +990,7 @@ export async function setup(ctx) {
       else if(['restore','playback'].includes(autoReplyActive.phase) && !config.auto){stop(false);status('Automatic playback stopped.');}
     }
     renderMixer();
+    refreshSectionControls();
     saveState('Saving…');clearTimeout(autosaveTimer);autosaveTimer=setTimeout(()=>void flushSettings().catch(()=>{}),250);
     return true;
   }
@@ -1943,7 +1944,9 @@ export async function setup(ctx) {
       const batches=(grouped?grouped.filter(batch=>batch.passageIndex===index || batch.turns?.some(turn=>turn.passageIndex===index)):playbackBatches([segment],snapshot)).filter(batch=>!batch.ambience?.stop && !batch.music?.stop);
       const count=batches.filter(batch=>record?.passages?.[cacheKey(batch,snapshot)]).length;
       const node=$('preview').querySelector(`[data-cache-index="${index}"]`);
-      if(node)node.textContent=speakerExcluded(segment.speaker)?'No voice · text retained':count===batches.length?'Cached':`${count}/${batches.length} cached · requires generation`;
+      const shared=grouped?.filter(batch=>!isBed(batch)).map((batch,clip)=>({batch,clip})).filter(({batch})=>batch.turns?.some(turn=>turn.passageIndex===index));
+      const label=shared?.length?`Shared ${shared.length===1?'clip':'clips'} ${shared.map(({clip})=>clip+1).join(', ')} · `:'';
+      if(node)node.textContent=speakerExcluded(segment.speaker)?'No voice · text retained':label+(count===batches.length?'Cached':`${count}/${batches.length} cached · requires generation`);
     }
   }
   const replacePersonaMacro=(text,name)=>text.replace(/\{\{\s*user\s*\}\}/gi,()=>name);
@@ -2436,6 +2439,7 @@ export async function setup(ctx) {
   }
   function updateGroupingStatus(){
     const node=$('groupingStatus');if(!node)return;
+    if(plan)$('planSummary').textContent=`Speech plan · ${plan.segments.length} spoken blocks`;
     node.hidden=!config?.batchSpeech;if(node.hidden)return;
     const route=scope(config),connection=nativeConnections.find(item=>`native:${item.id}`===route);
     const capability=nativeProviders.find(item=>item.id===connection?.provider)?.capabilities?.multiSpeaker;
@@ -2446,6 +2450,7 @@ export async function setup(ctx) {
     if(plan?.segments?.length){
       try{const batches=playbackBatches(plan.segments.map((segment,passageIndex)=>({...segment,passageIndex})),config);
         const speech=batches.filter(batch=>!batch.kind).length;
+        $('planSummary').textContent=`Speech plan · ${plan.segments.filter(segment=>!segment.kind).length} text turns · ${speech} speech ${speech===1?'clip':'clips'}`;
         count=` This plan: ${speech} speech ${speech===1?'batch':'batches'}${batches.some(batch=>batch.kind==='sfx')?'; SFX cues separate batches':''}. Cached audio needs no new TTS call.`;
       }catch{}
     }
@@ -2735,7 +2740,11 @@ export async function setup(ctx) {
     if(token!==revision || ctrl.signal.aborted)throw abortError();
     const validResume=resume?.messageId===planSource.messageId && sameSpeech(resume.content,planSource.content) && !resume.complete?resume:null;
     const selected=plan.segments.flatMap((segment,index)=>options.indices && !options.indices.includes(index)?[]:[{...segment,passageIndex:index}]);
-    const segments=snapshot.batchSpeech?playbackBatches(selected,snapshot):selected.flatMap(segment=>playbackBatches([segment],snapshot));
+    let segments=snapshot.batchSpeech?playbackBatches(selected,snapshot):selected.flatMap(segment=>playbackBatches([segment],snapshot));
+    if(options.clip!==undefined){
+      if(!snapshot.batchSpeech || !Number.isInteger(options.clip) || !segments[options.clip] || isBed(segments[options.clip]))throw new Error('This audio clip changed. Choose a current clip.');
+      segments=[segments[options.clip]];
+    }
     if(!segments.some(segment=>!speakerExcluded(segment.speaker))){controller=null;status('All characters have No voice enabled. Text and saved audio remain available.');updateTransport();return;}
     validateSettings(snapshot);
     const source={...planSource,resume:validResume}, key=recordingKey(source.chatId,source.messageId);
@@ -2840,27 +2849,52 @@ export async function setup(ctx) {
       button.onclick=()=>run(()=>playSection(messageId,section));container.append(button);
     }
   }
-  async function playSection(messageId,section){
+  function appendClipButtons(container,segments,messageId){
+    const batches=playbackBatches(segments.map((segment,passageIndex)=>({...segment,passageIndex})),config);
+    let count=0;
+    for(const [clip,batch] of batches.entries()){
+      if(isBed(batch))continue;
+      const turns=batch.turns || [batch],order=turns.map(turn=>turn.speaker).filter((speaker,index,names)=>index===0 || speaker!==names[index-1]).join(' → ');
+      const label=batch.kind==='sfx'?`Sound effect ${++count}`:`Clip ${++count}`;
+      const description=batch.kind==='sfx'?'Sound effect':batch.dialogue?'One multi-speaker TTS call':'One single-voice TTS call';
+      const button=document.createElement('button');button.type='button';button.dataset.choirClip=clip;
+      const displayOrder=order.length>140?`${[...new Set(turns.map(turn=>turn.speaker))].join(' / ')} · ${turns.length} turns`:order;
+      button.innerHTML=ICON_PLAY;button.append(document.createTextNode(` ${label} · ${batch.kind==='sfx'?'SFX':displayOrder}`));
+      button.setAttribute('aria-label',`Play Choir ${label.toLowerCase()}`);button.title=`${description}: ${order}\n${turns.map(turn=>turn.text).join(' ').slice(0,180)}`;
+      button.style.cssText='display:inline-flex;align-items:center;gap:4px;min-width:0;max-width:100%;text-align:left;padding:3px 6px;border:1px solid #8886;border-radius:5px;background:transparent;color:inherit;font:12px system-ui;cursor:pointer';
+      button.onclick=()=>run(()=>playSection(messageId,clip,true));container.append(button);
+    }
+    return count;
+  }
+  async function playSection(messageId,section,grouped=false){
     const targetChat=chatId,content=ctx.messages.getContent(messageId);
     if(controller && messagePlaybackId===messageId){stop();return;}
     if(!(plan && planSource?.messageId===messageId && planSource.chatId===targetChat && sameSpeech(planSource.content,content)))await prepare(messageId);
     if(chatId!==targetChat || !sameSpeech(ctx.messages.getContent(messageId),content) || planSource?.messageId!==messageId || !sameSpeech(planSource.content,content))return;
-    const indices=sectionsFor(planSource,plan.segments)[section];if(!indices)throw new Error('This section changed. Choose a current section.');
-    messagePlaybackId=messageId;await play({indices});
+    const indices=grouped?null:sectionsFor(planSource,plan.segments)[section];if(!grouped && !indices)throw new Error('This section changed. Choose a current section.');
+    messagePlaybackId=messageId;await play(grouped?{clip:section}:{indices});
   }
   async function renderSectionControls(entry){
     const version=++entry.version,targetChat=chatId,content=ctx.messages.getContent(entry.messageId);
     const isSecEnabled=Boolean(config?.sectionButtons);
     if(entry.controls){entry.controls.hidden=!isSecEnabled;entry.controls.style.display=isSecEnabled?'flex':'none';}
     entry.details.hidden=!isSecEnabled;entry.list.replaceChildren();if(entry.details.hidden)return;
+    entry.details.style.flexBasis=config?.batchSpeech?'100%':'';
+    entry.summary.textContent=config?.batchSpeech?'Audio clips':'Sections';
     let source,segments;
     if(planSource?.chatId===targetChat && planSource.messageId===entry.messageId && sameSpeech(planSource.content,content)){source=planSource;segments=plan.segments;}
     else {
       const saved=await ctx.settings.get(await planKey(targetChat,entry.messageId)).catch(()=>null);
-      if(saved && sameSpeech(saved.content,content) && await recordingMatchesTranscript(saved,content)){source=saved;segments=saved.attribution?.segments;}
+      if(saved && sameSpeech(saved.content,content) && await recordingMatchesTranscript(saved,content)){
+        source=saved;segments=saved.attribution?.segments;
+        if(config.batchSpeech && segments?.length)segments=restoreAttribution(saved.attribution,saved.transcript,casting(config)).segments;
+      }
     }
     if(disposed || entry.version!==version || chatId!==targetChat || !messageSections.has(entry) || !config?.sectionButtons)return;
-    if(segments?.length)appendSectionButtons(entry.list,source,segments,entry.messageId);
+    if(segments?.length){
+      if(config.batchSpeech)entry.summary.textContent=`Audio clips (${appendClipButtons(entry.list,segments,entry.messageId)})`;
+      else appendSectionButtons(entry.list,source,segments,entry.messageId);
+    }
     else {const label=document.createElement('span');label.textContent='Plan this message to show its sections.';entry.list.append(label);}
   }
   function refreshSectionControls(){const isSecEnabled=Boolean(config?.sectionButtons);for(const entry of messageSections){if(entry.controls){entry.controls.hidden=!isSecEnabled;entry.controls.style.display=isSecEnabled?'flex':'none';}void renderSectionControls(entry).catch(error=>{if(!disposed)status(`Section controls unavailable: ${error.message}`,true);});}}
@@ -2874,7 +2908,7 @@ export async function setup(ctx) {
     let statuses=messageStatuses.get(messageId);if(!statuses){statuses=new Set();messageStatuses.set(messageId,statuses);}statuses.add(progress);
     const sections=document.createElement('details');sections.hidden=true;sections.style.cssText='font:12px system-ui;max-width:100%';
     const summary=document.createElement('summary');summary.textContent='Sections';summary.style.cursor='pointer';const sectionList=document.createElement('div');sectionList.style.cssText='display:flex;flex-wrap:wrap;gap:4px;padding-top:5px';sections.append(summary,sectionList);
-    const entry={messageId,details:sections,list:sectionList,controls,version:0};messageSections.add(entry);void renderSectionControls(entry);
+    const entry={messageId,details:sections,summary,list:sectionList,controls,version:0};messageSections.add(entry);void renderSectionControls(entry);
     const isSecEnabled=Boolean(config?.sectionButtons);
     controls.hidden=!isSecEnabled;
     controls.style.display=isSecEnabled?'flex':'none';

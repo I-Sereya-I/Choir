@@ -4,17 +4,19 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.17-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.18-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-336%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-339%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
 
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.6-staging.17** keeps moderate dialogue–narration–dialogue passages in one compatible multi-speaker request beyond the previous 600-character opening limit. The grouping control shows the selected connection's voice support and the current plan's speech-batch count. SFX stays between complete spoken phrases, and phone widgets are excluded while the surrounding story is preserved. **Planner LLM connection** stays visible. Native Fish/Google grouping uses the supplied Lumiverse relay patch; older hosts keep separate speakers. The mixer follows Lumiverse theme colors, and heuristic planning retains named persona attribution and specific explanations when a voice or speaker tag is missing.
+This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.6-staging.18** shows one Audio clips button per synthesized recording when grouping is enabled, preserving all turns in that clip. Moderate dialogue–narration–dialogue passages remain one compatible multi-speaker request. The grouping control shows the selected connection's voice support and the current plan's speech-batch count. SFX stays between complete spoken phrases, and phone widgets are excluded while the surrounding story is preserved. **Planner LLM connection** stays visible. Native Fish/Google grouping uses the supplied Lumiverse relay patch; older hosts keep separate speakers. The mixer follows Lumiverse theme colors, and heuristic planning retains named persona attribution and specific explanations when a voice or speaker tag is missing.
 
+
+With grouping enabled, message controls show **Audio clips** instead of planner sections. A narrator–character–narrator passage sharing one multi-speaker request has one Play button with the speaker order, and all three text turns show the same shared cache entry. Selecting that clip plays its entire grouped recording; selecting a longer message's individual clip generates only that clip. Turning grouping off restores section playback.
 
 Heuristic attribution accepts hyphenated character names and aliases, including decorated card titles such as `Gabrielle - Debug`.
 

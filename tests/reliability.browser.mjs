@@ -1510,6 +1510,47 @@ test('Fish S2 sends a moderate dialogue-narration-dialogue passage as one call w
  }finally{await h.close();}
 });
 
+test('grouped message controls show one multi-speaker clip and replay every turn from its shared recording',async()=>{
+ const h=await fishGroupingHarness();try{
+  h.message.content='The room fell quiet. "Hello." The door opened.';
+  await toggle(h,'sectionButtons',true);await h.plan();
+  const clips=()=>h.footer.querySelectorAll('[data-choir-clip]');await until(()=>clips().length===1);
+  assert.equal(h.footer.querySelector('summary').textContent,'Audio clips (1)');assert.equal(h.footer.querySelectorAll('[data-choir-section]').length,0);
+  assert.match(h.$('planSummary').textContent,/3 text turns · 1 speech clip/);
+  assert.match(clips()[0].textContent,/Narrator → Mira → Narrator/);assert.match(clips()[0].title,/One multi-speaker TTS call/);
+  clips()[0].click();await tick();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.equal(h.synthesis.length,1);assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>[turn.speaker,turn.voice]),[['Narrator','n'],['Mira','m'],['Narrator','n']]);
+  await until(()=>[...h.$('preview').querySelectorAll('[data-cache-index]')].every(node=>node.textContent==='Shared clip 1 · Cached'));
+  await h.reload();await until(()=>clips().length===1);clips()[0].click();await tick();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.equal(h.synthesis.length,1,'Playing the displayed grouped clip must reuse its complete recording.');
+  await toggle(h,'batchSpeech',false);await until(()=>h.footer.querySelectorAll('[data-choir-section]').length===1);
+  assert.equal(clips().length,0);assert.equal(h.footer.querySelector('summary').textContent,'Sections');
+ }finally{await h.close();}
+});
+
+test('grouped clip playback selects exactly one bounded chunk instead of regenerating its whole original turn',async()=>{
+ const h=await fishGroupingHarness();try{
+  h.message.content=('The room was quiet and the windows were open. '.repeat(25)).trim();
+  const saved=h.store.get('chat:chat-a');saved.chunk=500;h.store.set('chat:chat-a',saved);await h.reload();
+  await toggle(h,'sectionButtons',true);await h.plan();await until(()=>h.footer.querySelectorAll('[data-choir-clip]').length>=3);
+  h.footer.querySelector('[data-choir-clip="1"]').click();await tick();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.equal(h.synthesis.length,1);assert.ok(h.synthesis[0].text.length<=500);assert.ok(h.synthesis[0].text.length<h.message.content.length);
+  h.footer.querySelector('[data-choir-clip="1"]').click();await tick();await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.synthesis.length,1);
+ }finally{await h.close();}
+});
+
+test('grouped clip controls update to actual separate requests when speaker levels differ',async()=>{
+ const h=await fishGroupingHarness();try{
+  h.message.content='The room fell quiet. "Hello." The door opened.';
+  await toggle(h,'sectionButtons',true);await h.plan();await until(()=>h.footer.querySelectorAll('[data-choir-clip]').length===1);
+  const level=document.querySelector('[aria-label="Mira volume percent"]');level.value='50';level.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+  await until(()=>h.footer.querySelectorAll('[data-choir-clip]').length===3);assert.equal(h.footer.querySelector('summary').textContent,'Audio clips (3)');
+  assert.match(h.$('planSummary').textContent,/3 text turns · 3 speech clips/);
+  h.footer.querySelector('[data-choir-clip="1"]').click();await tick();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.equal(h.synthesis.length,1);assert.equal(h.synthesis[0].voice,'m');assert.equal(h.synthesis[0].parameters.turns,undefined);
+ }finally{await h.close();}
+});
+
 test('grouping status explains a single-voice provider and updates its batch count with speaker levels',async()=>{
  const h=await harness();try{
   await toggle(h,'batchSpeech',true);await h.plan();assert.equal(h.$('groupingStatus').hidden,false);assert.match(h.$('groupingStatus').textContent,/one voice per call; different assigned voices need separate calls/);assert.match(h.$('groupingStatus').textContent,/4 speech batches/);
