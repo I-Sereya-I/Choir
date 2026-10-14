@@ -492,6 +492,32 @@ test('fastClassifyPlan returns null on ambiguous multi-character dialogue withou
   assert.equal(plan, null); // Falls back to LLM/Jev
 });
 
+test('heuristic failures distinguish missing voices from speaker ambiguity and identify the quote',()=>{
+  const c=config(),failure={};c.fixed.push({speaker:'Bob',voice:'Puck',style:''});
+  assert.equal(fastClassifyPlan('Alice said, "Hello." The door opened. "Who is there?"',c,failure),null);
+  assert.equal(failure.reason,'unattributed-dialogue');assert.match(failure.message,/Dialogue 2: "Who is there\?"/);
+  assert.doesNotMatch(failure.message,/unassigned|no assigned voice/);
+  c.fixed[1].voice='';
+  assert.equal(fastClassifyPlan('Alice said, "Hello."',c,failure),null);
+  assert.equal(failure.reason,'missing-voice');assert.match(failure.message,/Alice.*no assigned voice/);
+  c.fixed[0].voice='';
+  assert.equal(fastClassifyPlan('The room fell quiet.',c,failure),null);
+  assert.match(failure.message,/needs a voice for Narrator/);assert.equal(failure.unitId,undefined);
+  c.fixed[0].voice='Charon';
+  assert.ok(fastClassifyPlan('The room fell quiet.',c,failure));assert.equal(failure.message,undefined);
+});
+
+test('heuristic conflicting tags and invalid voice catalogues report their actual cause',()=>{
+  const c=config(),failure={};c.fixed.push({speaker:'Bob',voice:'Puck',style:''});
+  assert.equal(fastClassifyPlan('Alice said, "Hello," Bob replied.',c,failure),null);
+  assert.equal(failure.reason,'conflicting-tags');assert.match(failure.message,/Alice before.*Bob after/);
+  assert.equal(fastClassifyPlan('Alice and Bob said, "Hello."',c,failure),null);
+  assert.equal(failure.reason,'multiple-speakers');assert.match(failure.message,/Alice, Bob/);
+  c.voices=c.voices.filter(voice=>voice.id!=='Charon');
+  assert.equal(fastClassifyPlan('The room fell quiet.',c,failure),null);
+  assert.equal(failure.reason,'invalid-plan');assert.match(failure.message,/validate this plan/);
+});
+
 test('explicit planner selection wins over stale flags and legacy selections migrate',()=>{
   assert.equal(resolvePlannerMode({plannerMode:'llm',useFastClassifier:true,useJev:true}),'llm');
   assert.equal(resolvePlannerMode({plannerMode:'jev',useFastClassifier:true}),'jev');

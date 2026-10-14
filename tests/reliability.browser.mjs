@@ -1466,8 +1466,20 @@ test('ambiguous heuristic dialogue stops without an LLM fallback or audio synthe
   const h=await harness();try{
     h.$('allowLlmFallback').checked=true;h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
     await h.click('latest',text=>text.includes('No LLM request was made'));
+    assert.match(h.$('status').textContent,/could not identify the speaker.*Dialogue 1: "Hello\."/);
+    assert.doesNotMatch(h.$('status').textContent,/unassigned|no assigned voice/);
     assert.equal(h.requests.length,0);assert.equal(h.synthesis.length,0);assert.equal(h.$('preview').children.length,0);
     assert.equal(h.$('llmPlannerBox').hidden,true);assert.equal(h.$('stop').disabled,true);
+  }finally{await h.close();}
+});
+
+test('heuristic planning names the missing narrator voice instead of blaming dialogue ambiguity',async()=>{
+  const h=await harness();try{
+    const saved=h.store.get('chat:chat-a');saved.fixed[0].voice='';h.store.set('chat:chat-a',saved);await h.reload();
+    h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+    await h.click('latest',text=>text.includes('No LLM request was made'));
+    assert.match(h.$('status').textContent,/needs a voice for Narrator/);
+    assert.equal(h.requests.length,0);assert.equal(h.synthesis.length,0);
   }finally{await h.close();}
 });
 

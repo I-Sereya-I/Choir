@@ -708,10 +708,20 @@ function resolvePlannerMode(config = {}) {
   return config.useFastClassifier ? 'heuristic' : 'llm';
 }
 
-function fastClassifyPlan(transcript, config) {
-  if (!transcript || typeof transcript !== 'string') return null;
-  const units = speechSourceUnits(transcript);
-  if (!units.length) return null;
+function fastClassifyPlan(transcript, config, failure) {
+  if(failure){delete failure.reason;delete failure.message;delete failure.unitId;}
+  const units=typeof transcript==='string'?speechSourceUnits(transcript):[];
+  const stop=(reason,message,unit)=>{
+    if(failure){
+      failure.reason=reason;
+      const excerpt=unit?.text.replace(/\s+/g,' ').trim();
+      const dialogue=unit?` Dialogue ${units.filter(item=>item.kind==='dialogue').findIndex(item=>item.id===unit.id)+1}: ${excerpt.length>140?excerpt.slice(0,137)+'…':excerpt}`:'';
+      if(unit)failure.unitId=unit.id;
+      failure.message=`${message}${dialogue} No LLM request was made.`;
+    }
+    return null;
+  };
+  if (!units.length) return stop('empty-transcript','Heuristic found no speech to plan.');
 
   const narrator = config.fixed?.find(a => normalizeName(a.speaker) === 'narrator') || {
     speaker: 'Narrator',
@@ -720,7 +730,7 @@ function fastClassifyPlan(transcript, config) {
     style: '',
     gender: 'auto'
   };
-  if (!narrator.voice) return null;
+  if (!narrator.voice) return stop('missing-voice',`Heuristic needs a voice for ${narrator.speaker}. Choose a voice in Lead Cast or click Apply default for this chat; “Let LLM choose” requires Standard LLM.`);
 
   const dialogueUnits = units.filter(u => u.kind === 'dialogue');
 
@@ -741,15 +751,15 @@ function fastClassifyPlan(transcript, config) {
     };
     try {
       return validatePlan(resolvePlanReferences(raw, transcript, config), transcript, config);
-    } catch {
-      return null;
+    } catch(error) {
+      return stop('invalid-plan',`Heuristic could not validate this plan: ${error.message}`);
     }
   }
 
   // Find candidate characters (excluding narrator)
   const allCast = [...(config.fixed || []), ...(config.npcs || [])];
   const candidates = allCast.filter(a => normalizeName(a.speaker) !== 'narrator');
-  if (!candidates.length) return null;
+  if (!candidates.length) return stop('no-characters','Heuristic found quoted dialogue but no character in the cast. Add the speaker to Lead Cast or choose Jev or LLM.',dialogueUnits[0]);
 
   // Emotion/style detector
   const detectStyle = (textSnippet) => {
@@ -782,7 +792,7 @@ function fastClassifyPlan(transcript, config) {
         const esc = name.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
         return new RegExp('(?<![\\p{L}\\p{N}_])' + esc + '(?![\\p{L}\\p{N}_])', 'iu').test(tagText);
     }));
-    return {actor:matches.length===1?matches[0]:null,ambiguous:matches.length>1};
+    return {actor:matches.length===1?matches[0]:null,ambiguous:matches.length>1,matches};
   };
 
   const preferredActor = config.speaker ? (
@@ -817,7 +827,11 @@ function fastClassifyPlan(transcript, config) {
 
     const { beforeTag, afterTag } = getImmediateTag(u);
     const after=findSpeakerInTag(afterTag),before=findSpeakerInTag(beforeTag);
-    if(after.ambiguous || before.ambiguous || after.actor && before.actor && after.actor!==before.actor)return null;
+    if(after.ambiguous || before.ambiguous){
+      const names=[...new Set([...after.matches,...before.matches].map(actor=>actor.speaker))];
+      return stop('multiple-speakers',`Heuristic found several cast names near this quote: ${names.join(', ')}. Add a clear speaker tag or choose Jev or LLM.`,u);
+    }
+    if(after.actor && before.actor && after.actor!==before.actor)return stop('conflicting-tags',`Heuristic found conflicting speaker tags: ${before.actor.speaker} before this quote and ${after.actor.speaker} after it. Clarify the speaker or choose Jev or LLM.`,u);
     let assigned = after.actor || before.actor;
     if (!assigned && preferredActor && preferredActor.voice) {
       assigned = preferredActor;
@@ -826,9 +840,8 @@ function fastClassifyPlan(transcript, config) {
       assigned = singleCharacter;
     }
 
-    if (!assigned || !assigned.voice) {
-      return null;
-    }
+    if (!assigned) return stop('unattributed-dialogue',`Heuristic could not identify the speaker for this quote.${candidates.length===2 && !persona?' For a one-character chat, select its persona in Lumiverse.':''} Add a clear speaker tag or choose Jev or LLM.`,u);
+    if (!assigned.voice) return stop('missing-voice',`Heuristic identified ${assigned.speaker}, but that speaker has no assigned voice. Choose a voice for ${assigned.speaker}; “Let LLM choose” requires Standard LLM.`,u);
     const style = detectStyle(afterTag) || detectStyle(beforeTag);
 
     unitAssignments.push({
@@ -848,8 +861,8 @@ function fastClassifyPlan(transcript, config) {
 
   try {
     return validatePlan(resolvePlanReferences(raw, transcript, config), transcript, config);
-  } catch {
-    return null;
+  } catch(error) {
+    return stop('invalid-plan',`Heuristic could not validate this plan: ${error.message}`);
   }
 }
 
@@ -3058,13 +3071,15 @@ export async function setup(ctx) {
       const plannerMode=resolvePlannerMode(config);
       let fastPlan = null;
       if (plannerMode==='heuristic') {
+        const failure={};
         try {
-          fastPlan = fastClassifyPlan(transcript, snapshot);
+          fastPlan = fastClassifyPlan(transcript, snapshot, failure);
           if (fastPlan) status('Speech plan ready (instant local classifier, 0ms).');
-        } catch {
+        } catch(error) {
           fastPlan = null;
+          failure.message=`Heuristic planning failed: ${error.message} No LLM request was made.`;
         }
-        if(!fastPlan)throw new Error('Heuristic could not safely attribute this dialogue or choose an unassigned voice. Choose Jev or LLM, or assign voices and add clear speaker tags. No LLM request was made.');
+        if(!fastPlan)throw new Error(failure.message || 'Heuristic could not identify the speaker. Add clear speaker tags or choose Jev or LLM. No LLM request was made.');
       }
       if(!fastPlan){await rpc('ping',{},ctrl.signal,8000);if(token!==revision || ctrl.signal.aborted)return;}
       // 2. Jev System 1 classifier (~20ms)

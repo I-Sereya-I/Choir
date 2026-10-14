@@ -2043,13 +2043,15 @@ export async function setup(ctx) {
       const plannerMode=resolvePlannerMode(config);
       let fastPlan = null;
       if (plannerMode==='heuristic') {
+        const failure={};
         try {
-          fastPlan = fastClassifyPlan(transcript, snapshot);
+          fastPlan = fastClassifyPlan(transcript, snapshot, failure);
           if (fastPlan) status('Speech plan ready (instant local classifier, 0ms).');
-        } catch {
+        } catch(error) {
           fastPlan = null;
+          failure.message=`Heuristic planning failed: ${error.message} No LLM request was made.`;
         }
-        if(!fastPlan)throw new Error('Heuristic could not safely attribute this dialogue or choose an unassigned voice. Choose Jev or LLM, or assign voices and add clear speaker tags. No LLM request was made.');
+        if(!fastPlan)throw new Error(failure.message || 'Heuristic could not identify the speaker. Add clear speaker tags or choose Jev or LLM. No LLM request was made.');
       }
       if(!fastPlan){await rpc('ping',{},ctrl.signal,8000);if(token!==revision || ctrl.signal.aborted)return;}
       // 2. Jev System 1 classifier (~20ms)
