@@ -1391,6 +1391,7 @@ function createSetupWizard(ctx, adapter) {
     .choir-setup h3{font-size:1em;margin:0 0 8px}
     .choir-setup p{margin:8px 0 16px}
     .choir-setup small,.choir-setup .cs-hint{color:var(--lumiverse-text-muted,inherit);font-size:.88em}
+    .choir-setup small{display:block;margin-top:6px}
     .choir-setup .cs-progress{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin:0 0 24px;padding:0;list-style:none}
     .choir-setup .cs-progress button{width:100%;padding:9px 4px;font-size:.8em;display:grid;justify-items:center;gap:5px;background:transparent}
     .choir-setup .cs-progress span{display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--lumiverse-border,#8886);border-radius:50%}
