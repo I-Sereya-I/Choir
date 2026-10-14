@@ -464,7 +464,8 @@ function passageKey(segment, settings, connection, parameters={}) {
   return JSON.stringify([2,segment.text,segment.voice,segment.route || settings.defaultRoute,
     segment.style || '',connection?.model || settings.model,connection?.provider || '',
     connection?.api_url || connection?.base_url || '',
-    settings.allowVoiceFallback===true,canonical(effectiveParameters)]);
+    settings.allowVoiceFallback===true,canonical(effectiveParameters),
+    ...(segment.turns?.length>1?[segment.turns.map(({speaker,voice,text,style})=>[speaker,voice,text,style || ''])]:[])]);
 }
 
 const MAX_CHANNEL_VOLUME=3;
@@ -656,6 +657,43 @@ function speechBatches(segments,maxChars,defaultRoute,batchGemini=true,limitsFor
     }
   }
   return batches;
+}
+
+// A short opening clip starts playback while later, bounded clips are prefetched.
+// The caller supplies provider capabilities and delivery/mixer compatibility.
+function groupedSpeechBatches(segments,maxChars,defaultRoute,limitsForSegment,{sfx=false,startup=true}={}) {
+  const batches=[],queue=segments.map(segment=>({...segment}));
+  let current=null,first=startup,currentLimits;
+  const flush=()=>{if(current){batches.push(current);if(!current.kind)first=false;current=null;}};
+  const turnsFor=batch=>batch.turns || [{...batch}];
+  while(queue.length){
+    const source=queue.shift(),route=source.route || defaultRoute;
+    if(source.kind){flush();batches.push({...source,route});continue;}
+    const limits=limitsForSegment(source,route),cap=Math.min(maxChars,limits.maxChars || maxChars,first?600:sfx?900:2400);
+    const turns=current?turnsFor(current):[],names=new Map(turns.map(turn=>[turn.speaker,turn.voice]));
+    const compatible=current && current.route===route && currentLimits.group===limits.group &&
+      (!names.has(source.speaker) || names.get(source.speaker)===source.voice) &&
+      (limits.maxSpeakers>0 ? new Set([...names.keys(),source.speaker]).size<=limits.maxSpeakers : current.speaker===source.speaker && current.voice===source.voice && current.style===source.style) &&
+      turns.length<200;
+    if(current && !compatible){flush();queue.unshift(source);continue;}
+    const measure=items=>limits.measure?limits.measure(items):{chars:items.map(turn=>turn.text).join('\n').length,bytes:new TextEncoder().encode(items.map(turn=>turn.text+(turn.style || '')).join('\n')).length};
+    const candidate=[...turns,source],size=measure(candidate);
+    if(current && (size.chars>cap || size.bytes>(limits.maxBytes ?? Infinity))){flush();queue.unshift(source);continue;}
+    if(size.chars>cap || size.bytes>(limits.maxBytes ?? Infinity)){
+      const overhead=measure([{...source,text:''}]);
+      const pieces=splitSegment(source,Math.max(80,cap-overhead.chars),limits.maxBytes?limits.maxBytes-overhead.bytes:Infinity);
+      if(pieces.length<2)throw new Error('Delivery instructions leave too little room for grouped speech.');
+      queue.unshift(...pieces);continue;
+    }
+    if(current){
+      current.turns=candidate;current.text=candidate.map(turn=>turn.text).join('\n');
+      current.speaker=[...new Set(candidate.map(turn=>turn.speaker))].join(' / ');
+    }else{current={...source,route};currentLimits=limits;}
+  }
+  flush();
+  // A single voice needs no dialogue payload, even when several passages joined.
+  return batches.map(batch=>batch.turns && new Set(batch.turns.map(turn=>turn.speaker)).size===1
+    && batch.turns.every(turn=>turn.style===batch.turns[0].style)?{...batch,dialogue:false}:batch.turns?{...batch,dialogue:true}:batch);
 }
 
 function extractGeminiAudio(response) {
@@ -1303,6 +1341,10 @@ export async function setup(ctx) {
     <div data-et="llmPlannerBox" style="margin-top:10px">
       <label>Planner LLM connection<select data-et="planner"><option value="">Default LLM connection</option></select></label>
     </div>
+    <div style="margin-top:10px">
+      <label class="et-check"><input data-et="batchSpeech" type="checkbox"> Group speech requests (fewer calls)</label>
+      <small>Groups compatible Fish S2/Gemini voices or consecutive passages from the same voice. Starts with a short clip, then groups longer speech; SFX cues stay separate. Grouped clips share a level: speaker level and Silent changes apply on the next Play. Master changes immediately; No voice stops grouped playback.</small>
+    </div>
     <div data-et="jevPlannerBox" hidden class="et-grid" style="margin-top:10px">
       <label>Decision connection<select data-et="decisionConnection"><option value="">Default Decision connection</option></select></label>
       <input data-et="jevKey" type="hidden">
@@ -1462,7 +1504,7 @@ export async function setup(ctx) {
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[], voiceIdEditorCount=0;
   const voiceCatalogues=new Map();
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
-  const defaults = () => ({mode:'native',model:'gemini-3.8-flash-tts',planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchGemini:false,concurrency:1,plannerTokens:8192,
+  const defaults = () => ({mode:'native',model:'gemini-3.8-flash-tts',planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,batchGemini:false,concurrency:1,plannerTokens:8192,
     prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
     extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
@@ -1473,7 +1515,7 @@ export async function setup(ctx) {
   let readAlongStop=null,followContainer=null,followPaused=false,followGroup=null,followRange=null,followWord=false;
   const followResume=document.createElement('button');followResume.type='button';followResume.className='choir-follow-resume';followResume.hidden=true;
   document.body.append(followResume);unsubs.push(()=>followResume.remove());
-  let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged,mixerPlaybackSegments=null,bedsPaused=false;
+  let currentSpeaker='', currentGroupLevel=null,currentGroupNames=[], audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged,mixerPlaybackSegments=null,bedsPaused=false;
   // Keep the launcher unobtrusive on every load, including existing expanded preferences.
   const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,music:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),...(savedMixer||{}),collapsed:true};
   // Solo is no longer exposed; old solo preferences must not silently mute other voices.
@@ -1575,7 +1617,7 @@ export async function setup(ctx) {
   const effectVolume=kind=>mixerVolume(mixerState.master,kind,{[kind]:{volume:mixerState[kind]}});
   function applyVolume(){
     const isEffect=currentSpeaker==='SFX' || currentSpeaker==='sfx';
-    const volume=isEffect?effectVolume('sfx'):mixerVolume(mixerState.master,currentSpeaker,mixerState.channels);
+    const volume=isEffect?effectVolume('sfx'):currentGroupLevel!==null?mixerState.master*currentGroupLevel:mixerVolume(mixerState.master,currentSpeaker,mixerState.channels);
     const sfxScale=isEffect?(config?.enableSfx===false?0:0.45):1;
     if(currentGain)currentGain.gain.value=volume*currentNormalize*sfxScale;
     else if(currentAudio)currentAudio.volume=Math.max(0, Math.min(1, volume*sfxScale));
@@ -1686,7 +1728,7 @@ export async function setup(ctx) {
     for(const speaker of speakers){
       const channel=Object.hasOwn(mixerState.channels,speaker)?mixerState.channels[speaker]:{volume:1,mute:false};Object.defineProperty(mixerState.channels,speaker,{value:channel,writable:true,enumerable:true,configurable:true});
       const row=doc.createElement('div');row.className='cm-channel';row.dataset.speaker=speaker;row.dataset.kind='voice';row.dataset.channelGroup=mainCast.has(normalizeName(speaker))?'main':'npcs';row.dataset.noVoice=String(speakerExcluded(speaker));
-      row.setAttribute('aria-current',String(currentSpeaker===speaker));const name=doc.createElement('span');name.className='cm-channel-name';name.textContent=speaker;name.title=speaker;
+      row.setAttribute('aria-current',String(currentSpeaker===speaker || currentGroupNames.includes(speaker)));const name=doc.createElement('span');name.className='cm-channel-name';name.textContent=speaker;name.title=speaker;
       const head=doc.createElement('div');head.className='cm-channel-head';
       const dot=doc.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
       const readout=doc.createElement('span');readout.className='cm-percent';readout.setAttribute('aria-hidden','true');head.append(dot,name,readout);
@@ -1744,13 +1786,17 @@ export async function setup(ctx) {
   function syncAmbiencePlayback(){if(!$('enableAmbience').checked)stopBeds('ambience');showFoleyStatus();updateTransport();}
   function syncMusicPlayback(){if(!$('enableMusic').checked)stopBeds('music');updateTransport();}
   function syncSfxPlayback(){showFoleyStatus();generationPolicyChanged?.();if(config?.enableSfx===false && currentSpeaker==='SFX')skipAudio?.();applyVolume();}
+  function stopGroupedForSpeaker(speaker){
+    if(!controller || !mixerPlaybackSegments?.some(segment=>segment.dialogue && segment.turns.some(turn=>normalizeName(turn.speaker)===normalizeName(speaker))))return false;
+    stop(false);status('Speaker selection changed. Play again to rebuild grouped speech with the selected voices.');return true;
+  }
   async function setSpeakerExcluded(speaker,excluded){
     if(!chatId)return;
     const legacyNarratorMute=normalizeName(speaker)==='narrator' && Boolean(config.muteNarrator);
     if(legacyNarratorMute)config.muteNarrator=false;
     for(const actor of [...config.fixed,...Object.values(config.casts).flat()])if(normalizeName(actor.speaker)===normalizeName(speaker))actor.excluded=excluded;
     for(const entry of [...castRows,...npcRows])if(normalizeName(entry.read().speaker)===normalizeName(speaker))entry.setExcluded(excluded);
-    generationPolicyChanged?.();if(excluded && currentSpeaker===speaker)advancePlayback?.();
+    if(!stopGroupedForSpeaker(speaker)){generationPolicyChanged?.();if(excluded && currentSpeaker===speaker)advancePlayback?.();}
     if(legacyNarratorMute && plan)renderPreview();renderMixer();void refreshCacheStatus();await persistConfig(chatId,config,legacyNarratorMute);
   }
   function makeSeekControl(messageId){
@@ -1865,7 +1911,7 @@ export async function setup(ctx) {
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
   const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
-  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration'];
+  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration'];
   const defaultVoiceFields=['voice','route','gender','style','accent','excluded'];
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   let closeDefaultEditor;
@@ -2605,7 +2651,7 @@ export async function setup(ctx) {
       casts:{...config.casts,[scope(config)]:npcRows.filter(v=>v.row.parentElement===$('npcs')).map(v=>v.read())},
       mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,decisionConnection:$('decisionConnection')?$('decisionConnection').value:(config.decisionConnection||''),
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
-      plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,concurrency:Number($('concurrency').value),
+      plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,batchSpeech:$('batchSpeech').checked,concurrency:Number($('concurrency').value),
       prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
       extraVoices:$('extraVoices').value,ignoredTags:$('ignoredTags').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,loopMusic:$('loopMusic').checked,readAlong:$('readAlong').value,followNarration:$('followNarration').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')},activeCharacterCard || {});
   }
@@ -2683,7 +2729,7 @@ export async function setup(ctx) {
     const mode=$('plannerMode')?.value || 'llm';
     const isJev=mode==='jev';
     const isHeuristic=mode==='heuristic';
-    if($('llmPlannerBox'))$('llmPlannerBox').hidden=isHeuristic || (isJev && !$('allowLlmFallback')?.checked);
+    if($('llmPlannerBox'))$('llmPlannerBox').hidden=false;
     if($('jevPlannerBox'))$('jevPlannerBox').hidden=!isJev;
     if($('useFastClassifier'))$('useFastClassifier').checked=isHeuristic;
     $('plannerHint').textContent=isHeuristic
@@ -2752,7 +2798,7 @@ export async function setup(ctx) {
     for(const name of ['allowLlmFallback','allowVoiceFallback','normalizeLoudness','sectionButtons'])$(name).checked=Boolean(config[name]);
     $('prefetch').value=config.prefetch;
     // Per-speaker mixing and exclusions need individual passages.
-    $('batchGemini').checked=false;$('batchGeminiWrap').hidden=true;
+    $('batchGemini').checked=false;$('batchGeminiWrap').hidden=true;$('batchSpeech').checked=Boolean(config.batchSpeech);
     updatePlannerVisibility();
     updateProviderVisibility();
   }
@@ -2762,7 +2808,7 @@ export async function setup(ctx) {
     for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','connectionMode','apply'])if($(name))$(name).disabled=value;
     for (const name of ['model','planner','plannerMode','decisionConnection','fishVoiceSource','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','testTts','importCast'])if($(name))$(name).disabled=value;
     updateTransport();
-    if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
+    $('batchSpeech').disabled=value;if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button'),...$('npcPolicyRoot').querySelectorAll('input,select')])node.disabled=value;
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
     refreshDefaultControls();
@@ -2772,7 +2818,7 @@ export async function setup(ctx) {
   function stop(show=true,keepBed=false,keepMusic=false) {
     if(show)cancelAutoReplies();
     if(activePlayback && currentAudio)savePosition(currentAudio.currentTime || 0);
-    revision++;controller?.abort();controller=null;planningSource=null;advancePlayback=null;skipAudio=null;generationPolicyChanged=null;activePlayback=null;currentSpeaker='';mixerPlaybackSegments=null;
+    revision++;controller?.abort();controller=null;planningSource=null;advancePlayback=null;skipAudio=null;generationPolicyChanged=null;activePlayback=null;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];mixerPlaybackSegments=null;
     currentAudio?.pause();finishAudio?.();currentAudio=null;finishAudio=null;
     if(objectUrl){URL.revokeObjectURL(objectUrl);objectUrl=null;}
     audioReady=false;if(keepBed)pauseBeds(false);else if(keepMusic && continuousMusic()){stopBeds('ambience');pauseBeds(false);}else stopBeds();
@@ -2956,8 +3002,9 @@ export async function setup(ctx) {
     const source=planSource,segments=plan.segments,snapshot=capture();
     const record=await recordingStore('get',recordingKey(source.chatId,source.messageId)).catch(()=>null);
     if(source!==planSource)return;
+    const grouped=snapshot.batchSpeech?playbackBatches(segments.map((segment,passageIndex)=>({...segment,passageIndex})),snapshot):null;
     for(const [index,segment] of segments.entries()){
-      const batches=playbackBatches([segment],snapshot).filter(batch=>!batch.ambience?.stop && !batch.music?.stop);
+      const batches=(grouped?grouped.filter(batch=>batch.passageIndex===index || batch.turns?.some(turn=>turn.passageIndex===index)):playbackBatches([segment],snapshot)).filter(batch=>!batch.ambience?.stop && !batch.music?.stop);
       const count=batches.filter(batch=>record?.passages?.[cacheKey(batch,snapshot)]).length;
       const node=$('preview').querySelector(`[data-cache-index="${index}"]`);
       if(node)node.textContent=speakerExcluded(segment.speaker)?'No voice · text retained':count===batches.length?'Cached':`${count}/${batches.length} cached · requires generation`;
@@ -3195,7 +3242,8 @@ export async function setup(ctx) {
           combined.push(...stripBase(sectionSegments)); previous = section;
           if (streaming) {
             const offset=combined.length-sectionSegments.length;
-            const sectionBatches = sectionSegments.flatMap((segment,index)=>playbackBatches([segment],config).map((batch,chunkIndex)=>({...batch,passageIndex:offset+index,chunkIndex})));
+            const indexed=sectionSegments.map((segment,index)=>({...segment,passageIndex:offset+index}));
+            const sectionBatches=config.batchSpeech?playbackBatches(indexed,config,{startup:offset===0}):indexed.flatMap(segment=>playbackBatches([segment],config));
             player.push(sectionBatches);
           }
         }
@@ -3350,7 +3398,11 @@ export async function setup(ctx) {
   async function playBlob(blob,signal,speaker='',offset=0,normalize=false,paused=false,track=null) {
     if(signal.aborted)throw abortError();
     const url=URL.createObjectURL(blob);objectUrl=url;currentAudio=new Audio(url);
-    const audio=currentAudio,position=activePlayback;audioReady=false;currentSpeaker=speaker;renderMixer();applyVolume();
+    const audio=currentAudio,position=activePlayback;audioReady=false;currentSpeaker=speaker;
+    const item=track?.items?.[track.index];currentGroupNames=item?.dialogue?item.turns.map(turn=>turn.speaker):[];
+    const groupLevels=currentGroupNames.map(name=>mixerVolume(1,name,mixerState.channels));
+    currentGroupLevel=groupLevels.length?(groupLevels.every(level=>level===groupLevels[0])?groupLevels[0]:item.groupLevel ?? 1):null;
+    renderMixer();applyVolume();
     const AudioContextClass=globalThis.AudioContext || globalThis.webkitAudioContext;
     let mediaSource, gain, stopFollowing;
     try {
@@ -3388,7 +3440,7 @@ export async function setup(ctx) {
     } finally {
       if(activePlayback===position && position)savePosition(audio.currentTime || 0);
       stopFollowing?.();audio.onloadedmetadata=null;audio.ontimeupdate=null;audio.ondurationchange=null;mediaSource?.disconnect();gain?.disconnect();
-      audio.pause();if(currentAudio===audio){currentAudio=null;skipAudio=null;currentGain=null;currentNormalize=1;audioReady=false;currentSpeaker='';renderMixer();}
+      audio.pause();if(currentAudio===audio){currentAudio=null;skipAudio=null;currentGain=null;currentNormalize=1;audioReady=false;currentSpeaker='';currentGroupLevel=null;currentGroupNames=[];renderMixer();}
       URL.revokeObjectURL(url);if(objectUrl===url)objectUrl=null;
     }
   }
@@ -3399,6 +3451,12 @@ export async function setup(ctx) {
   }
   const actorFor=(segment,snapshot)=>[...(snapshot.fixed || []),...(snapshot.casts?.[scope(snapshot)] || [])].find(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker));
   function synthesisSettings(segment,snapshot){
+    if(segment.turns?.length>1){
+      const requests=segment.turns.map(turn=>synthesisSettings(turn,snapshot)),first=requests[0];
+      const turns=requests.map(request=>request.segment);
+      return {segment:{...segment,turns},connection:first.connection,parameters:{...first.parameters,
+        ...(segment.dialogue && first.connection?{turns:turns.map(({speaker,voice,text,style})=>({speaker,voice,text,style})),voice_direction:''}:{})}};
+    }
     const route=segment.route || scope(snapshot),actor=actorFor(segment,snapshot);
     const connection=nativeConnections.find(c=>`native:${c.id}`===route);
     const supported=nativeProviders.find(provider=>provider.id===connection?.provider)?.capabilities?.parameters || {};
@@ -3418,7 +3476,31 @@ export async function setup(ctx) {
     const request=synthesisSettings(segment,snapshot);
     return passageKey(request.segment,{...snapshot,defaultRoute:scope(snapshot)},request.connection,request.parameters);
   }
-  function ttsBatches(segments,snapshot,batchGemini=false){
+  function groupedLimits(segment,route,snapshot){
+    const request=synthesisSettings(segment,snapshot),connection=request.connection;
+    const provider=nativeProviders.find(item=>item.id===connection?.provider);
+    const limits=speechRequestLimits(route==='gemini'?'gemini':connection?.provider,connection?.model || snapshot.model);
+    const capability=provider?.capabilities?.multiSpeaker;
+    const prebuilt=GEMINI_VOICES.some(voice=>voice.id===segment.voice);
+    const maxSpeakers=route==='gemini'?prebuilt?2:0:capability && (!capability.models || capability.models.includes(connection.model)) &&
+      (connection.provider==='fish_audio' || provider.capabilities.staticVoices?.some(voice=>voice.id===segment.voice))?capability.maxSpeakers:0;
+    const parameters={...request.parameters};
+    if(maxSpeakers && connection?.provider.startsWith('google')){delete parameters.speech_style;delete parameters.instructions;}
+    const level=mixerVolume(1,segment.speaker,mixerState.channels);
+    return {...limits,maxSpeakers,group:JSON.stringify([parameters,level,maxSpeakers]),
+      measure:turns=>{
+        const styled=turns.map(turn=>synthesisSettings(turn,snapshot).segment);
+        const text=styled.map((turn,index)=>connection?.provider==='fish_audio'
+          ? `${maxSpeakers?`<|speaker:${index}|>`:''}${turn.style && !turn.text.startsWith('[')?`[${turn.style.replace(/^\[|\]$/g,'')}] `:''}${turn.text}`:turn.text).join('\n');
+        const styles=connection?.provider==='fish_audio'?'':styled.map(turn=>turn.style || '').join('');
+        const effective={...connection?.default_parameters,...request.parameters};
+        const nativeStyle=connection?.provider.startsWith('google')?String(effective.speech_style ?? effective.instructions ?? 'casual, relaxed conversation, natural pacing, understated expression'):'';
+        return {chars:text.length,bytes:new TextEncoder().encode(text+styles+nativeStyle.repeat(turns.length)).length};
+      }};
+  }
+  function ttsBatches(segments,snapshot,batchGemini=false,startup=true){
+    if(snapshot.batchSpeech)return groupedSpeechBatches(segments,snapshot.chunk,scope(snapshot),(segment,route)=>groupedLimits(segment,route,snapshot),{sfx:snapshot.enableSfx!==false,startup})
+      .map(batch=>batch.dialogue?{...batch,groupLevel:mixerVolume(1,batch.turns[0].speaker,mixerState.channels)}:batch);
     return speechBatches(segments,snapshot.chunk,scope(snapshot),batchGemini,(segment,route)=>{
       if(segment.kind)return {maxChars:MAX_SPEECH_CHARS};
       const connection=nativeConnections.find(item=>`native:${item.id}`===route);
@@ -3433,7 +3515,7 @@ export async function setup(ctx) {
       return limits;
     });
   }
-  function playbackBatches(segments,snapshot,{filterMuted=true,batchGemini=false}={}){
+  function playbackBatches(segments,snapshot,{filterMuted=true,batchGemini=false,startup=true}={}){
     const sound=(kind,speaker,text,cue)=>({kind,speaker,voice:'',text,route:kind,[kind]:cue});
     const expanded=segments.flatMap(segment=>{
       const {sfx,ambience,music,...speech}=segment;
@@ -3448,13 +3530,14 @@ export async function setup(ctx) {
       for(const {part,at} of points.map(part=>({part,at:Math.max(0,cueOffset(speech.text,part[part.kind].trigger))})).sort((a,b)=>a.at-b.at)){
         const head=speech.text.slice(start,Math.max(start,at)).trim();
         if(head)parts.push({...speech,text:head});
-        parts.push({...part,moment:speech.text.slice(Math.max(0,at-60),at+240)});
+        parts.push({...part,passageIndex:segment.passageIndex,moment:speech.text.slice(Math.max(0,at-60),at+240)});
         start=Math.max(start,at);
       }
       const tail=speech.text.slice(start).trim();
       return tail?[...parts,{...speech,text:tail}]:parts;
-    }).filter(segment=>!(filterMuted && snapshot.muteNarrator && normalizeName(segment.speaker)==='narrator'));
-    return ttsBatches(expanded,snapshot,batchGemini);
+    }).filter(segment=>!(filterMuted && (snapshot.batchSpeech?speakerExcluded(segment.speaker):snapshot.muteNarrator && normalizeName(segment.speaker)==='narrator')));
+    const batches=ttsBatches(expanded,snapshot,batchGemini,startup),chunks=new Map();
+    return batches.map(batch=>{const passage=batch.passageIndex,chunkIndex=chunks.get(passage) || 0;chunks.set(passage,chunkIndex+1);return {...batch,chunkIndex};});
   }
   const foleyKey=sound=>JSON.stringify(sound?.feels?[sound.feels,sound.genres,sound.keywords]:[sound?.query || 'thump',sound?.filter || 'duration:[0.2 TO 4]']);
   const freesoundKey=snapshot=>(snapshot.freesoundApiKey || $('freesoundApiKey')?.value || '').trim();
@@ -3606,6 +3689,7 @@ export async function setup(ctx) {
       if(total)totalExpected=total;
       // Beds load as soon as they are known, so a new bed is ready when its marker plays.
       for(const s of newSegments){segments.push(s);if(isBed(s) && !s[s.kind].stop && !playbackExcluded(s))loadBed(segments.length-1).catch(()=>{});}
+      mixerPlaybackSegments=segments;
       if(!initialized && segments.length){initialized=true;if(source.resume){const start=segments.findIndex(segment=>segment.passageIndex>source.resume.passage || (segment.passageIndex===source.resume.passage && segment.chunkIndex>=(source.resume.chunk || 0)));playIdx=start<0?segments.length:start;nextToSynthesize=playIdx;}}
       pump();
       wakePlayback?.();
@@ -3692,10 +3776,8 @@ export async function setup(ctx) {
     const resume=options.resume?await ctx.settings.get(`position:${chatId}`):null;
     if(token!==revision || ctrl.signal.aborted)throw abortError();
     const validResume=resume?.messageId===planSource.messageId && sameSpeech(resume.content,planSource.content) && !resume.complete?resume:null;
-    const segments=plan.segments.flatMap((segment,index)=>{
-      if(options.indices && !options.indices.includes(index))return [];
-      return playbackBatches([segment],snapshot).map((batch,chunkIndex)=>({...batch,passageIndex:index,chunkIndex}));
-    });
+    const selected=plan.segments.flatMap((segment,index)=>options.indices && !options.indices.includes(index)?[]:[{...segment,passageIndex:index}]);
+    const segments=snapshot.batchSpeech?playbackBatches(selected,snapshot):selected.flatMap(segment=>playbackBatches([segment],snapshot));
     if(!segments.some(segment=>!speakerExcluded(segment.speaker))){controller=null;status('All characters have No voice enabled. Text and saved audio remain available.');updateTransport();return;}
     validateSettings(snapshot);
     const source={...planSource,resume:validResume}, key=recordingKey(source.chatId,source.messageId);
@@ -3705,6 +3787,7 @@ export async function setup(ctx) {
     status('Checking saved audio…');
     try{cached=await recordingStore('get',key);}catch(error){storageError=error.message;}
     if(token!==revision || ctrl.signal.aborted)throw abortError();
+    if(source.resume && cached?.signature!==signature && (snapshot.batchSpeech || cached?.segments?.some(segment=>segment.turns?.length>1)))source.resume=null;
     const apiKey=$('key').value.trim();
     if(segments.some(segment=>!speakerExcluded(segment.speaker) && (segment.route || scope(snapshot))==='gemini' && !cached?.passages?.[cacheKey(segment,snapshot)]) && !apiKey){controller=null;throw new Error('Enter your Gemini API key for missing passages using the Gemini adapter. It is held only in this page session.');}
     setBusy(true);
@@ -3733,6 +3816,10 @@ export async function setup(ctx) {
       if(mergedCardRecording(recording))throw new Error('This recording combines several card characters into one voice. Plan and play the message again to separate them.');
       if(aliasedLeadRecording(recording))throw new Error('This recording treats a lead character alias as a separate speaker. Plan and play the message again to use the lead voice.');
       if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to apply the current filters or persona name.');
+      if(recording.segments.some(segment=>segment.dialogue && (!config.batchSpeech || segment.turns.some(turn=>speakerExcluded(turn.speaker) || mixerVolume(1,turn.speaker,mixerState.channels)!==mixerVolume(1,segment.turns[0].speaker,mixerState.channels))))){
+        if(await restoreSavedPlan(messageId)){await play();return;}
+        throw new Error('Speaker controls changed. Plan and play this reply to rebuild its grouped audio.');
+      }
       mixerPlaybackSegments=recording.segments;renderMixer();
       let pauseNext=false;
       generationPolicyChanged=()=>{if(currentSpeaker==='SFX' && config?.enableSfx===false){pauseNext=Boolean(currentAudio?.paused);skipAudio?.();}};
@@ -4361,7 +4448,7 @@ const paragraphAudioCache = new Map();
         for(const actor of [...(config?.fixed || []),...Object.values(config?.casts || {}).flat()])if(normalizeName(actor.speaker)==='narrator')actor.excluded=false;
         for(const entry of [...castRows,...npcRows])if(normalizeName(entry.read().speaker)==='narrator')entry.setExcluded(false);
       }
-      generationPolicyChanged?.();if(muted && normalizeName(currentSpeaker)==='narrator')advancePlayback?.();
+      if(!stopGroupedForSpeaker('Narrator')){generationPolicyChanged?.();if(muted && normalizeName(currentSpeaker)==='narrator')advancePlayback?.();}
       scheduleSettingsSave();if(plan)renderPreview();void flushSettings().catch(()=>{});
     },
     setSoundEnabled: (on) => {

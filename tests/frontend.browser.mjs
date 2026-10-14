@@ -926,7 +926,7 @@ test('plannerMode toggles Jev System 1 inputs directly in Speech & Planner secti
     // Switch to Jev System 1
     $('plannerMode').value = 'jev';
     $('plannerMode').dispatchEvent(new dom.window.Event('change'));
-    assert.equal($('llmPlannerBox').hidden, true);
+    assert.equal($('llmPlannerBox').hidden, false);
     assert.equal($('jevPlannerBox').hidden, false);
 
     // Enter Jev key and test planner

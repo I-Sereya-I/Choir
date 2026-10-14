@@ -68,7 +68,7 @@ async function harness(mixerPreferences,mobile=false){
       return new Response(new Uint8Array([1,2,3]),{headers:{'Content-Type':'audio/mpeg'}});
     }
     let value;
-    if(url.includes('/providers'))value={providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}},{id:'accent_tts',capabilities:{parameters:{instructions:{type:'string'},accent:{enum:['Irish','French']}}}}]};
+    if(url.includes('/providers'))value={providers:state.providers || [{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}},{id:'accent_tts',capabilities:{parameters:{instructions:{type:'string'},accent:{enum:['Irish','French']}}}}]};
     else if(url.endsWith('/voices')){if(state.failCatalogue)throw Error('Voice catalogue unavailable');value=state.catalogues?.[url.split('/').at(-2)] || {voices:['n','y','m','g','new'].map(id=>({id,name:id,description:id==='m'?'A mature, husky Irish voice.':'A light, youthful voice.'}))};}
     else if(url.includes('/chats/') && url.includes('/messages?')){state.canonicalReads=(state.canonicalReads || 0)+1;value={data:state.savedMessages || []};}
     else if(url.includes('/personas/'))value=state.personas?.[decodeURIComponent(url.split('/personas/')[1])] ?? state.persona;
@@ -1452,6 +1452,77 @@ test('companion paragraph playback also applies native provider limits and Fish 
   }
 });
 
+async function fishGroupingHarness(mixer){
+  const h=await harness(mixer);h.connections[0].provider='fish_audio';h.connections[0].model='s2.1-pro';
+  h.state.providers=[{id:'fish_audio',capabilities:{parameters:{},multiSpeaker:{maxSpeakers:5,models:['s2.1-pro']}}}];
+  const saved=h.store.get('chat:chat-a');saved.connectionMode='one';saved.batchSpeech=true;saved.chunk=1800;saved.enableSfx=false;saved.enableAmbience=false;
+  for(const actor of saved.fixed){delete actor.route;delete actor.accent;delete actor.pronunciation;}
+  h.store.set('chat:chat-a',saved);await h.reload();return h;
+}
+test('optional Fish grouping sends four turns in one request and cached replay makes no new calls',async()=>{
+  const h=await fishGroupingHarness();try{
+    assert.equal(h.$('batchSpeech').checked,true);await h.plan();await h.play();
+    assert.equal(h.synthesis.length,1);assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>turn.speaker),['Narrator','Mira','Guard','Narrator']);
+    assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>turn.voice),['n','m','g','n']);
+    await h.play();assert.equal(h.synthesis.length,1);
+    await toggle(h,'batchSpeech',false);await h.play();assert.equal(h.synthesis.length,5);
+  }finally{await h.close();}
+});
+test('grouping falls back to separate calls for unequal speaker levels and old relays',async()=>{
+  for(const oldRelay of [false,true]){
+    const h=await fishGroupingHarness(oldRelay?undefined:{channels:{Mira:{volume:0.5}}});try{
+      if(oldRelay){h.state.providers[0].capabilities.multiSpeaker=undefined;await h.reload();}
+      await h.plan();await h.play();assert.equal(h.synthesis.length,oldRelay?4:3);
+      assert.ok(oldRelay?h.synthesis.every(request=>!request.parameters.turns):h.synthesis.filter(request=>request.parameters.turns).every(request=>!request.parameters.turns.some(turn=>turn.speaker==='Mira')));
+    }finally{await h.close();}
+  }
+});
+test('No voice during a grouped clip stops it and next Play omits only that speaker',async()=>{
+  const h=await fishGroupingHarness({enabled:true});try{
+    await h.plan();h.state.blockAudio=true;h.footer.querySelector('button').click();await until(()=>h.audios.some(audio=>!audio.paused));
+    h.root.ownerDocument.querySelector('[data-speaker="Mira"] [data-kind="no-voice"]').click();
+    await until(()=>h.$('status').textContent.includes('rebuild grouped speech'));
+    assert.ok(h.audios.every(audio=>audio.paused));h.state.blockAudio=false;
+    await until(()=>!h.$('play').disabled);h.$('play').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
+    assert.deepEqual(h.synthesis.at(-1).parameters.turns.map(turn=>turn.speaker),['Narrator','Guard','Narrator']);
+  }finally{await h.close();}
+});
+test('grouped clips keep their shared level until next Play while Master remains immediate',async()=>{
+  const h=await fishGroupingHarness({master:0.5});try{
+    await h.plan();h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.some(audio=>!audio.paused));
+    const audio=h.audios.at(-1);assert.equal(audio.volume,0.5);
+    h.root.ownerDocument.querySelector('[data-speaker="Mira"] [data-kind="silent"]').click();assert.equal(audio.volume,0.5);
+    const master=h.root.ownerDocument.querySelector('input[type="range"][aria-label="Master volume"]');master.value='0.7';master.dispatchEvent(new h.dom.window.Event('input'));assert.equal(audio.volume,0.7);
+    h.state.blockAudio=false;audio.onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+    await h.play();assert.equal(h.synthesis.length,4);assert.ok(h.synthesis.slice(1).filter(request=>request.parameters.turns).every(request=>!request.parameters.turns.some(turn=>turn.speaker==='Mira')));
+  }finally{await h.close();}
+});
+test('grouped playback keeps an SFX cue between the spoken text it interrupts',async()=>{
+  const h=await fishGroupingHarness();try{
+    await toggle(h,'enableSfx',true);h.$('freesoundApiKey').value='test-key';h.$('freesoundApiKey').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+    h.message.content='At dawn. "Hello." The page snapped shut. "Wait." The gate closed.';
+    await h.plan();await h.play();assert.equal(h.synthesis.length,2);
+    assert.match(h.synthesis[0].text,/Hello/);assert.doesNotMatch(h.synthesis[0].text,/page snapped/);
+    assert.match(h.synthesis[1].text,/page snapped/);assert.equal(h.state.previewFetches.length,1);
+  }finally{await h.close();}
+});
+test('Google relay and Gemini adapter group prebuilt voices using their existing connections',async()=>{
+  for(const adapter of [false,true]){
+    const h=await harness();try{
+      const voices=['Charon','Kore','Puck'].map(id=>({id,name:id}));
+      h.connections[0].provider='google_tts';h.connections[0].model='gemini-3.8-flash-tts';
+      h.state.providers=[{id:'google_tts',capabilities:{parameters:{},staticVoices:voices,multiSpeaker:{maxSpeakers:2,models:['gemini-3.8-flash-tts']}}}];
+      h.state.catalogues={a:{voices}};h.state.planForCatalogue=true;
+      const saved=h.store.get('chat:chat-a');saved.mode=adapter?'gemini':'native';saved.model='gemini-3.8-flash-tts';saved.connectionMode='one';saved.casts={};saved.batchSpeech=true;saved.enableSfx=false;saved.enableAmbience=false;
+      saved.fixed.forEach((actor,i)=>{actor.voice=voices[i].id;delete actor.route;delete actor.accent;delete actor.pronunciation;});
+      h.store.set('chat:chat-a',saved);await h.reload();h.$('key').value='test-key';
+      h.message.content='At dawn. "Hello." The gate closed.';await h.plan();await h.play();
+      const calls=adapter?h.requests.filter(request=>request.action==='gemini'):h.synthesis;assert.equal(calls.length,1);
+      const turns=adapter?calls[0].input.segment.turns:calls[0].parameters.turns;
+      assert.deepEqual(turns.map(turn=>turn.voice),['Charon','Puck','Charon']);
+    }finally{await h.close();}
+  }
+});
 test('heuristic planning and its test stay local without any backend request',async()=>{
   const h=await harness();try{
     h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
@@ -1469,7 +1540,7 @@ test('ambiguous heuristic dialogue stops without an LLM fallback or audio synthe
     assert.match(h.$('status').textContent,/could not identify the speaker.*Dialogue 1: "Hello\."/);
     assert.doesNotMatch(h.$('status').textContent,/unassigned|no assigned voice/);
     assert.equal(h.requests.length,0);assert.equal(h.synthesis.length,0);assert.equal(h.$('preview').children.length,0);
-    assert.equal(h.$('llmPlannerBox').hidden,true);assert.equal(h.$('stop').disabled,true);
+    assert.equal(h.$('llmPlannerBox').hidden,false);assert.equal(h.$('stop').disabled,true);
   }finally{await h.close();}
 });
 

@@ -463,7 +463,8 @@ export function passageKey(segment, settings, connection, parameters={}) {
   return JSON.stringify([2,segment.text,segment.voice,segment.route || settings.defaultRoute,
     segment.style || '',connection?.model || settings.model,connection?.provider || '',
     connection?.api_url || connection?.base_url || '',
-    settings.allowVoiceFallback===true,canonical(effectiveParameters)]);
+    settings.allowVoiceFallback===true,canonical(effectiveParameters),
+    ...(segment.turns?.length>1?[segment.turns.map(({speaker,voice,text,style})=>[speaker,voice,text,style || ''])]:[])]);
 }
 
 export const MAX_CHANNEL_VOLUME=3;
@@ -655,6 +656,43 @@ export function speechBatches(segments,maxChars,defaultRoute,batchGemini=true,li
     }
   }
   return batches;
+}
+
+// A short opening clip starts playback while later, bounded clips are prefetched.
+// The caller supplies provider capabilities and delivery/mixer compatibility.
+export function groupedSpeechBatches(segments,maxChars,defaultRoute,limitsForSegment,{sfx=false,startup=true}={}) {
+  const batches=[],queue=segments.map(segment=>({...segment}));
+  let current=null,first=startup,currentLimits;
+  const flush=()=>{if(current){batches.push(current);if(!current.kind)first=false;current=null;}};
+  const turnsFor=batch=>batch.turns || [{...batch}];
+  while(queue.length){
+    const source=queue.shift(),route=source.route || defaultRoute;
+    if(source.kind){flush();batches.push({...source,route});continue;}
+    const limits=limitsForSegment(source,route),cap=Math.min(maxChars,limits.maxChars || maxChars,first?600:sfx?900:2400);
+    const turns=current?turnsFor(current):[],names=new Map(turns.map(turn=>[turn.speaker,turn.voice]));
+    const compatible=current && current.route===route && currentLimits.group===limits.group &&
+      (!names.has(source.speaker) || names.get(source.speaker)===source.voice) &&
+      (limits.maxSpeakers>0 ? new Set([...names.keys(),source.speaker]).size<=limits.maxSpeakers : current.speaker===source.speaker && current.voice===source.voice && current.style===source.style) &&
+      turns.length<200;
+    if(current && !compatible){flush();queue.unshift(source);continue;}
+    const measure=items=>limits.measure?limits.measure(items):{chars:items.map(turn=>turn.text).join('\n').length,bytes:new TextEncoder().encode(items.map(turn=>turn.text+(turn.style || '')).join('\n')).length};
+    const candidate=[...turns,source],size=measure(candidate);
+    if(current && (size.chars>cap || size.bytes>(limits.maxBytes ?? Infinity))){flush();queue.unshift(source);continue;}
+    if(size.chars>cap || size.bytes>(limits.maxBytes ?? Infinity)){
+      const overhead=measure([{...source,text:''}]);
+      const pieces=splitSegment(source,Math.max(80,cap-overhead.chars),limits.maxBytes?limits.maxBytes-overhead.bytes:Infinity);
+      if(pieces.length<2)throw new Error('Delivery instructions leave too little room for grouped speech.');
+      queue.unshift(...pieces);continue;
+    }
+    if(current){
+      current.turns=candidate;current.text=candidate.map(turn=>turn.text).join('\n');
+      current.speaker=[...new Set(candidate.map(turn=>turn.speaker))].join(' / ');
+    }else{current={...source,route};currentLimits=limits;}
+  }
+  flush();
+  // A single voice needs no dialogue payload, even when several passages joined.
+  return batches.map(batch=>batch.turns && new Set(batch.turns.map(turn=>turn.speaker)).size===1
+    && batch.turns.every(turn=>turn.style===batch.turns[0].style)?{...batch,dialogue:false}:batch.turns?{...batch,dialogue:true}:batch);
 }
 
 export function extractGeminiAudio(response) {

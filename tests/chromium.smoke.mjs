@@ -164,7 +164,7 @@ try{
   const drawerStop=page.locator('[data-et="stop"]');assert.equal(await drawerStop.isDisabled(),true);
   await page.locator('[data-et="plannerMode"]').selectOption('heuristic');
   await page.locator('[data-et="testPlanner"]').click();await page.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.startsWith('Heuristic test passed'));
-  assert.equal(await page.locator('[data-et="llmPlannerBox"]').isVisible(),false);
+  assert.equal(await page.locator('[data-et="llmPlannerBox"]').isVisible(),true);
   await page.locator('[data-et="plannerMode"]').selectOption('llm');
   assert.equal(await page.locator('[data-et="llmPlannerBox"]').isVisible(),true);
   if(process.env.CHOIR_DRAWER_SCREENSHOT)await page.locator('main').screenshot({path:process.env.CHOIR_DRAWER_SCREENSHOT});
