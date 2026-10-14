@@ -110,6 +110,7 @@ async function harness(mixerPreferences,mobile=false){
           const title=state.musicTitle || 'Crypto',reply=()=>backend?.({namespace:'choir',id:request.id,result:{title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`}});
           if(state.holdMusic){state.releaseMusic=reply;return;}result={title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`};
         }
+        else if(request.action==='searchVoices')result={results:state.voiceSearchResults || [{id:'community_fish_voice',name:'Community narrator',description:'A warm, steady storyteller.'}]};
         else if(request.action==='gemini')result={base64:'AAABAA==',mimeType:'audio/L16;rate=24000'};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
         else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
@@ -223,6 +224,58 @@ test('cast defaults contain only lead and NPC choices; cancel and navigation dis
   h.state.active='chat-new';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');assert.equal(get(),null);
   assert.deepEqual(h.store.get('settings:captured-defaults'),preset);assert.equal(h.synthesis.length,0);
  }finally{await h.close();}
+});
+
+test('Fish voice IDs in Set default stay in the draft until Save and persist across apply, reload and new chats',async()=>{
+ const h=await fishGroupingHarness();try{
+  const before=structuredClone(h.store.get('chat:chat-a')),dialog=()=>document.querySelector('[aria-label="Set default"]');
+  const button=name=>[...dialog().querySelectorAll('button')].find(button=>button.textContent===name);
+  const choose=id=>{dialog().querySelector('[aria-label="Paste Fish voice ID for Default {{char}} voice"]').click();dialog().querySelector('[aria-label="Fish voice ID for Default {{char}} voice"]').value=id;dialog().querySelector('[aria-label="Fish voice description for Default {{char}} voice"]').value='A calm, warm voice.';dialog().querySelector('[aria-label="Use Fish voice ID for Default {{char}} voice"]').click();};
+  h.$('captureDefaults').click();choose('discarded_fish_voice');button('Cancel').click();
+  assert.deepEqual(h.store.get('chat:chat-a'),before);assert.equal(h.store.has('settings:captured-defaults'),false);
+  h.$('captureDefaults').click();choose('fish_custom_default');button('Save default').click();await until(()=>!dialog());
+  const preset=h.store.get('settings:captured-defaults');assert.equal(preset.leadVoices[2].voice,'fish_custom_default');assert.equal(preset.voiceCatalogue.find(voice=>voice.id==='fish_custom_default').description,'A calm, warm voice.');
+  assert.deepEqual(h.store.get('chat:chat-a'),before);
+  h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));
+  assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'fish_custom_default');
+  await h.reload();assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'fish_custom_default');
+  h.state.active='chat-new';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');
+  assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'fish_custom_default');assert.equal(h.synthesis.length,0);
+ }finally{await h.close();}
+});
+
+test('Set default browses Fish voices for the selected route, rejects invalid IDs and closes its child browser on navigation',async()=>{
+ const h=await harness();try{
+  h.connections[1].provider='fish_audio';await h.reload();const before=structuredClone(h.store.get('chat:chat-a'));
+  h.$('captureDefaults').click();const dialog=document.querySelector('[aria-label="Set default"]');
+  const narrator=dialog.querySelector('[aria-label="Browse Fish voice catalogue for Default Narrator voice"]');assert.equal(narrator.parentElement.hidden,true);
+  const paste=dialog.querySelector('[aria-label="Paste Fish voice ID for Default {{char}} voice"]');assert.equal(paste.parentElement.hidden,false);paste.click();
+  dialog.querySelector('[aria-label="Fish voice ID for Default {{char}} voice"]').value='invalid/voice';dialog.querySelector('[aria-label="Use Fish voice ID for Default {{char}} voice"]').click();
+  assert.match(dialog.querySelector('[data-default-feedback]').textContent,/letters, numbers/);
+  dialog.querySelector('[aria-label="Browse Fish voice catalogue for Default {{char}} voice"]').click();
+  await until(()=>document.querySelector('[data-et="voiceLibraryModal"] .et-voice-card button.et-btn-primary'));
+  document.querySelector('[data-et="voiceLibraryModal"] .et-voice-card button.et-btn-primary').click();
+  assert.equal(dialog.querySelector('[aria-label="Default {{char}} voice"]').value,'community_fish_voice');assert.deepEqual(h.store.get('chat:chat-a'),before);
+  [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Save default').click();await until(()=>!dialog.isConnected);
+  assert.equal(h.store.get('settings:captured-defaults').voiceCatalogue.find(voice=>voice.id==='community_fish_voice').route,'native:b');
+  h.$('captureDefaults').click();document.querySelector('[aria-label="Browse Fish voice catalogue for Default {{char}} voice"]').click();
+  assert.ok(document.querySelector('[data-et="voiceLibraryModal"]'));h.state.active='chat-new';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');
+  assert.equal(document.querySelector('[data-et="voiceLibraryModal"]'),null);assert.equal(document.querySelector('[aria-label="Set default"]'),null);
+ }finally{await h.close();}
+});
+
+test('Fish NPC default IDs support shared and preferred voices without altering the active chat',async()=>{
+ for(const mode of ['single','preferred']){
+  const h=await fishGroupingHarness();try{
+   const before=structuredClone(h.store.get('chat:chat-a'));h.$('captureNpcDefaults').click();const dialog=document.querySelector('[aria-label="Set default"]'),selection=dialog.querySelector('[aria-label="Default NPC casting"]');
+   selection.value=mode;selection.dispatchEvent(new h.dom.window.Event('change'));const name=mode==='single'?'Default Shared NPC voice':'Default Preferred NPC voices';
+   dialog.querySelector(`[aria-label="Paste Fish voice ID for ${name}"]`).click();dialog.querySelector(`[aria-label="Fish voice ID for ${name}"]`).value='fish_npc_default';dialog.querySelector(`[aria-label="Use Fish voice ID for ${name}"]`).click();
+   [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Save default').click();await until(()=>!dialog.isConnected);
+   const preset=h.store.get('settings:captured-defaults');assert.equal(mode==='single'?preset.npcPolicy.voice:preset.npcPolicy.voices[0],'fish_npc_default');assert.deepEqual(h.store.get('chat:chat-a'),before);
+   h.$('applyNpcDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));await h.reload();
+   const picker=h.$('npcPolicyRoot').querySelector(`[aria-label="${name.replace('Default ','')}"]`);assert.ok([...picker.selectedOptions].some(option=>option.value==='fish_npc_default'));
+  }finally{await h.close();}
+ }
 });
 
 test('NPC default modes can be applied per chat, skip synthesis or enforce shared and preferred voices, and persist independently',async()=>{

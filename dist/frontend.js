@@ -1918,7 +1918,7 @@ export async function setup(ctx) {
     if(disposed || version!==loadVersion)return [];
     if(voiceCatalogues.has(route))return voiceCatalogues.get(route);
     scopeLegacyExtraVoices();
-    const extra=additionalVoices(config.extraVoices).filter(voice=>extraVoiceRoutes(voice.id).includes(route));
+    const extra=[...additionalVoices(config.extraVoices).filter(voice=>extraVoiceRoutes(voice.id).includes(route)),...(capturedDefaults?.voiceCatalogue || []).filter(voice=>voice.route===route)];
     if(route==='gemini'){
       const catalogue=normalizeVoiceCatalogue([...new Map([...GEMINI_VOICES,...extra].map(voice=>[voice.id,voice])).values()]);
       voiceCatalogues.set(route,catalogue);return catalogue;
@@ -1930,7 +1930,7 @@ export async function setup(ctx) {
     const fallback=nativeProviders.find(item=>item.id===conn.provider)?.capabilities?.staticVoices || [];
     let data;
     try{data=await api(`/tts-connections/${encodeURIComponent(connectionId)}/voices`).then(response=>response.json());}
-    catch(error){if(!fallback.length && provider!=='openai_tts')throw error;data={voices:[]};}
+    catch(error){if(!fallback.length && !extra.length && provider!=='openai_tts')throw error;data={voices:[]};}
     if(disposed || version!==loadVersion)return [];
     let baseVoices=data.voices || [];
     if(!baseVoices.length)baseVoices=fallback.length?fallback:provider==='openai_tts'?OPENAI_VOICES:[];
@@ -1973,15 +1973,19 @@ export async function setup(ctx) {
     if(value && ![...select.options].some(item=>item.value===value))option(select,value,`${value} · unavailable`);
     select.value=value || '';select.setAttribute('aria-label',name);return select;
   }
-  function npcPolicyEditor(container,initial,getDefaultRoute,onChange,prefix='',getShared=()=>false){
+  function npcPolicyEditor(container,initial,getDefaultRoute,onChange,prefix='',getShared=()=>false,voicePicker=null){
     const policy=structuredClone(initial || {mode:'llm',route:'',voice:'',voices:[]}),mode=document.createElement('select');
     for(const [value,name] of [['skip','Do not generate NPC speech'],['single','Use one voice for everyone'],['preferred','Choose from preferred voices'],['llm','Let the LLM decide']])option(mode,value,name);
     mode.value=policy.mode;const connection=defaultConnection(getShared()?'':policy.route,`${prefix}NPC connection`),voice=document.createElement('select'),pool=document.createElement('select');pool.multiple=true;pool.size=5;
-    const voiceLabel=defaultLabel(`${prefix}Shared NPC voice`,voice),poolLabel=defaultLabel(`${prefix}Preferred NPC voices`,pool),connectionLabel=defaultLabel(`${prefix}NPC connection`,connection);
+    const selectedRoute=()=>connection.value || getDefaultRoute();
+    const voiceField=voicePicker?.(voice,selectedRoute,`${prefix}Shared NPC voice`,()=>{policy.voice=voice.value;onChange(read());});
+    const poolField=voicePicker?.(pool,selectedRoute,`${prefix}Preferred NPC voices`,()=>{policy.voices=[...pool.selectedOptions].map(item=>item.value);onChange(read());});
+    const voiceLabel=voiceField?.node || defaultLabel(`${prefix}Shared NPC voice`,voice),poolLabel=poolField?.node || defaultLabel(`${prefix}Preferred NPC voices`,pool),connectionLabel=defaultLabel(`${prefix}NPC connection`,connection);
     const hint=document.createElement('small');hint.textContent='These choices apply to NPC speech. Lead cast voices stay independent. Select multiple preferred voices with Ctrl / Cmd, or your phone’s selection menu.';
     container.append(defaultLabel(`${prefix}NPC casting`,mode),connectionLabel,voiceLabel,poolLabel,hint);let request=0;
-    const show=()=>{connection.disabled=getShared();connection.value=getShared()?'':policy.route || '';connectionLabel.hidden=policy.mode==='skip';voiceLabel.hidden=policy.mode!=='single';poolLabel.hidden=policy.mode!=='preferred';};
+    const show=()=>{connection.disabled=getShared();connection.value=getShared()?'':policy.route || '';connectionLabel.hidden=policy.mode==='skip';voiceLabel.hidden=policy.mode!=='single';poolLabel.hidden=policy.mode!=='preferred';voiceField?.refresh();poolField?.refresh();};
     const fill=catalogue=>{
+      if(voicePicker)catalogue=voicePicker.merge(catalogue,selectedRoute());
       voice.replaceChildren();pool.replaceChildren();option(voice,'','Choose a voice');
       for(const item of catalogue){const name=item.name || item.id;option(voice,item.id,name);option(pool,item.id,name);pool.lastElementChild.selected=(policy.voices || []).includes(item.id);}
       voice.value=policy.voice || '';show();
@@ -2018,26 +2022,59 @@ export async function setup(ctx) {
     }
     const select=index=>{panels.forEach((panel,i)=>panel.hidden=i!==index);buttons.forEach((button,i)=>{button.setAttribute('aria-selected',String(i===index));button.tabIndex=i===index?0:-1;});};
     buttons.forEach((button,index)=>{button.onclick=()=>select(index);button.onkeydown=event=>{const next=event.key==='ArrowRight'?(index+1)%2:event.key==='ArrowLeft'?(index+1)%2:null;if(next!==null){event.preventDefault();select(next);buttons[next].focus();}};});select(group==='npc'?1:0);
-    const route=()=>scope(current);
+    const route=()=>scope(current),draftVoices=new Map((capturedDefaults?.voiceCatalogue || []).map(voice=>[`${voice.route}:${voice.id}`,voice]));
+    let closeLibrary;
+    const mergeVoices=(catalogue,selectedRoute)=>[...new Map([...catalogue,...[...draftVoices.values()].filter(voice=>voice.route===selectedRoute)].map(voice=>[voice.id,voice])).values()];
+    const voicePicker=(voice,getRoute,name,onSelect)=>{
+      const node=document.createElement('div'),tools=document.createElement('div');tools.style.cssText='display:flex;flex-wrap:wrap;gap:6px;margin-top:6px';
+      const browse=document.createElement('button'),paste=document.createElement('button');browse.type=paste.type='button';browse.textContent='Browse voice catalogue';paste.textContent='Paste voice ID';
+      browse.setAttribute('aria-label',`Browse Fish voice catalogue for ${name}`);paste.setAttribute('aria-label',`Paste Fish voice ID for ${name}`);
+      const editor=document.createElement('div');editor.hidden=true;editor.style.cssText='display:grid;gap:6px;margin-top:6px';
+      const id=document.createElement('input'),description=document.createElement('input');id.type=description.type='text';id.maxLength=200;description.maxLength=600;id.placeholder='Fish Audio voice ID';description.placeholder='Optional voice description';
+      id.setAttribute('aria-label',`Fish voice ID for ${name}`);description.setAttribute('aria-label',`Fish voice description for ${name}`);
+      const use=document.createElement('button'),discard=document.createElement('button');use.type=discard.type='button';use.textContent='Use this voice';discard.textContent='Close voice ID';use.setAttribute('aria-label',`Use Fish voice ID for ${name}`);
+      const hide=()=>{editor.hidden=true;paste.setAttribute('aria-expanded','false');};hide();
+      const choose=(item,selectedRoute=getRoute())=>{
+        if(!dialog.isConnected || disposed)return;
+        if(selectedRoute!==getRoute() || detectProvider(selectedRoute)!=='fish_audio'){feedback.textContent='Select a Fish Audio connection for this voice.';return;}
+        const voiceId=String(item.id || '').trim();
+        if(!/^[A-Za-z0-9_-]{1,200}$/.test(voiceId)){feedback.textContent='Enter a Fish Audio voice ID using letters, numbers, hyphens or underscores.';return;}
+        const known=draftVoices.get(`${selectedRoute}:${voiceId}`) || voiceCatalogues.get(selectedRoute)?.find(voice=>voice.id===voiceId);
+        const entry={id:voiceId,route:selectedRoute,name:String(item.name || known?.name || voiceId).slice(0,200),description:String(item.description || known?.description || '').replace(/[|\r\n]+/g,' ').slice(0,600)};
+        draftVoices.set(`${selectedRoute}:${voiceId}`,entry);
+        if(![...voice.options].some(option=>option.value===voiceId))option(voice,voiceId,entry.name);
+        if(voice.multiple)[...voice.options].find(option=>option.value===voiceId).selected=true;else voice.value=voiceId;
+        onSelect();hide();feedback.textContent=`Selected ${entry.name}. Save default to keep this choice.`;voice.focus();
+      };
+      browse.onclick=()=>{const selectedRoute=getRoute();closeLibrary?.();closeLibrary=openVoiceLibraryModal({targetSpeaker:name,defaultQuery:name.includes('{{')?'character':name.includes('Narrator')?'narrator':'voice',onSelect:item=>choose(item,selectedRoute)});};
+      paste.onclick=()=>{if(!editor.hidden){hide();return;}id.value=voice.multiple?'':voice.value;description.value='';editor.hidden=false;paste.setAttribute('aria-expanded','true');id.focus();};
+      use.onclick=()=>choose({id:id.value,description:description.value});discard.onclick=()=>{hide();paste.focus();};
+      editor.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();discard.click();}else if(event.key==='Enter'){event.preventDefault();use.click();}};
+      tools.append(browse,paste);editor.append(id,description,use,discard);node.append(defaultLabel(name,voice),tools,editor);
+      const refresh=()=>{tools.hidden=detectProvider(getRoute())!=='fish_audio';if(tools.hidden)hide();};refresh();
+      return {node,refresh};
+    };
+    voicePicker.merge=mergeVoices;
     const voiceRefreshes=[];
     for(const [index,name] of ['Narrator','{{user}}','{{char}}'].entries()){
       const actor=draft.fixed[index] || {speaker:name,voice:'',style:''};draft.fixed[index]=actor;
-      const section=document.createElement('div');section.className='et-grid';const title=document.createElement('strong');title.textContent=name;title.style.gridColumn='1 / -1';
+      const section=document.createElement('div');section.className='et-grid';section.style.alignItems='start';const title=document.createElement('strong');title.textContent=name;title.style.gridColumn='1 / -1';
       const connection=defaultConnection(actor.route,`Default ${name} connection`),voice=document.createElement('select');let request=0;
-      const fill=catalogue=>{const selected=actor.voice || '';voice.replaceChildren();option(voice,'','Let the LLM decide');for(const item of catalogue)option(voice,item.id,item.name || item.id);if(selected && !catalogue.some(item=>item.id===selected))option(voice,selected,`${selected} · unavailable`);voice.value=selected;};
+      const fill=catalogue=>{catalogue=mergeVoices(catalogue,connection.value || route());const selected=actor.voice || '';voice.replaceChildren();option(voice,'','Let the LLM decide');for(const item of catalogue)option(voice,item.id,item.name || item.id);if(selected && !catalogue.some(item=>item.id===selected))option(voice,selected,`${selected} · unavailable`);voice.value=selected;};
       fill(voiceCatalogues.get(connection.value || route()) || []);
-      const refresh=async()=>{const token=++request;voice.disabled=true;try{const catalogue=await ensureCatalogue(connection.value || route());if(token===request && dialog.isConnected)fill(catalogue);}catch(error){if(token===request)feedback.textContent=error.message;}finally{if(token===request)voice.disabled=false;}};
+      const refresh=async()=>{field.refresh();const token=++request;voice.disabled=true;try{const catalogue=await ensureCatalogue(connection.value || route());if(token===request && dialog.isConnected)fill(catalogue);}catch(error){if(token===request)feedback.textContent=error.message;}finally{if(token===request)voice.disabled=false;}};
       voiceRefreshes.push(refresh);
       const shared=()=>{connection.disabled=current.connectionMode==='one';if(connection.disabled){connection.value='';actor.route='';}};shared();
+      const field=voicePicker(voice,()=>connection.value || route(),`Default ${name} voice`,()=>actor.voice=voice.value);
       connection.onchange=()=>{actor.route=connection.value;actor.voice='';void refresh();};voice.onchange=()=>actor.voice=voice.value;
-      section.append(title,defaultLabel(`Default ${name} connection`,connection),defaultLabel(`Default ${name} voice`,voice));panels[0].append(section);
+      section.append(title,defaultLabel(`Default ${name} connection`,connection),field.node);panels[0].append(section);
     }
-    const npcEditor=npcPolicyEditor(panels[1],draft.npcPolicy,route,value=>draft.npcPolicy=value,'Default ',()=>current.connectionMode==='one');
+    const npcEditor=npcPolicyEditor(panels[1],draft.npcPolicy,route,value=>draft.npcPolicy=value,'Default ',()=>current.connectionMode==='one',voicePicker);
     const feedback=document.createElement('p');feedback.setAttribute('role','status');feedback.setAttribute('aria-live','polite');feedback.dataset.defaultFeedback='';feedback.style.fontSize='.85em';
     const actions=document.createElement('div');actions.className='et-default-actions';
     const fromChat=document.createElement('button'),cancel=document.createElement('button'),save=document.createElement('button');fromChat.textContent='Use current chat settings';cancel.textContent='Cancel';save.textContent='Save default';save.className='et-btn-primary';actions.append(fromChat,cancel,save);
     const targetChat=chatId,version=loadVersion,previousFocus=document.activeElement;
-    const close=()=>{overlay.remove();if(closeDefaultEditor===close)closeDefaultEditor=null;if(previousFocus?.isConnected)previousFocus.focus();};closeDefaultEditor=close;
+    const close=()=>{closeLibrary?.();overlay.remove();if(closeDefaultEditor===close)closeDefaultEditor=null;if(previousFocus?.isConnected)previousFocus.focus();};closeDefaultEditor=close;
     cancel.onclick=close;fromChat.onclick=()=>openDefaultEditor(group,true);overlay.onclick=event=>{if(event.target===overlay)close();};
     dialog.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();close();}else if(event.key==='Tab'){const focusable=[...dialog.querySelectorAll('button,input,select')].filter(node=>!node.disabled && node.tabIndex>=0 && !node.closest('[hidden]')),first=focusable[0],last=focusable.at(-1);if(event.shiftKey && document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey && document.activeElement===last){event.preventDefault();first.focus();}}};
     save.onclick=()=>void(async()=>{
@@ -2049,9 +2086,12 @@ export async function setup(ctx) {
         const routes=new Set([scope(candidate),...candidate.fixed.map(actor=>actor.route || scope(candidate)),...(['single','preferred','llm'].includes(candidate.npcPolicy?.mode)?[candidate.npcPolicy.route || scope(candidate)]:[])]);
         await Promise.all([...routes].map(route=>ensureCatalogue(route)));
         if(disposed || targetChat!==chatId || version!==loadVersion || !dialog.isConnected)return;
-        validateSettings(candidate);
-        const preset={version:2,npcPolicy:structuredClone(candidate.npcPolicy),leadVoices:candidate.fixed.map(actor=>Object.fromEntries(defaultVoiceFields.filter(name=>Object.hasOwn(actor,name)).map(name=>[name,structuredClone(actor[name])]))) };
+        const selected=[...candidate.fixed.map(actor=>({id:actor.voice,route:actor.route || scope(candidate)})),...(['single','preferred'].includes(candidate.npcPolicy?.mode)?(candidate.npcPolicy.mode==='single'?[candidate.npcPolicy.voice]:candidate.npcPolicy.voices || []).map(id=>({id,route:candidate.npcPolicy.route || scope(candidate)})):[])];
+        const voiceCatalogue=[...new Map(selected.filter(voice=>voice.id && detectProvider(voice.route)==='fish_audio').flatMap(voice=>{const item=draftVoices.get(`${voice.route}:${voice.id}`) || voiceCatalogues.get(voice.route)?.find(item=>item.id===voice.id);return item?[[`${voice.route}:${voice.id}`,{id:voice.id,route:voice.route,name:item.name || voice.id,description:item.description || '',...(item.gender?{gender:item.gender}:{})}]]:[];})).values()];
+        validateSettings(candidate,voiceCatalogue);
+        const preset={version:2,npcPolicy:structuredClone(candidate.npcPolicy),leadVoices:candidate.fixed.map(actor=>Object.fromEntries(defaultVoiceFields.filter(name=>Object.hasOwn(actor,name)).map(name=>[name,structuredClone(actor[name])]))),...(voiceCatalogue.length?{voiceCatalogue}: {})};
         await ctx.settings.set(CAPTURED_DEFAULTS_KEY,structuredClone(preset));capturedDefaults=preset;++defaultsRevision;
+        for(const voice of voiceCatalogue){const catalogue=voiceCatalogues.get(voice.route);if(catalogue)voiceCatalogues.set(voice.route,[...new Map([...catalogue,voice].map(item=>[item.id,item])).values()]);}
         if(!disposed){$('defaultStatus').textContent='Default saved. New chats use this setup; each chat keeps its own changes.';feedback.textContent='Default saved.';close();}
       }catch(error){if(!disposed){feedback.textContent=error.message;$('defaultStatus').textContent='Default save failed. Your previous default is retained.';}}
       finally{defaultOperation=false;if(!disposed){save.disabled=false;fromChat.disabled=false;refreshDefaultControls();}}
@@ -2383,6 +2423,7 @@ export async function setup(ctx) {
     document.body.append(overlay);
     try { queryInput.focus(); } catch {}
     if (defaultQuery) doSearch();
+    return closeModal;
   }
 
   let castEditorId=0;
@@ -2755,9 +2796,9 @@ export async function setup(ctx) {
     if(!Number.isInteger(c.prefetch) || c.prefetch<0 || c.prefetch>4)throw new Error('Prefetch must be 0–4 passages.');
     if(!Number.isInteger(c.plannerTokens) || c.plannerTokens<1024 || c.plannerTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
   }
-  function validateSettings(c) {
+  function validateSettings(c,extraVoices=[]) {
     if(!['session','1','7','30','forever'].includes(c.retention))throw new Error('Choose a valid audio retention period.');
-    validateCastConfig(casting(c));
+    const cast=casting(c);validateCastConfig({...cast,voices:[...cast.voices,...extraVoices]});
     validateNumericSettings(c);
     if(c.mode==='native' && !nativeConnections.some(v=>v.id===c.connection))throw new Error('Select an existing Lumiverse TTS connection.');
   }
@@ -2940,7 +2981,7 @@ export async function setup(ctx) {
     const defaultRevision=defaultsRevision;
     const [globalSaved,saved,preset]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),id?ctx.settings.get(settingsKey(id)):null,ctx.settings.get(CAPTURED_DEFAULTS_KEY)]);
     if(disposed || version!==loadVersion)return;
-    if(defaultRevision===defaultsRevision)capturedDefaults=[1,2].includes(preset?.version)?{version:2,...(Array.isArray(preset.leadVoices)?{leadVoices:preset.leadVoices}:{}),...(preset.npcPolicy || preset.preferences?.npcPolicy?{npcPolicy:preset.npcPolicy || preset.preferences.npcPolicy}:{})}:null;
+    if(defaultRevision===defaultsRevision)capturedDefaults=[1,2].includes(preset?.version)?{version:2,...(Array.isArray(preset.leadVoices)?{leadVoices:preset.leadVoices}:{}),...(Array.isArray(preset.voiceCatalogue)?{voiceCatalogue:preset.voiceCatalogue}:{}),...(preset.npcPolicy || preset.preferences?.npcPolicy?{npcPolicy:preset.npcPolicy || preset.preferences.npcPolicy}:{})}:null;
     const preferences={...preferenceSnapshot(preset?.preferences || await ctx.settings.get('settings:defaults')),...preferenceSnapshot(saved),...preferenceSnapshot(globalSaved)};
     if(disposed || version!==loadVersion)return;
     const legacyCast=!saved && !capturedDefaults && Array.isArray(globalSaved?.fixed)?globalSaved:null;
