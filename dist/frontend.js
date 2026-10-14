@@ -241,6 +241,9 @@ function transcriptFromMessage(value, ignoredTags=[]) {
     .replace(/^[ \t]*[-=_~*]{3,}[ \t]*$/gm, '')
     .replace(/^[ \t]*\|.*\|[ \t]*$/gm, '')
     .replace(/\[(?:OOC|System|Note|Author'?s?\s*Note|A\/N|AI\s*Note)[\s:][^\]]*\]/gi, '')
+    // Status headers sit in brackets: drop pipe-separated blocks and lines made only of bracketed blocks.
+    .replace(/\[[^\]\n]*\|[^\]\n]*\]/g, '')
+    .replace(/^[ \t]*[*_]*(?:(?:\[[^\]\n]*\]|【[^】\n]*】|〔[^〕\n]*〕)[ \t]*)+[*_]*[ \t]*$/gm, '')
     .replace(new RegExp(`^[ \t]*(?:#{1,6}[ \t]*)?(?!["“])(?:${hudKeys})[ \t]*:[^\n]*$`, 'gim'), '')
     .replace(new RegExp(`^[ \\t]*(?:#{1,6}[ \\t]*)?(?:${sysHeaders})\\b[.: \\t]*$`, 'gim'), '')
     .replace(/^[ \t]*(?:#{1,6}[ \t]*)?(?:Chapter|Act|Episode|Scene|Part|Book|Volume)[ \t]+(?:\d+|[IVXLCDM]+|[A-Za-z]+)(?:[ \t]*[:\-.—–][^\n]*|[ \t]+[^\n]*)?$/gim, '')

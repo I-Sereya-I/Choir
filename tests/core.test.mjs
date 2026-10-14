@@ -684,3 +684,14 @@ test('read-along word progress is monotonic, snaps to word ends and lingers on p
   assert.equal(spokenLength('Stop. Go now',0.5),5,'a sentence end holds the highlight during its pause');
   assert.equal(spokenLength('Stop Go now',0.5),7);
 });
+
+test('bracketed status headers are not read aloud while ordinary bracketed words stay',()=>{
+  const message=`[SK| 2015년 4월 7일 (화) | 12:35 | 점심시간에 제이가 제 자리로 와서 함께 밥을 먹으며 도시락 반찬 이야기를 나누고 있어요.]
+
+"오늘 반찬 뭐야?" 제이가 물었다.
+*[Day 3 | Evening]*
+【Status: tired】 〔HP 10〕
+[Mira | Hungry] She opened the box.
+She read the sign [closed] and left. [See the guide](https://x.test) for more.`;
+  assert.equal(transcriptFromMessage(message).replace(/\s+/g,' ').trim(),'"오늘 반찬 뭐야?" 제이가 물었다. She opened the box. She read the sign [closed] and left. See the guide for more.');
+});
