@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {speechPanel} from './fixtures/speech-panel.mjs';
+import {phoneWidget} from './fixtures/phone-widget.mjs';
 import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,reconcileCardCast} from '../src/core.js';
 import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
 
@@ -34,6 +35,27 @@ test('complete radio-tabbed panels are removed automatically with their notifica
 test('ARIA tabbed panels are filtered as complete components while surrounding HTML prose survives',()=>{
   const panel='<section class="browser-panel"><div role="tablist"><button role="tab" aria-controls="one">One</button><button role="tab" aria-controls="two">Two</button></div><div role="tabpanel" id="one">Interface article.</div><div role="tabpanel" id="two">Another article.</div></section>';
   assert.equal(transcriptFromMessage(`<article><p>He opened the page.</p>${panel}<div>"Hello," she said.</div></article>`).replace(/\s+/g,' '),'He opened the page. "Hello," she said.');
+});
+
+test('single-checkbox phone components exclude notifications and notes while preserving surrounding story',()=>{
+  assert.equal(transcriptFromMessage(phoneWidget),'');
+  const widgets=[phoneWidget,phoneWidget.replaceAll('kb-msg-exp','another-control').replaceAll('kb-ph-','another-')];
+  for(const widget of widgets){
+    assert.equal(transcriptFromMessage(`Before. ${widget} After.`).replace(/\s+/g,' '),'Before. After.');
+    assert.equal(transcriptFromMessage(`<article style="background: navy"><p>Before.</p>${widget}<p>After.</p></article>`).replace(/\s+/g,' '),'Before. After.');
+  }
+  assert.equal(transcriptFromMessage(`<div><p>Before.</p>${widgets.join('')}<p>After.</p></div>`).replace(/\s+/g,' '),'Before. After.');
+});
+
+test('checkbox detection keeps ordinary styled prose, unrelated CSS and incomplete phone markup',()=>{
+  const story='<div style="background: navy"><style>.note {color: blue} .note::after {content: "#read:checked"}</style><input type="checkbox" id="read"><label for="read">She checked the box.</label><p>Then she left.</p></div>';
+  assert.equal(transcriptFromMessage(story),'She checked the box.Then she left.');
+  const unmatched=phoneWidget.replace('for="kb-msg-exp"','for="unrelated"');
+  assert.ok(transcriptFromMessage(unmatched).includes('Synthetic notification'));
+  const mixed=phoneWidget.replace('  <style>','Phone screen description. <style>');
+  assert.ok(transcriptFromMessage(mixed).includes('Phone screen description.'));
+  const incomplete=phoneWidget.slice(0,phoneWidget.lastIndexOf('</div>'))+'<p>The story continues.</p>';
+  assert.ok(transcriptFromMessage(incomplete).includes('The story continues.'));
 });
 
 test('interface controls, hidden text and SVG labels do not enter the speech transcript',()=>{

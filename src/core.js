@@ -181,23 +181,29 @@ function speechMarkupRanges(text,ignoredTags) {
     }else stack.push(node);
   }
 
-  // Recognize a complete tabbed UI surface, rather than treating every div as UI.
+  // Recognize complete tabbed and CSS checkbox-controlled UI surfaces.
   // The smallest complete component wins, so a story wrapper around it survives.
   for(let index=nodes.length-1;index>=0;index--){
     const node=nodes[index],{attrs}=node,identity=`${attrs.class || ''} ${attrs.id || ''}`;
-    const stats={tabs:attrs.role==='tab'?1:0,panels:attrs.role==='tabpanel' || /(?:^|[\s_-])tab(?:bed)?[-_](?:content|panel)(?:$|[\s_-])/.test(identity)?1:0,groups:new Map(),labels:new Set(),hasPanel:false};
+    const stats={tabs:attrs.role==='tab'?1:0,panels:attrs.role==='tabpanel' || /(?:^|[\s_-])tab(?:bed)?[-_](?:content|panel)(?:$|[\s_-])/.test(identity)?1:0,groups:new Map(),controls:new Set(),labels:new Set(),hasPanel:false};
     if(node.tag==='input' && attrs.type==='radio' && attrs.name && attrs.id)stats.groups.set(attrs.name,new Set([attrs.id]));
+    if(node.tag==='input' && /^(?:checkbox|radio)$/.test(attrs.type) && attrs.id)stats.controls.add(attrs.id);
     if(node.tag==='label' && attrs.for)stats.labels.add(attrs.for);
     for(const child of node.children){
       stats.tabs+=child.stats.tabs;stats.panels+=child.stats.panels;stats.hasPanel ||= child.stats.hasPanel;
       for(const label of child.stats.labels)stats.labels.add(label);
+      for(const control of child.stats.controls)stats.controls.add(control);
       for(const [group,ids] of child.stats.groups){if(!stats.groups.has(group))stats.groups.set(group,new Set());for(const id of ids)stats.groups.get(group).add(id);}
     }
     const tabs=stats.tabs>=2 && stats.panels>=1 || stats.panels>=2 && [...stats.groups.values()].some(ids=>[...ids].filter(id=>stats.labels.has(id)).length>=2);
+    const css=node.children.filter(child=>child.tag==='style').map(child=>text.slice(child.openEnd,child.end)).join('\n').replace(/\/\*[\s\S]*?\*\//g,'');
+    const cssSelectors=[...css.matchAll(/([^{}]+)\{[^{}]*}/g)].map(rule=>rule[1]);
+    const toggle=[...stats.controls].some(id=>stats.labels.has(id) && cssSelectors.some(selector=>
+      new RegExp(`#${id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\s*:\\s*checked\\b`,'i').test(selector)));
     const surface=node.children.some(child=>child.tag==='style') || /(?:^|;)\s*(?:background(?:-color)?|border(?:-[\w-]+)?|box-shadow)\s*:/.test(attrs.style || '') || /(?:^|[\s_-])(?:widget|panel|browser|phone|device|dashboard)(?:$|[\s_-])/.test(identity);
     let directText='',cursor=node.openEnd;
-    const separateParts=node.children.filter(child=>child.stats.tabs || child.stats.panels || child.stats.groups.size).length>=2;
-    if(tabs && surface && separateParts && node.closed && !stats.hasPanel && /^(?:div|section|article|aside)$/.test(node.tag)){
+    const separateParts=node.children.filter(child=>child.stats.tabs || child.stats.panels || child.stats.groups.size || child.stats.controls.size || child.stats.labels.size).length>=2;
+    if((tabs || toggle) && surface && separateParts && node.closed && !stats.hasPanel && /^(?:div|section|article|aside)$/.test(node.tag)){
       for(const child of node.children){directText+=text.slice(cursor,child.start);cursor=child.end;}
       directText+=text.slice(cursor,text.lastIndexOf('</',node.end-1));
       if(!directText.replace(/&nbsp;|&#160;/gi,' ').trim()){node.ignored=true;stats.hasPanel=true;}

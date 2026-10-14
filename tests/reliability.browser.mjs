@@ -6,6 +6,7 @@ import {IDBFactory} from 'fake-indexeddb';
 import {setup} from '../dist/frontend.js';
 import {validatePlan,speechSourceUnits,planningSections,transcriptFromMessage} from '../src/core.js';
 import {speechPanel} from './fixtures/speech-panel.mjs';
+import {phoneWidget} from './fixtures/phone-widget.mjs';
 
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 const until=async(predicate)=>{for(let i=0;i<250;i++){if(predicate())return;await tick();}throw Error('Timed out waiting for regression state');};
@@ -348,20 +349,46 @@ test('legacy defaults migrate cast choices and cannot replace newer global prefe
  }finally{await h.close();}
 });
 
-test('automatic HTML panel filtering reaches LLM and Jev input, context, TTS and Cue without ignoring story divs',async()=>{
+test('automatic HTML panel and phone filtering reaches LLM and Jev input, context, TTS and Cue without ignoring story divs',async()=>{
+ for(const widget of [speechPanel,phoneWidget]){
  const h=await harness();try{
-  h.message.content=`<div><p>At dawn.</p>${speechPanel}<p>"Hello." "Wait."</p></div>`;
-  h.state.messages=[{id:'previous',name:'Mira',content:`Earlier. ${speechPanel}`,is_user:false},h.message];
+  h.message.content=`<div><p>At dawn.</p>${widget}<p>"Hello." "Wait."</p></div>`;
+  h.state.messages=[{id:'previous',name:'Mira',content:`Earlier. ${widget}`,is_user:false},h.message];
   assert.equal(h.$('ignoredTags').value,'');await h.plan();
   const input=h.requests.find(request=>request.action==='plan').input;
-  assert.equal(input.transcript.replace(/\s+/g,' '),'At dawn. "Hello." "Wait."');assert.ok(!input.context.includes('UI message'));assert.ok(!input.context.includes('First panel'));
-  await h.play();assert.ok(h.synthesis.length>0);assert.ok(h.synthesis.every(request=>!/UI message|panel content|notification|Battery|84%/.test(request.text)));
+  assert.equal(input.transcript.replace(/\s+/g,' '),'At dawn. "Hello." "Wait."');assert.ok(!/UI message|First panel|Synthetic|DND ACTIVE/.test(input.context));
+  await h.play();assert.ok(h.synthesis.length>0);assert.ok(h.synthesis.every(request=>!/UI message|panel content|notification|Battery|84%|Synthetic|DND ACTIVE/.test(request.text)));
   const bridge=globalThis.__CHOIR_API__,generated=h.synthesis.length;
-  assert.deepEqual(bridge.planParagraph(speechPanel).segments,[]);await bridge.playParagraph({text:speechPanel});assert.equal(h.synthesis.length,generated);
+  assert.deepEqual(bridge.planParagraph(widget).segments,[]);await bridge.playParagraph({text:widget});assert.equal(h.synthesis.length,generated);
   await bridge.playParagraph({text:'<div class="kb-content-wrap">Ordinary narration.</div>'});assert.ok(h.synthesis.at(-1).text.includes('Ordinary narration'));
   h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
   await h.click('latest',text=>text.includes('The object cannot be cloned'));
-  const jev=h.requests.find(request=>request.action==='planJev').input;assert.ok(!jev.transcript.includes('panel content'));assert.ok(!jev.context.includes('UI message'));assert.ok(jev.transcript.includes('Hello'));
+  const jev=h.requests.find(request=>request.action==='planJev').input;assert.ok(!/panel content|Synthetic|DND ACTIVE/.test(jev.transcript));assert.ok(!/UI message|Synthetic|DND ACTIVE/.test(jev.context));assert.ok(jev.transcript.includes('Hello'));
+ }finally{await h.close();}
+ }
+});
+
+test('phone widget filtering invalidates an older saved plan and recording before replay',async()=>{
+ const h=await harness();try{
+  h.message.content=`At dawn. ${phoneWidget.replace(':checked',':disabled')} "Hello." "Wait."`;
+  await h.plan();await h.play();assert.ok(h.synthesis.some(request=>request.text.includes('Synthetic')));
+  const generated=h.synthesis.length,planned=h.requests.filter(request=>request.action==='plan').length;
+  h.message.content=`At dawn. ${phoneWidget} "Hello." "Wait."`;
+  // Simulate a plan saved by a version that unwrapped the original widget.
+  for(const [key,saved] of h.store)if(key.startsWith('plan:'))saved.content=h.message.content;
+  await new Promise((resolve,reject)=>{
+    const open=indexedDB.open('choir-recordings',1);open.onerror=()=>reject(open.error);
+    open.onsuccess=()=>{
+      const db=open.result,transaction=db.transaction('recordings','readwrite'),request=transaction.objectStore('recordings').openCursor();
+      request.onsuccess=()=>{const cursor=request.result;if(cursor){cursor.update({...cursor.value,content:h.message.content});cursor.continue();}};
+      transaction.oncomplete=()=>{db.close();resolve();};transaction.onerror=()=>{db.close();reject(transaction.error);};
+    };
+  });
+  await h.reload();await h.play();
+  assert.equal(h.requests.filter(request=>request.action==='plan').length,planned+1);
+  assert.ok(h.synthesis.slice(generated).every(request=>!/Synthetic|DND ACTIVE|IMESSAGE/.test(request.text)));
+  assert.equal(h.requests.filter(request=>request.action==='plan').at(-1).input.transcript.replace(/\s+/g,' '),'At dawn. "Hello." "Wait."');
+  const rebuilt=h.synthesis.length;await h.reload();await h.play();assert.equal(h.synthesis.length,rebuilt);
  }finally{await h.close();}
 });
 
