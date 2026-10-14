@@ -85,7 +85,7 @@ try{
   await filterPage.locator('[data-choir-action="playback"]').click();await filterPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
   const filterCalls=await filterPage.evaluate(()=>window.calls.length);assert.ok(filterCalls>0);assert.ok(await filterPage.evaluate(()=>window.calls.every(call=>!/notification|UI message|panel content|Battery|84%/.test(call.text))));
   await filterPage.evaluate(panel=>window.__CHOIR_API__.playParagraph({text:panel}),speechPanel);assert.equal(await filterPage.evaluate(()=>window.calls.length),filterCalls);
-  await filterPage.locator('[data-et="ignoredTags"]').fill('.skip-this, #widget-note');await filterPage.waitForFunction(()=>window.fixtureStore.get('settings:global')?.ignoredTags==='.skip-this, #widget-note');
+  await filterPage.locator('[data-et="ignoredTags"]').evaluate(node=>{node.value='.skip-this, #widget-note';node.dispatchEvent(new Event('input',{bubbles:true}));});await filterPage.waitForFunction(()=>window.fixtureStore.get('settings:global')?.ignoredTags==='.skip-this, #widget-note');
   await filterPage.evaluate(()=>window.fixtureMessage.content='<div>The next story begins. <aside class="skip-this">Excluded custom panel.</aside> <span id="widget-note">Excluded custom note.</span> "Mira speaks."</div>');
   await filterPage.locator('[data-et="latest"]').click();await filterPage.waitForFunction(()=>window.plans===2 && document.querySelector('[data-et="status"]').textContent.startsWith('Ready:') && !document.querySelector('[data-et="latest"]').disabled);
   assert.ok(!(await filterPage.locator('[data-et="planJson"]').inputValue()).includes('Excluded custom'));await filterPage.close();
@@ -221,7 +221,7 @@ try{
   await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').auto===false);assert.equal(await page.evaluate(()=>window.calls.length),0);
   const chatShortcut=page.getByRole('navigation',{name:'Chat toolbar'}).getByRole('button');
   assert.equal(await chatShortcut.count(),0);
-  await page.locator('[data-et="showAutoPlanAction"]').check();await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').showAutoPlanAction===true);
+  await page.getByText('Advanced Settings',{exact:true}).click();await page.locator('[data-et="showAutoPlanAction"]').check();await page.waitForFunction(()=>window.fixtureStore.get('chat:fixture').showAutoPlanAction===true);
   assert.equal(await chatShortcut.isVisible(),true);assert.equal(await chatShortcut.getAttribute('aria-pressed'),'false');
   await chatShortcut.focus();await chatShortcut.press('Space');assert.equal(await chatShortcut.getAttribute('aria-pressed'),'true');assert.equal(await autoPlanSwitch.getAttribute('aria-pressed'),'true');
   await autoPlanSwitch.click();assert.equal(await chatShortcut.getAttribute('aria-pressed'),'false');
@@ -238,7 +238,7 @@ try{
   await chatShortcut.click();assert.equal(await chatShortcut.getAttribute('aria-pressed'),'false');assert.equal(await page.evaluate(()=>window.calls.length),0);
   await page.locator('main').evaluate(node=>node.style.removeProperty('width'));
   await page.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
-  await page.locator('[data-et="showAutoPlanAction"]').uncheck();assert.equal(await chatShortcut.count(),0);
+  await page.locator('[data-et="showAutoPlanAction"]').uncheck();assert.equal(await chatShortcut.count(),0);await page.getByText('Advanced Settings',{exact:true}).click();
   const master=page.getByRole('slider',{name:'Master volume',exact:true});await master.press('Home');await master.press('ArrowRight');
   assert.equal(await master.getAttribute('aria-valuetext'),'1 percent');assert.equal(await page.locator('.cm-master .cm-percent').innerText(),'1%');await master.press('End');
   const desktopPercent=page.getByRole('spinbutton',{name:'Master volume percent',exact:true});assert.equal(await desktopPercent.isVisible(),true);assert.ok((await master.boundingBox()).height>=28);await desktopPercent.fill('72');assert.equal(await master.inputValue(),'0.72');await master.dblclick();assert.equal(await desktopPercent.inputValue(),'100');

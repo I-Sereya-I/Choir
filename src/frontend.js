@@ -53,6 +53,9 @@ export async function setup(ctx) {
     .ensemble-tts h3{font-size:0.95em;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;opacity:0.85;margin:20px 0 8px}
     .ensemble-tts .et-section-header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin:20px 0 8px}
     .ensemble-tts .et-section-header h3{margin:0}
+    .ensemble-tts .et-subhead{font-size:.8em;font-weight:600;opacity:.6;margin:14px 0 6px}
+    .ensemble-tts [data-et="defaultStatus"]:empty{display:none}
+    .ensemble-tts:not(:has([data-et="enableMusic"]:checked)) [data-et="loopMusicWrap"]{display:none}
     .ensemble-tts .et-section-header .et-btn-group{flex-wrap:wrap}
     .ensemble-tts label{display:grid;gap:4px;font-size:0.85em;font-weight:500}
     .ensemble-tts input,.ensemble-tts select,.ensemble-tts textarea{width:100%;box-sizing:border-box;background:rgba(128,128,128,0.06);color:inherit;border:1px solid rgba(128,128,128,0.3);border-radius:6px;padding:7px 10px;font:inherit;font-size:0.95em;transition:border-color 0.15s ease}
@@ -219,7 +222,7 @@ export async function setup(ctx) {
         <button data-et="showMixer">Open mixer</button>
       </div>
     </div>
-    <p data-et="latestNotice" role="status" hidden>latest already planned, click on plan latest to redo it</p>
+    <p data-et="latestNotice" role="status" hidden>Already planned. Plan latest again to redo it.</p>
     <div data-et="feedback" role="group" aria-label="Choir status and errors">
       <div class="et-status" role="status" aria-live="polite" data-et="status">Open a chat to begin.</div>
       <div class="et-status" data-et="statusActions" hidden></div>
@@ -247,53 +250,49 @@ export async function setup(ctx) {
         <button data-et="load" class="et-btn-subtle">Reload</button>
       </div>
     </div>
+    <h4 class="et-subhead">Voices</h4>
     <div class="et-grid">
       <label hidden>Voice connections<select data-et="connectionMode"><option value="several">Several TTS · per character</option><option value="one">One TTS · whole cast</option></select></label>
       <label hidden>Default TTS connection<select data-et="mode"><option value="native">Lumiverse TTS</option><option value="gemini">Gemini 3.8 (style metadata)</option></select></label>
+      <div data-et="native" style="display:contents">
+        <label>Lumiverse connection<select data-et="connection"></select></label>
+        <label>Style handling<select data-et="styleParam"><option value="">Ignore style</option><option value="instructions">instructions (OpenAI)</option><option value="instruct">instruct</option><option value="prompt">prompt</option></select></label>
+      </div>
+      <div data-et="gemini" hidden style="display:contents">
+        <label>Gemini model<select data-et="model"><option>gemini-3.8-flash-tts</option><option>gemini-3.8-flash-lite-tts</option></select></label>
+        <label>Gemini API key<input data-et="key" type="password" autocomplete="off" placeholder="Session key (never saved)"></label>
+      </div>
       <label data-et="fishVoiceSourceWrap" hidden>Voices the planner picks from<select data-et="fishVoiceSource"><option value="community">Fish community library</option><option value="own">My Fish voices</option><option value="both">Both</option></select></label>
-      <label>Highlight spoken text<select data-et="readAlong"><option value="off">Off</option><option value="passage">Passage</option><option value="word">Word by word</option></select></label>
+    </div>
+    <h4 class="et-subhead">Planner</h4>
+    <div class="et-grid">
       <label>Planner engine<select data-et="plannerMode"><option value="llm">Standard LLM Connection</option><option value="jev">Jev System 1 (TypeSafe AI)</option><option value="heuristic">Heuristic (local only)</option></select></label>
-    </div>
-    <p data-et="plannerHint" role="note" style="font-size:.85em;opacity:.75;margin:8px 0"></p>
-    <div data-et="gemini" hidden class="et-grid" style="margin-top:10px">
-      <label>Gemini model<select data-et="model"><option>gemini-3.8-flash-tts</option><option>gemini-3.8-flash-lite-tts</option></select></label>
-      <label>Gemini API key<input data-et="key" type="password" autocomplete="off" placeholder="Session key (never saved)"></label>
-    </div>
-    <div data-et="native" class="et-grid" style="margin-top:10px">
-      <label>Lumiverse connection<select data-et="connection"></select></label>
-      <label>Style handling<select data-et="styleParam"><option value="">Ignore style</option><option value="instructions">instructions (OpenAI)</option><option value="instruct">instruct</option><option value="prompt">prompt</option></select></label>
-    </div>
-    <div data-et="llmPlannerBox" style="margin-top:10px">
-      <label>Planner LLM connection<select data-et="planner"><option value="">Default LLM connection</option></select></label>
-    </div>
-    <div style="margin-top:10px">
-      <label class="et-check"><input data-et="batchSpeech" type="checkbox"> Group speech requests (fewer calls)</label>
-      <small style="display:block;margin-top:6px">Keeps moderate passages together with compatible Fish S2/Gemini voices, or consecutive passages from the same voice. Long openings still start with a short clip. SFX cues, request limits and different speaker settings can separate calls. Unison lines overlap the assigned voices using one short call per voice; those clips retain individual levels. Grouped clips share a level: speaker level and Silent changes apply on the next Play. Master changes immediately; No voice stops grouped playback.</small>
-      <small data-et="groupingStatus" role="status" style="display:block;margin-top:6px" hidden></small>
-    </div>
-    <div data-et="jevPlannerBox" hidden class="et-grid" style="margin-top:10px">
-      <label>Decision connection<select data-et="decisionConnection"><option value="">Default Decision connection</option></select></label>
+      <label data-et="llmPlannerBox">Planner LLM connection<select data-et="planner"><option value="">Default LLM connection</option></select></label>
+      <label data-et="jevPlannerBox" hidden>Decision connection<select data-et="decisionConnection"><option value="">Default Decision connection</option></select></label>
       <input data-et="jevKey" type="hidden">
       <input data-et="jevEndpoint" type="hidden">
     </div>
-    <div class="et-row" style="margin-top:10px;flex-wrap:wrap;gap:12px">
-      <label class="et-check" hidden><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
-      <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
-      <label class="et-check"><input data-et="showAutoPlanAction" type="checkbox"> Show Auto-plan in chat toolbar</label>
-      <label class="et-check"><input data-et="enableSfx" type="checkbox" checked> Sound effects (Foley cues)</label>
-      <label class="et-check"><input data-et="enableAmbience" type="checkbox" checked> Ambient sound</label>
-      <label class="et-check" title="Kevin MacLeod's incompetech tracks, CC BY 4.0"><input data-et="enableMusic" type="checkbox"> Background music</label>
-      <label class="et-check" title="Keep the track playing between replies until another music cue replaces it. Stop, music off, or changing chats ends playback."><input data-et="loopMusic" type="checkbox"> Loop music until next cue</label>
-      <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show message play controls</label>
-      <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
+    <p data-et="plannerHint" role="note" style="font-size:.85em;opacity:.75;margin:6px 0 0" hidden></p>
+    <div class="et-row">
+      <label class="et-check" title="Combine compatible passages into fewer TTS calls; grouped clips share one level."><input data-et="batchSpeech" type="checkbox"> Group speech requests</label>
+      <small data-et="groupingStatus" role="status" style="opacity:.75" hidden></small>
+    </div>
+    <h4 class="et-subhead">Sound</h4>
+    <div class="et-row">
+      <label class="et-check" title="Foley cues from Freesound (key in Advanced Settings)"><input data-et="enableSfx" type="checkbox" checked> Sound effects</label>
+      <label class="et-check" title="Ambient background sound from Freesound"><input data-et="enableAmbience" type="checkbox" checked> Ambience</label>
+      <label class="et-check" title="Kevin MacLeod's incompetech tracks, CC BY 4.0"><input data-et="enableMusic" type="checkbox"> Music</label>
+      <label class="et-check" data-et="loopMusicWrap" title="Keep the track playing between replies until another music cue replaces it. Stop, music off, or changing chats ends playback."><input data-et="loopMusic" type="checkbox"> Loop music</label>
+    </div>
+    <h4 class="et-subhead">Reading</h4>
+    <div class="et-row">
+      <label class="et-check" style="display:inline-flex">Highlight spoken text<select data-et="readAlong" style="width:auto"><option value="off">Off</option><option value="passage">Passage</option><option value="word">Word by word</option></select></label>
       <label class="et-check" title="Scroll the chat to the passage being read. Scrolling yourself pauses this until the next Play."><input data-et="followNarration" type="checkbox"> Follow narration</label>
+      <label class="et-check"><input data-et="auto" type="checkbox"> Auto-play new replies</label>
+      <label class="et-check" hidden><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
-
-    <p style="font-size:.85em;opacity:.8">Speech &amp; Planner settings save automatically and apply to every chat.</p>
-    <label>Ignored tags<textarea data-et="ignoredTags" rows="2" placeholder="summary, .panel-class, #panel-id"></textarea></label>
-    <small>Tags, .classes, or #IDs. Tabbed panels and interface controls are skipped automatically; ordinary story HTML is kept.</small>
-    <p style="font-size:.85em;opacity:.75">Skip everything inside these tags when reading. Enter tag names separated by commas or new lines, for example summary skips &lt;summary&gt;…&lt;/summary&gt;.</p>
+    <label hidden>Ignored tags<textarea data-et="ignoredTags" rows="2" placeholder="summary, .panel-class, #panel-id"></textarea></label>
 
     <details>
       <summary>Advanced Settings</summary>
@@ -305,12 +304,17 @@ export async function setup(ctx) {
         <label>Prefetch passages<input data-et="prefetch" type="number" min="0" max="4" value="1"></label>
         <label class="et-check"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
         <label class="et-check"><input data-et="normalizeLoudness" type="checkbox" checked> Match passage loudness</label>
-        <label class="et-check"><input data-et="allowVoiceFallback" type="checkbox"> Allow one Gemini custom voice fallback to Kore/Charon</label>
-        <label>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
+        <label class="et-check" data-et="allowVoiceFallbackWrap"><input data-et="allowVoiceFallback" type="checkbox"> Allow one Gemini custom voice fallback to Kore/Charon</label>
+        <label hidden>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
         <label>Freesound API key (Foley)<input data-et="freesoundApiKey" type="password" placeholder="Freesound token"></label>
         <label data-et="batchGeminiWrap" class="et-check" style="align-self:end"><input data-et="batchGemini" type="checkbox" checked> Batch Gemini turns (2 speakers)</label>
       </div>
-      <p id="choir-chunk-hint" style="font-size:.85em;opacity:.75">Up to 10,000. Smaller chunks start playing sooner; Choir applies lower limits where needed for each voice provider.</p>
+      <p id="choir-chunk-hint" style="font-size:.85em;opacity:.75">Smaller chunks start playing sooner.</p>
+      <div class="et-row">
+        <label class="et-check"><input data-et="sectionButtons" type="checkbox"> Show message play controls</label>
+        <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
+        <label class="et-check"><input data-et="showAutoPlanAction" type="checkbox"> Show Auto-plan in chat toolbar</label>
+      </div>
       <label data-et="autoDesignNPCsWrap" class="et-check" style="margin-top:10px"><input data-et="autoDesignNPCs" type="checkbox"> Auto-design custom voices for new NPCs (Gemini / AI Studio)</label>
       <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
       <div data-et="voiceDesignBox" style="margin-top:10px;padding:8px 10px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;background:rgba(128,128,128,0.03)">
@@ -874,7 +878,7 @@ export async function setup(ctx) {
     const voiceField=voicePicker?.(voice,selectedRoute,`${prefix}Shared NPC voice`,()=>{policy.voice=voice.value;onChange(read());});
     const poolField=voicePicker?.(pool,selectedRoute,`${prefix}Preferred NPC voices`,()=>{policy.voices=[...pool.selectedOptions].map(item=>item.value);onChange(read());});
     const voiceLabel=voiceField?.node || defaultLabel(`${prefix}Shared NPC voice`,voice),poolLabel=poolField?.node || defaultLabel(`${prefix}Preferred NPC voices`,pool),connectionLabel=defaultLabel(`${prefix}NPC connection`,connection);
-    const hint=document.createElement('small');hint.textContent='These choices apply to NPC speech. Lead cast voices stay independent. Select multiple preferred voices with Ctrl / Cmd, or your phone’s selection menu.';
+    const hint=document.createElement('small');hint.textContent='NPCs only. Ctrl / Cmd-click to pick several voices.';
     container.append(defaultLabel(`${prefix}NPC casting`,mode),connectionLabel,voiceLabel,poolLabel,hint);let request=0;
     const show=()=>{connection.disabled=getShared();connection.value=getShared()?'':policy.route || '';connectionLabel.hidden=policy.mode==='skip';voiceLabel.hidden=policy.mode!=='single';poolLabel.hidden=policy.mode!=='preferred';voiceField?.refresh();poolField?.refresh();};
     const fill=catalogue=>{
@@ -905,7 +909,7 @@ export async function setup(ctx) {
     const overlay=document.createElement('div');overlay.className='et-default-overlay';
     const dialog=document.createElement('div');dialog.className='ensemble-tts et-default-dialog';dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');dialog.setAttribute('aria-label','Set default');
     const heading=document.createElement('h2');heading.textContent='Set default';
-    const intro=document.createElement('p');intro.style.fontSize='.85em';intro.textContent='New chats start with these cast voices. Existing casts keep their choices until you apply a default. Speech & Planner settings are shared automatically.';
+    const intro=document.createElement('p');intro.style.fontSize='.85em';intro.textContent='New chats start with these voices.';
     const tabs=document.createElement('div');tabs.className='et-default-tabs';tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Default settings');
     const body=document.createElement('div');body.className='et-default-body';const panels=[];const buttons=[];
     for(const [key,title] of [['lead','Lead cast'],['npc','NPC cast']]){
@@ -985,8 +989,8 @@ export async function setup(ctx) {
         const preset={version:2,npcPolicy:structuredClone(candidate.npcPolicy),leadVoices:candidate.fixed.map(actor=>Object.fromEntries(defaultVoiceFields.filter(name=>Object.hasOwn(actor,name)).map(name=>[name,structuredClone(actor[name])]))),...(voiceCatalogue.length?{voiceCatalogue}: {})};
         await ctx.settings.set(CAPTURED_DEFAULTS_KEY,structuredClone(preset));capturedDefaults=preset;++defaultsRevision;
         for(const voice of voiceCatalogue){const catalogue=voiceCatalogues.get(voice.route);if(catalogue)voiceCatalogues.set(voice.route,[...new Map([...catalogue,voice].map(item=>[item.id,item])).values()]);}
-        if(!disposed){$('defaultStatus').textContent='Default saved. New chats use this setup; each chat keeps its own changes.';feedback.textContent='Default saved.';close();}
-      }catch(error){if(!disposed){feedback.textContent=error.message;$('defaultStatus').textContent='Default save failed. Your previous default is retained.';}}
+        if(!disposed){$('defaultStatus').textContent='Default saved. New chats use it.';feedback.textContent='Default saved.';close();}
+      }catch(error){if(!disposed){feedback.textContent=error.message;$('defaultStatus').textContent='Default save failed; previous default kept.';}}
       finally{defaultOperation=false;if(!disposed){save.disabled=false;fromChat.disabled=false;refreshDefaultControls();}}
     })();
     dialog.append(heading,intro,tabs,body,feedback,actions);overlay.append(dialog);document.body.append(overlay);buttons[0].focus();
@@ -1582,7 +1586,7 @@ export async function setup(ctx) {
         rowVoices=catalogue;filterVoices();
         updateCardProviderControls();
         updateProviderVisibility();
-        scheduleSettingsSave();status('Speaker TTS connection selected. Changes save automatically.');
+        scheduleSettingsSave();status('Speaker TTS connection selected.');
       } finally {if(!disposed && route.value===selected)voice.disabled=busy;}
     });
 
@@ -1607,7 +1611,7 @@ export async function setup(ctx) {
     castRows=config.fixed.map(actor=>makeRow(actor,$('fixed'),normalizeName(actor.speaker)==='narrator'));
     const npcs=config.casts[scope(config)] || [];
     npcRows=npcs.map(actor=>makeRow(actor,$('npcs')));
-    if(!npcs.length){const p=document.createElement('p');p.textContent='No NPCs cast yet.';$('npcs').append(p);}
+    if(!npcs.length){const p=document.createElement('p');p.style.cssText='font-size:.85em;opacity:.75';p.textContent='No NPCs cast yet.';$('npcs').append(p);}
     updateProviderVisibility();
     renderMixer();
     refreshDefaultControls();
@@ -1703,11 +1707,8 @@ export async function setup(ctx) {
     if($('llmPlannerBox'))$('llmPlannerBox').hidden=false;
     if($('jevPlannerBox'))$('jevPlannerBox').hidden=!isJev;
     if($('useFastClassifier'))$('useFastClassifier').checked=isHeuristic;
-    $('plannerHint').textContent=isHeuristic
-      ? 'Attribution stays on this device. Ambiguous dialogue stops planning; choose Jev or LLM to resolve it. Speech synthesis still uses your TTS provider.'
-      : isJev
-        ? `Jev classifies speakers. Unstructured card content uses one cached Planner LLM analysis to check for additional leads before planning.${$('allowLlmFallback')?.checked ? ' If Jev fails, the enabled LLM fallback can incur extra cost.' : ' LLM fallback is disabled.'}`
-        : 'Your selected LLM connection identifies the card’s individual characters, then plans speakers and voices. Card analysis is cached until the card changes. Planning and Test planner make LLM requests.';
+    $('plannerHint').textContent=isHeuristic?'Runs on this device. Unclear dialogue stops planning.':isJev?'Jev picks speakers; your Planner LLM reads the card once.':'';
+    $('plannerHint').hidden=!$('plannerHint').textContent;
   }
   function updateProviderVisibility() {
     const activeProvider=detectProvider(config);
@@ -1721,6 +1722,7 @@ export async function setup(ctx) {
     if($('voiceDesignBox'))$('voiceDesignBox').hidden=!anyGemini;
     if($('autoDesignNPCsWrap'))$('autoDesignNPCsWrap').hidden=!anyGemini;
     if($('batchGeminiWrap'))$('batchGeminiWrap').hidden=true;
+    $('allowVoiceFallbackWrap').hidden=!anyGemini;
     $('fishVoiceSourceWrap').hidden=!anyFish;
 
     if($('extraVoicesLabel')) {
@@ -1910,10 +1912,10 @@ export async function setup(ctx) {
     if(previous)await restoreSavedPlan(previous);
     if(version!==loadVersion || disposed)return;
     saveState(saved?'Saved settings restored':capturedDefaults?'Default setup loaded':preferences?'Connection preferences restored':'Changes save automatically');
-    $('defaultStatus').textContent=capturedDefaults?'Cast defaults available for new chats.':'Set defaults beside Lead Cast or NPC Cast.';
+    $('defaultStatus').textContent='';
     refreshDefaultControls();
     positionMixer();
-    renderMessages();status(plan?'Saved speech plan restored.':id?'Ready. Set your persona name and choose voices. Changes save automatically.':'Open a chat to begin.');
+    renderMessages();status(plan?'Saved speech plan restored.':id?'Ready.':'Open a chat to begin.');
   }
   async function persistPlan(){
     if(!planSource || !plan)return;
@@ -2575,21 +2577,19 @@ export async function setup(ctx) {
   function updateGroupingStatus(){
     const node=$('groupingStatus');if(!node)return;
     if(plan)$('planSummary').textContent=`Speech plan · ${plan.segments.length} spoken blocks`;
-    node.hidden=!config?.batchSpeech;if(node.hidden)return;
+    node.hidden=true;if(!config?.batchSpeech)return;
     const route=scope(config),connection=nativeConnections.find(item=>`native:${item.id}`===route);
     const maxSpeakers=route==='gemini'?2:nativeSpeakerLimit(connection);
     const name=route==='gemini'?'Gemini':connection?.name || 'This connection';
-    const support=maxSpeakers?`${name} can combine up to ${maxSpeakers} ${detectProvider(route)==='gemini'?'preset ':''}voices per call.`:`${name}'s Lumiverse relay advertises one voice per call; different assigned voices need separate calls.`;
-    let count='';
+    node.title=maxSpeakers?`${name} can combine up to ${maxSpeakers} ${detectProvider(route)==='gemini'?'preset ':''}voices per call.`:`${name}'s Lumiverse relay advertises one voice per call; different assigned voices need separate calls.`;
     if(plan?.segments?.length){
       try{const batches=playbackBatches(plan.segments.map((segment,passageIndex)=>({...segment,passageIndex})),config);
         const speech=batches.filter(batch=>!batch.kind).length;
         $('planSummary').textContent=`Speech plan · ${plan.segments.filter(segment=>!segment.kind).length} text turns · ${speech} speech ${speech===1?'clip':'clips'}`;
         const requests=batches.filter(batch=>!batch.kind).reduce((sum,batch)=>sum+(batch.unison?.length || 1),0);
-        count=` This plan: ${speech} speech ${speech===1?'batch':'batches'}${requests>speech?` (up to ${requests} TTS calls, including simultaneous voices)`:''}${batches.some(batch=>batch.kind==='sfx')?'; SFX cues separate batches':''}. Cached audio needs no new TTS call.`;
+        node.textContent=`This plan: ${speech} speech ${speech===1?'batch':'batches'}${requests>speech?` (up to ${requests} TTS calls)`:''}`;node.hidden=false;
       }catch{}
     }
-    node.textContent=support+count;
   }
   function ttsBatches(segments,snapshot,batchGemini=false,startup=true){
     if(snapshot.batchSpeech)return groupedSpeechBatches(segments,snapshot.chunk,scope(snapshot),(segment,route)=>groupedLimits(segment,route,snapshot),{sfx:snapshot.enableSfx!==false,startup})
@@ -3137,7 +3137,7 @@ export async function setup(ctx) {
       if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return;
       if(messageId && !await restoreSavedPlan(messageId))clearPlan();
       if(disposed || targetChat!==chatId || version!==loadVersion || token!==revision)return;
-      saveState('Saved automatically');$('defaultStatus').textContent='Default applied to this chat. New chats still use the captured setup.';
+      saveState('Saved automatically');$('defaultStatus').textContent='Default applied to this chat.';
       status('Cast default applied. This chat saves its own voice choices.');
     }catch(error){
       if(!disposed && targetChat===chatId && version===loadVersion){
@@ -3193,7 +3193,7 @@ export async function setup(ctx) {
   }
   $('latest').onclick=()=>run(planLatest);
   $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:'',style:''},$('fixed'),false,true));scheduleSettingsSave();renderMixer();};
-  $('reset').onclick=()=>{config=capture();config.casts[scope(config)]=[];renderCast();clearPlan();scheduleSettingsSave();status('NPC cast cleared. Changes save automatically.');};
+  $('reset').onclick=()=>{config=capture();config.casts[scope(config)]=[];renderCast();clearPlan();scheduleSettingsSave();status('NPC cast cleared.');};
   $('designVoice').onclick=()=>run(async()=>{
     const prompt=$('voicePrompt').value.trim();
     if(!prompt)throw new Error('Describe the voice to design (e.g. age, timbre, accent, persona).');
@@ -3326,7 +3326,7 @@ export async function setup(ctx) {
     if(messageId)await restoreSavedPlan(messageId);if(disposed || chatId!==targetChat || version!==loadVersion)return;renderMixer();
     const unavailable=config.connectionMode==='several' && config.fixed.some(v=>v.voice && !voices.some(x=>x.id===v.voice));
     await persistConfig(targetChat,config,true);if(disposed || chatId!==targetChat || version!==loadVersion)return;saveState('Settings saved');
-    status(unavailable?'Choose valid voices for this provider. Changes save automatically.':'Provider selected. Settings saved automatically.');
+    status(unavailable?'Choose valid voices for this provider.':'Provider selected.');
   });
   $('apply').onclick=()=>run(async()=>{
     if(!planSource)throw new Error('Plan a message first.');

@@ -1696,7 +1696,7 @@ test('OpenRouter Fish grouping uses Fish voice IDs and exposes Fish catalogue to
   await h.plan();await h.play();assert.equal(h.synthesis.length,1);
   assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>turn.voice),['1','3','4','1'].map(char=>char.repeat(32)));
   assert.equal(h.synthesis[0].parameters.turns.map(turn=>turn.text).join(' '),h.message.content);
-  assert.match(h.$('groupingStatus').textContent,/up to 5 voices per call/);
+  assert.match(h.$('groupingStatus').title,/up to 5 voices per call/);
   await h.reload();await h.play();assert.equal(h.synthesis.length,1);
  }finally{await h.close();}
 });
@@ -1705,7 +1705,7 @@ test('OpenRouter Gemini groups only two preset voices per call despite the provi
  const h=await openRouterGroupingHarness('gemini');try{
   const options=[...h.$('fixed').querySelector('[data-choir-voice]').options].map(option=>option.value);
   assert.ok(options.includes('Puck'));assert.ok(!options.includes('alloy'));
-  assert.match(h.$('groupingStatus').textContent,/up to 2 preset voices per call/);
+  assert.match(h.$('groupingStatus').title,/up to 2 preset voices per call/);
   await h.plan();await h.play();assert.equal(h.synthesis.length,2);
   assert.deepEqual(h.synthesis.flatMap(request=>request.parameters.turns.map(turn=>turn.voice)),['Charon','Puck','Zephyr','Charon']);
   assert.ok(h.synthesis.every(request=>new Set(request.parameters.turns.map(turn=>turn.voice)).size<=2));
@@ -1714,7 +1714,7 @@ test('OpenRouter Gemini groups only two preset voices per call despite the provi
 
 test('an unpatched OpenRouter relay keeps Fish voices model-specific and uses separate calls for different speakers',async()=>{
  const h=await openRouterGroupingHarness('fish_audio',false);try{
-  assert.match(h.$('groupingStatus').textContent,/relay advertises one voice per call/);
+  assert.match(h.$('groupingStatus').title,/relay advertises one voice per call/);
   await h.plan();await h.play();assert.equal(h.synthesis.length,4);
   assert.ok(h.synthesis.every(request=>!request.parameters.turns && /^[1-4]{32}$/.test(request.voice)));
   assert.equal(h.synthesis[0].text,'At dawn.');assert.equal(h.synthesis[0].parameters.instructions,'Calm');
@@ -1735,7 +1735,7 @@ test('Fish S2 sends a moderate dialogue-narration-dialogue passage as one call w
  const h=await fishGroupingHarness();try{
   const passage=['"'+('I want to explain what happened and how I felt. '.repeat(5)).trim()+'"','She rested her hand on the table, watched him quietly and considered everything he had said, drawing a slow breath as the room settled around them.','"'+('We can talk about this honestly and work through it together. '.repeat(5)).trim()+'"'].join(' ');
   assert.ok(passage.length>600 && passage.length<900);h.message.content=passage;
-  await h.plan();assert.match(h.$('groupingStatus').textContent,/up to 5 voices per call/);assert.match(h.$('groupingStatus').textContent,/1 speech batch/);
+  await h.plan();assert.match(h.$('groupingStatus').title,/up to 5 voices per call/);assert.match(h.$('groupingStatus').textContent,/1 speech batch/);
   await h.play();assert.equal(h.synthesis.length,1);assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>[turn.speaker,turn.voice]),[['Mira','m'],['Narrator','n'],['Mira','m']]);
   assert.equal(h.synthesis[0].parameters.turns.map(turn=>turn.text).join(' '),passage);
   await h.reload();await h.play();assert.equal(h.synthesis.length,1);
@@ -1785,7 +1785,7 @@ test('grouped clip controls update to actual separate requests when speaker leve
 
 test('grouping status explains a single-voice provider and updates its batch count with speaker levels',async()=>{
  const h=await harness();try{
-  await toggle(h,'batchSpeech',true);await h.plan();assert.equal(h.$('groupingStatus').hidden,false);assert.match(h.$('groupingStatus').textContent,/one voice per call; different assigned voices need separate calls/);assert.match(h.$('groupingStatus').textContent,/4 speech batches/);
+  await toggle(h,'batchSpeech',true);await h.plan();assert.equal(h.$('groupingStatus').hidden,false);assert.match(h.$('groupingStatus').title,/one voice per call; different assigned voices need separate calls/);assert.match(h.$('groupingStatus').textContent,/4 speech batches/);
   await toggle(h,'batchSpeech',false);assert.equal(h.$('groupingStatus').hidden,true);
  }finally{await h.close();}
  const fish=await fishGroupingHarness();try{
@@ -2159,7 +2159,7 @@ test('host remount replaces the previous mixer and cancels its playback',async()
 test('latest planned notice invites an explicit redo without discarding cached audio',async()=>{
   const h=await harness();try{
     assert.equal(h.$('latestNotice').hidden,true);await h.plan();await h.play();
-    assert.equal(h.$('latestNotice').hidden,false);assert.equal(h.$('latestNotice').textContent,'latest already planned, click on plan latest to redo it');
+    assert.equal(h.$('latestNotice').hidden,false);assert.equal(h.$('latestNotice').textContent,'Already planned. Plan latest again to redo it.');
     const before=h.synthesis.length;await h.plan();assert.equal(h.requests.filter(r=>r.action==='plan').length,2);await h.play();assert.equal(h.synthesis.length,before);
     await h.reload();assert.equal(h.$('latestNotice').hidden,false);await h.plan();assert.equal(h.requests.filter(r=>r.action==='plan').length,3);
     h.store.set('activeplan:chat-a','another-message');await h.reload();await until(()=>!h.$('latestNotice').hidden);
