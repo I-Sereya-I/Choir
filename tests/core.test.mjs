@@ -472,6 +472,17 @@ test('fastClassifyPlan uses dialogue tag attribution and detects emotion style',
   assert.equal(plan.segments[2].style, 'whispering');
 });
 
+test('local one-on-one attribution recognizes a named persona and keeps explicit persona turns',()=>{
+  const c=config();c.fixed.splice(1,0,{speaker:'Jay',voice:'Puck',style:''});c.personaSpeaker='Jay';
+  const text='The door opened. "Hello." Jay said, "Welcome."';
+  const plan=fastClassifyPlan(text,c);
+  assert.ok(plan);
+  assert.deepEqual(plan.segments.filter(segment=>segment.text.startsWith('"')).map(segment=>[segment.speaker,segment.voice]),[['Alice','Kore'],['Jay','Puck']]);
+  c.fixed.push({speaker:'Bob',voice:'Fenrir',style:''});
+  assert.equal(fastClassifyPlan('The door opened. "Hello."',c),null);
+  assert.equal(fastClassifyPlan('Jay and Alice stood together. "Hello."',c),null);
+});
+
 test('fastClassifyPlan returns null on ambiguous multi-character dialogue without tags', () => {
   const c = config();
   c.fixed.push({ speaker: 'Bob', voice: 'Puck', route: 'gemini', style: '' });

@@ -1471,6 +1471,26 @@ test('ambiguous heuristic dialogue stops without an LLM fallback or audio synthe
   }finally{await h.close();}
 });
 
+test('heuristic planning preserves the persona role after Lumiverse replaces its placeholder name',async()=>{
+  const h=await harness();try{
+    const saved=h.store.get('chat:chat-a');saved.fixed[1].speaker='Persona';saved.casts={};
+    h.store.set('chat:chat-a',saved);h.state.persona={id:'persona-jay',name:'Jay'};
+    await h.reload();await until(()=>h.$('fixed').children[1].querySelector('input').value==='Jay');
+    h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+    h.message.content='The door opened. "Hello." Jay said, "Welcome."';await h.plan();
+    const plan=[...h.store].find(([key])=>key.startsWith('plan:'))[1];
+    assert.deepEqual(plan.attribution.segments.filter(segment=>segment.text.startsWith('"')).map(segment=>segment.speaker),['Mira','Jay']);
+    assert.equal(h.requests.length,0);assert.equal(h.synthesis.length,0);
+    // Removing the persona must not turn the next lead into the persona role.
+    const withoutPersona=h.store.get('chat:chat-a');withoutPersona.fixed=withoutPersona.fixed.filter(actor=>actor.speaker!=='Jay');
+    withoutPersona.fixed.push({speaker:'Bob',voice:'g',style:''});h.store.set('chat:chat-a',withoutPersona);
+    for(const key of [...h.store.keys()])if(/^(plan:|activeplan:)/.test(key))h.store.delete(key);
+    h.message.content='The door opened. "Hello."';await h.reload();
+    await h.click('latest',text=>text.includes('No LLM request was made'));
+    assert.equal(h.requests.length,0);assert.equal(h.synthesis.length,0);assert.equal(h.$('preview').children.length,0);
+  }finally{await h.close();}
+});
+
 test('switching from heuristic to LLM clears legacy flags and preserves the selected engine on reload',async()=>{
   const h=await harness();try{
     h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));

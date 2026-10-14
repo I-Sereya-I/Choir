@@ -791,7 +791,11 @@ export function fastClassifyPlan(transcript, config) {
 
   // Case 2: 1-on-1 character dialogue
   const isOneOnOne = candidates.length === 1 && candidates[0].voice;
-  const persona=candidates.find(actor=>['user','persona','you'].includes(normalizeName(actor.speaker)));
+  // Lumiverse replaces the persona placeholder with its real name. Preserve its
+  // role explicitly rather than requiring the speaker to remain named "User".
+  const persona=config.personaSpeaker
+    ? candidates.find(actor=>normalizeName(actor.speaker)===normalizeName(config.personaSpeaker))
+    : candidates.find(actor=>['user','persona','you'].includes(normalizeName(actor.speaker)));
   const singleCharacter = isOneOnOne ? candidates[0] : candidates.length===2 && persona
     ? candidates.find(actor=>actor!==persona && actor.voice) : null;
 

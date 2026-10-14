@@ -792,7 +792,11 @@ function fastClassifyPlan(transcript, config) {
 
   // Case 2: 1-on-1 character dialogue
   const isOneOnOne = candidates.length === 1 && candidates[0].voice;
-  const persona=candidates.find(actor=>['user','persona','you'].includes(normalizeName(actor.speaker)));
+  // Lumiverse replaces the persona placeholder with its real name. Preserve its
+  // role explicitly rather than requiring the speaker to remain named "User".
+  const persona=config.personaSpeaker
+    ? candidates.find(actor=>normalizeName(actor.speaker)===normalizeName(config.personaSpeaker))
+    : candidates.find(actor=>['user','persona','you'].includes(normalizeName(actor.speaker)));
   const singleCharacter = isOneOnOne ? candidates[0] : candidates.length===2 && persona
     ? candidates.find(actor=>actor!==persona && actor.voice) : null;
 
@@ -1440,7 +1444,7 @@ export async function setup(ctx) {
   toolbarAutoPlan.innerHTML=`${ICON_SPARKLE}<span></span>`;toolbarAutoPlan.onclick=()=>run(toggleAutoPlan);
   const messageStatuses=new Map(),messageSections=new Set(),seekControls=new Set();let messagePlaybackId=null,messageOperation=null;
   let disposed=false, loadVersion=0, revision=0, config, chatId=null, plan=null, planSource=null, planAttribution=null, planningSource=null, busy=false;
-  let activeCharacterCard=null;
+  let activeCharacterCard=null,activePersonaName='';
   const autoReplyQueue=new Map(),seenAutoGenerations=new Set();let autoReplyTimer=null,autoReplyActive=null;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[], voiceIdEditorCount=0;
   const voiceCatalogues=new Map();
@@ -2608,7 +2612,8 @@ export async function setup(ctx) {
     const fixed=c.fixed.map(routeActor),npcs=[...knownNPCs.values()].map(routeActor).map(actor=>npcCastActor(actor,{npcPolicy,defaultRoute:scope(c)})),actors=[...fixed,...npcs];
     const routes=new Set([scope(c),...actors.map(actor=>actor.route || scope(c)),...(npcPolicy?.route?[npcPolicy.route]:[])]);
     const communityRoutes=c.fishVoiceSource==='own'?[]:[...routes].filter(route=>detectProvider(route)==='fish_audio');
-    return {fixed,npcs,defaultRoute:scope(c),
+    const personaSpeaker=activePersonaName?fixed.find(actor=>normalizeName(actor.speaker)===normalizeName(activePersonaName))?.speaker:undefined;
+    return {fixed,npcs,personaSpeaker,defaultRoute:scope(c),
       voices:[...routes].flatMap(route=>(voiceCatalogues.get(route) || []).map(voice=>({...voice,route}))),useStyle:c.useStyle,npcPolicy,
       ...(communityRoutes.length?{communityRoutes:Object.fromEntries(communityRoutes.map(route=>[route,c.fishVoiceSource || 'community']))}:{})};
   }
@@ -2833,7 +2838,7 @@ export async function setup(ctx) {
     try{await flushSettings();}catch(error){status(`Previous chat settings could not be saved: ${error.message}`,true);}
     if(disposed || version!==loadVersion)return;
     chatId=id;
-    activeCharacterCard=null;
+    activeCharacterCard=null;activePersonaName='';
     pendingSettings=null;
     castRows=[];npcRows=[];$('fixed').replaceChildren();$('npcs').replaceChildren();
     refreshDefaultControls();
@@ -2958,11 +2963,11 @@ export async function setup(ctx) {
   // whenever the persona changes, because the persona may become known only after the chat opened.
   async function refreshLeadNames(save=true){
     if(!chatId || !config || busy)return;
-    const version=loadVersion,fixed=capture().fixed,characterId=ctx.getActiveChat().characterId;
-    const [persona,character]=await Promise.all([leadPlaceholder(fixed,1)?activePersona():null,characterId?ctx.characters.get(characterId).catch(()=>null):null]);
+    const version=loadVersion,characterId=ctx.getActiveChat().characterId;
+    const [persona,character]=await Promise.all([activePersona(),characterId?ctx.characters.get(characterId).catch(()=>null):null]);
     if(disposed || version!==loadVersion || busy)return;
     let value=capture(),renamed=false;
-    activeCharacterCard=character;
+    activeCharacterCard=character;activePersonaName=typeof persona?.name==='string'?persona.name.trim():'';
     const roles=characterCardRoles(character || {});
     if(roles.length){value.cardGroupName=character.name;config.cardGroupName=character.name;}
     if(roles.length && (leadPlaceholder(value.fixed,2) || normalizeName(value.fixed[2]?.speaker)===normalizeName(character.name))){
