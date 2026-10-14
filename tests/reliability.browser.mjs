@@ -112,6 +112,7 @@ async function harness(mixerPreferences,mobile=false){
         }
         else if(request.action==='searchVoices')result={results:state.voiceSearchResults || [{id:'community_fish_voice',name:'Community narrator',description:'A warm, steady storyteller.'}]};
         else if(request.action==='gemini')result={base64:'AAABAA==',mimeType:'audio/L16;rate=24000'};
+        else if(request.action==='cardCast')result={roles:state.cardRoles || []};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
         else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
         else if(request.action==='plan' && state.cardTitlePlan){
@@ -514,6 +515,55 @@ test('old recordings with a duplicate card-title voice are corrected instead of 
   h.state.character={name:kellinCard};await h.reload();await h.play();
   assert.equal(h.requests.filter(request=>request.action==='plan').length,planned+1);assert.equal(h.synthesis.length,generated+1);assert.equal(h.synthesis.at(-1).voice,'m');assert.equal(h.synthesis.at(-1).connectionId,'b');
   assert.deepEqual(h.store.get('chat:chat-a').casts['native:a'].map(actor=>actor.speaker),['Mikey Ross']);
+ }finally{await h.close();}
+});
+
+test('Levi and Cole profile headings migrate the cast and unison creates one overlapping cached clip',async()=>{
+ const originalContext=globalThis.AudioContext;let decoded=0;
+ globalThis.AudioContext=class{
+   sampleRate=24000;async resume(){}async close(){}
+   async decodeAudioData(){const channel=decoded++%2?Float32Array.of(0,0.2,0.3,0.4):Float32Array.of(0,0,0.4,0.2);return {numberOfChannels:1,getChannelData:()=>channel};}
+   createMediaElementSource(){return {connect(){},disconnect(){}};}
+   createGain(){return {gain:{value:1},connect(){},disconnect(){}};}
+ };
+ const h=await harness({enabled:true});try{
+  h.state.character={name:'Levi & Cole',description:'<{{char}}>\n<levi_cline>\n# _Levi\'s Data_\n- Name: Levi Cline\n# Speech\nGentle.\n</levi_cline>\n<cole_lane>\n# _Cole\'s Data_\n- Name: Cole Lane\n# Speech\nLow and raspy.\n</cole_lane>\n</{{char}}>'};
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed[2].speaker='Levi & Cole';saved.fixed[2].aliases=[];saved.fixed[2].pronunciation='';saved.fixed[2].accent='';saved.batchSpeech=true;saved.sectionButtons=true;saved.plannerMode='heuristic';saved.normalizeLoudness=false;h.store.set('chat:chat-a',saved);
+  h.message.content='Levi’s hand finds the counter. Cole’s hand finds his pocket. "User," they say in unison.';
+  await h.reload();assert.deepEqual([...h.$('fixed').children].map(row=>row.querySelector('input').value),['Narrator','You','Levi','Cole']);
+  const voices=h.$('fixed').querySelectorAll('[data-choir-voice]');voices[3].value='new';voices[3].dispatchEvent(new h.dom.window.Event('change'));
+  await h.plan();assert.match(h.$('preview').textContent,/Levi & Cole · in unison/);
+  await until(()=>[...h.footer.querySelectorAll('[data-choir-clip]')].some(button=>button.title.includes('simultaneous clip')));
+  const control=[...h.footer.querySelectorAll('[data-choir-clip]')].find(button=>button.title.includes('simultaneous clip'));assert.match(control.textContent,/Levi \+ Cole · in unison/);assert.match(control.title,/2 short voice calls/);
+  await h.play();
+  const requests=h.synthesis.filter(input=>input.text==='"User,"');assert.deepEqual(requests.map(input=>input.voice),['m','new']);assert.ok(requests.every(input=>!input.parameters.turns));
+  const wav=h.audioBlobs.find(blob=>blob.type==='audio/wav');assert.ok(wav);const data=new DataView(await wav.arrayBuffer());assert.equal(data.getUint32(40,true),6);assert.equal(data.getInt16(44,true),Math.round(0.6*32767));
+  const generated=h.synthesis.length;await h.play();assert.equal(h.synthesis.length,generated);
+  h.dom.window.document.querySelector('[aria-label="Cole silent"]').click();await h.play();assert.equal(h.synthesis.length,generated);
+  const remix=new DataView(await h.audioBlobs.filter(blob=>blob.type==='audio/wav').at(-1).arrayBuffer());assert.equal(remix.getInt16(44,true),Math.round(0.4*32767));
+  h.dom.window.document.querySelector('[aria-label="Cole no voice"]').click();await h.play();assert.equal(h.synthesis.length,generated);
+  assert.deepEqual(h.store.get('chat:chat-a').fixed[2].aliases,['Levi Cline']);assert.deepEqual(h.store.get('chat:chat-a').fixed[3].aliases,['Cole Lane']);
+ }finally{await h.close();globalThis.AudioContext=originalContext;}
+});
+
+test('cast capture retains voices when the host returns different parent wrappers and repairs a missing narrator',async()=>{
+ const h=await harness();try{
+  for(const row of h.$('fixed').children)Object.defineProperty(row,'parentElement',{configurable:true,get:()=>Object.create(h.$('fixed'))});
+  await h.plan();assert.deepEqual(h.store.get('chat:chat-a').fixed.map(actor=>actor.speaker),['Narrator','You','Mira']);assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'m');
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed=[{speaker:'Levi',voice:'m',style:'',route:'native:b'},{speaker:'Cole',voice:'new',style:'',route:'native:b'}];h.store.set('chat:chat-a',saved);h.state.character={name:'Levi & Cole'};await h.reload();
+  const repaired=h.store.get('chat:chat-a').fixed;assert.deepEqual(repaired.map(actor=>actor.speaker),['Narrator','Persona','Levi','Cole']);assert.deepEqual(repaired.slice(2).map(actor=>actor.voice),['m','new']);
+ }finally{await h.close();}
+});
+
+test('freeform scenario titles use cached generic card analysis and preserve separately assigned voices',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'Closing Time',description:'Adrian is the captain. Ethan is his teammate. No special headings or tags.'};h.state.cardRoles=[{name:'Adrian',aliases:['Captain Adrian'],description:'Low-voiced captain.'},{name:'Ethan',description:'Brighter teammate.'}];h.state.multiCard=true;
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed[2].speaker='Closing Time';saved.fixed[2].aliases=[];h.store.set('chat:chat-a',saved);h.message.content='Adrian said, "Hello." Ethan replied, "Wait."';
+  await h.reload();await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>[actor.speaker,actor.voice]),[['Adrian','m'],['Ethan','new']]);
+  const profiles=h.requests.find(request=>request.action==='plan').input.config.characterProfiles;assert.deepEqual(profiles.map(profile=>profile.speaker),['Adrian','Ethan']);assert.match(profiles[1].description,/Brighter/);
+  await h.reload();await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);
+  h.state.character.description+=' Both lead the evening shift.';await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,2);assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>actor.voice),['m','new']);
+  h.state.character.name='After Hours';await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,3);assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>actor.voice),['m','new']);
  }finally{await h.close();}
 });
 

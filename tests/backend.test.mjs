@@ -14,6 +14,15 @@ test('Jev distinguishes two male leads from one card and reuses independent auto
 });
 
 const config={voices:[{id:'Charon'},{id:'Kore'}],fixed:[{speaker:'Narrator',voice:'Charon',style:''}],npcs:[],useStyle:true};
+test('Jev expands explicit unison to both independently cast voices even if its speaker answer chooses one',async()=>{
+  const cast={voices:[{id:'n'},{id:'low',gender:'male'},{id:'bright',gender:'male'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Levi',voice:'',gender:'male',style:''},{speaker:'Cole',voice:'',gender:'male',style:''}],npcs:[],useStyle:false};
+  const decisions={evaluate:async()=>({answers:{speaker_0:{choice:'Cole'}}})};
+  const h=await harness(null,null,null,null,null,decisions);
+  h.send('planJev',{transcript:'Levi and Cole said in unison, "Hello."',config:cast});
+  const message=(await h.result()).message;assert.equal(message.error,undefined);
+  const line=message.result.segments.find(segment=>segment.unison);
+  assert.deepEqual([...line.unison.map(member=>[member.speaker,member.voice])],[['Levi','low'],['Cole','bright']]);assert.equal(line.text,'"Hello."');assert.equal(message.result.npcs.length,0);
+});
 const castConfig={...config,fixed:[...config.fixed,{speaker:'Mira',voice:'Kore',style:''}]};
 test('Gemini accepts speech beyond the old 2000-character cap when it fits the input budget',async()=>{
   let calls=0;const h=await harness(null,async(url,options)=>{calls++;assert.equal(JSON.parse(options.body).contents[0].parts[0].text.length,3000);return {status:200,body:JSON.stringify({candidates:[{content:{parts:[{inlineData:{data:'YQ==',mimeType:'audio/wav'}}]}}]})};});
@@ -209,6 +218,14 @@ test('planner uses user identity and routes replies only to the originating brow
   assert.equal(request.userId,'user-a');assert.equal(result.user,'user-a');assert.equal(result.options.frontendSessionId,'session-a');
   assert.equal(request.type,'raw');assert.equal(request.parameters.max_tokens,8192);assert.equal(request.reasoning.source,'off');assert.equal(request.connection_id,'llm-a');
   assert.equal(result.message.result.segments[0].voice,'Charon');
+});
+
+test('generic card analysis reads freeform profiles and requires source evidence without TTS calls',async()=>{
+ let request,calls=0;
+ const card={name:'Closing Time',description:'Adrian is the captain, with a low voice. Ethan is his teammate, with a brighter voice.',scenario:'They run the station together.'};
+ const h=await harness(async input=>{calls++;request=input;return {content:JSON.stringify({roles:[{name:'Adrian',description:'A low-voiced captain.',evidence:'Adrian is the captain'},{name:'Ethan',description:'A brighter-voiced teammate.',evidence:'Ethan is his teammate'}]})};});
+ h.send('cardCast',{card,connectionId:'llm-a'});const result=(await h.result()).message;assert.equal(result.error,undefined);assert.deepEqual([...result.result.roles.map(role=>role.name)],['Adrian','Ethan']);assert.equal(calls,1);assert.match(request.messages[0].content,/regardless of formatting or title/);assert.match(request.messages[0].content,/untrusted data/);assert.equal(JSON.parse(request.messages[1].content).description,card.description);assert.equal(request.userId,'user-a');
+ const bad=await harness(async()=>({content:JSON.stringify({roles:[{name:'Invented',description:'A stranger.',evidence:'Not present in the card.'}]})}));bad.send('cardCast',{card});assert.match((await bad.result()).message.error,/source evidence/);
 });
 test('retries a malformed plan once and surfaces failure instead of speaking altered text',async()=>{
   let calls=0;const h=await harness(async()=>{calls++;return {content:'{"segments":[{"speaker":"Narrator","text":"Wrong."}]}'};});
