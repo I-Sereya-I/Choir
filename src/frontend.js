@@ -111,6 +111,9 @@ export async function setup(ctx) {
     .ensemble-tts .et-btn-group{display:flex;gap:6px;align-items:center}
     .choir-mixer[hidden],.choir-mixer.cm-hidden{display:none !important}
     ::highlight(choir-speaking){background-color:var(--lumiverse-primary-020,rgba(147,112,219,.25))}
+    .choir-follow-resume{position:fixed;z-index:50;transform:translateX(-50%);padding:8px 14px;border-radius:999px;border:1px solid color-mix(in srgb,var(--lumiverse-primary-deep-contrast,#fff) 16%,transparent);background:var(--lumiverse-primary-deep,#121824);color:var(--lumiverse-primary-deep-contrast,#fff);font:600 12px/1.2 system-ui,sans-serif;box-shadow:0 6px 18px #0006;cursor:pointer}
+    .choir-follow-resume[hidden]{display:none}
+    .choir-follow-resume:focus-visible{outline:2px solid currentColor;outline-offset:2px}
     .choir-mixer{--cm-accent:#c4b5fd;--cm-muted:#a6afc2;--cm-line:#ffffff12;position:fixed;z-index:10000;display:flex;flex-direction:column;box-sizing:border-box;max-width:calc(100vw - 24px);max-height:min(640px,calc(100dvh - 24px));overflow:hidden;background:linear-gradient(150deg,#1d2435,#121824 65%);color:#f1f3fa;border:1px solid #ffffff1c;box-shadow:0 16px 48px #0007,0 2px 8px #0004;font:13px/1.4 system-ui,sans-serif;color-scheme:dark;isolation:isolate}
     .choir-mixer *{box-sizing:border-box}
     .choir-mixer button{appearance:none;cursor:pointer;border:0;background:transparent;color:inherit;padding:0;font:inherit;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;transition:background .15s,color .15s}
@@ -438,7 +441,9 @@ export async function setup(ctx) {
       {speaker:'Character',voice:'',style:''} ]});
   const withoutSecrets=c=>({...c,jevApiKey:''});
   const planKey=async(chat,message)=>`plan:${await sha256Hex(JSON.stringify([chat,message]))}`;
-  let readAlongStop=null,followContainer=null,followPaused=false,followGroup=null;
+  let readAlongStop=null,followContainer=null,followPaused=false,followGroup=null,followRange=null,followWord=false;
+  const followResume=document.createElement('button');followResume.type='button';followResume.className='choir-follow-resume';followResume.hidden=true;
+  document.body.append(followResume);unsubs.push(()=>followResume.remove());
   let currentSpeaker='', audioContext, currentGain, currentNormalize=1, activePlayback,advancePlayback,skipAudio,audioReady=false,generationPolicyChanged,mixerPlaybackSegments=null,bedsPaused=false;
   // Keep the launcher unobtrusive on every load, including existing expanded preferences.
   const savedMixer=await ctx.settings.get('ui:mixer').catch(()=>null);let mixerState={master:1,sfx:1,ambience:1,music:1,levelsCollapsed:true,channelTab:'',channels:{},x:20,y:80,enabled:savedMixer?(savedMixer.enabled??true):Boolean(config?.enableMixer),...(savedMixer||{}),collapsed:true};
@@ -2222,7 +2227,7 @@ export async function setup(ctx) {
     if(autoPlay && !streaming && token===revision)await play();
   }
   // Read-along draws with the CSS Custom Highlight API, so Lumiverse's React-owned message DOM is never changed.
-  function clearReadAlong(){readAlongStop?.();readAlongStop=null;followContainer=null;followPaused=false;followGroup=null;globalThis.CSS?.highlights?.delete('choir-speaking');}
+  function clearReadAlong(){readAlongStop?.();readAlongStop=null;followContainer=null;followPaused=false;followGroup=null;followRange=null;followResume.hidden=true;globalThis.CSS?.highlights?.delete('choir-speaking');}
   function scrollParent(node){
     for(let element=node.parentElement;element;element=element.parentElement)if(/auto|scroll|overlay/.test(document.defaultView.getComputedStyle(element).overflowY) && element.scrollHeight>element.clientHeight)return element;
     return null;
@@ -2233,6 +2238,18 @@ export async function setup(ctx) {
     if(!rect || rect.top>=box.top+box.height*0.1 && rect.bottom<=box.top+box.height*0.85)return;
     container.scrollTo({top:container.scrollTop+rect.top-box.top-box.height/3,behavior:'smooth'});
   }
+  // After the reader scrolls away, a pill over the chat returns to the narration without stopping playback.
+  const followRect=()=>{const rects=followRange?.getClientRects();return rects?.[followWord?rects.length-1:0];};
+  function placeFollowResume(){
+    const rect=followRect();
+    if(!followPaused || !config?.followNarration || !followContainer || !rect){followResume.hidden=true;return;}
+    const box=followContainer.getBoundingClientRect(),view=document.defaultView;
+    const safe=parseFloat(view.getComputedStyle(followContainer).getPropertyValue('--lcs-input-safe-zone')) || 0;
+    const label=`${rect.top<box.top?'↑':'↓'} Back to narration`;
+    if(followResume.textContent!==label)followResume.textContent=label;
+    followResume.style.left=`${box.left+box.width/2}px`;followResume.style.bottom=`${view.innerHeight-box.bottom+safe+12}px`;followResume.hidden=false;
+  }
+  followResume.onclick=()=>{followPaused=false;followResume.hidden=true;if(followContainer)followLine(followRect(),followContainer);};
   // items are every clip of this playback in order, so repeated phrases map to the right occurrence.
   function followSpeech(audio,{messageId,items,index}){
     const highlights=globalThis.CSS?.highlights,{MutationObserver,NodeFilter}=document.defaultView;
@@ -2248,6 +2265,7 @@ export async function setup(ctx) {
     const observer=new MutationObserver(()=>{mapped=null;});
     const tick=()=>{
       request=globalThis.requestAnimationFrame(tick);
+      if(followPaused)placeFollowResume();
       const mode=config?.readAlong,draw=mode==='passage' || mode==='word',word=mode==='word';
       if(!draw && !config?.followNarration){if(shown)highlights.delete('choir-speaking');shown='';return;}
       // Streaming and virtualized remounts replace the rendered text, so map again after any change.
@@ -2280,6 +2298,7 @@ export async function setup(ctx) {
       while(right<tail.length && mark.test(tail[right]))right++;
       const range=document.createRange();range.setStart(mapped.nodes[first],left);range.setEnd(mapped.nodes[last],right);
       if(draw)highlights.set('choir-speaking',new globalThis.Highlight(range));else highlights.delete('choir-speaking');
+      followRange=range;followWord=word;
       if(config.followNarration && !followPaused){
         followContainer||=scrollParent(element);
         const rects=range.getClientRects();

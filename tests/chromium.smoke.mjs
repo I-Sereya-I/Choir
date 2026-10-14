@@ -66,10 +66,15 @@ try{
   await readPage.locator('[data-et="readAlong"]').selectOption('passage');await readPage.evaluate(()=>{document.querySelector('article').scrollTop=0;window.readLog=[''];});
   await readPage.locator('[data-choir-action="playback"]').click();await readPage.waitForFunction(()=>window.readLog.includes('The hall fell silent.'));
   await readPage.locator('article').hover();await readPage.mouse.wheel(0,-2000);await readPage.waitForFunction(()=>document.querySelector('article').scrollTop===0);
-  await readPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
+  const resume=readPage.getByRole('button',{name:'↓ Back to narration',exact:true});await resume.waitFor();
   assert.equal(await readPage.evaluate(()=>document.querySelector('article').scrollTop),0,'reader scrolling pauses Follow narration');
+  const pill=await resume.boundingBox(),chat=await readPage.locator('article').boundingBox();assert.ok(Math.abs(pill.x+pill.width/2-chat.x-chat.width/2)<1 && pill.y+pill.height<=chat.y+chat.height,JSON.stringify({pill,chat}));
+  if(process.env.CHOIR_FOLLOW_RESUME_SCREENSHOT)await readPage.screenshot({path:process.env.CHOIR_FOLLOW_RESUME_SCREENSHOT,clip:{x:chat.x,y:chat.y,width:chat.width,height:chat.height}});
+  await resume.click();await readPage.waitForFunction(()=>document.querySelector('article').scrollTop>0);assert.equal(await resume.isVisible(),false);
+  await readPage.waitForFunction(()=>document.querySelector('[data-et="status"]').textContent.includes('Playback finished'));
   assert.deepEqual(await readPage.evaluate(()=>window.readLog.filter(Boolean)),['The hall fell silent.','“Welcome.”','A new story begins.']);
-  await readPage.evaluate(()=>window.cleanup());await readPage.close();console.log('PASS: Chrome highlights the spoken passage and words in a Lumiverse-shaped message without changing it, follows narration in the chat scroller, and stops following after reader scrolling.');
+  assert.equal(await readPage.locator('.choir-follow-resume').isVisible(),false);
+  await readPage.evaluate(()=>window.cleanup());await readPage.close();console.log('PASS: Chrome highlights the spoken passage and words in a Lumiverse-shaped message without changing it, follows narration in the chat scroller, stops following after reader scrolling, and resumes it from Back to narration without stopping playback.');
   const filterPage=await browser.newPage({viewport:{width:1440,height:1000}});filterPage.on('pageerror',error=>errors.push(error.message));
   await filterPage.goto(`http://127.0.0.1:${server.address().port}`);await filterPage.waitForFunction(()=>window.ready);
   await filterPage.getByRole('button',{name:'Open Choir voice mixer',exact:true}).click();
