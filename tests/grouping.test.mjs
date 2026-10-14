@@ -15,6 +15,15 @@ test('short opening clip is followed by longer bounded clips without losing text
   assert.ok(result.slice(1).some(item=>item.text.length>1800));assert.ok(result.every(item=>item.text.length<=2400));
   assert.equal(result.map(item=>item.text).join(' ').replace(/\s+/g,' '),text);
 });
+
+test('a moderate dialogue-narration-dialogue passage stays in one multi-speaker call beyond 600 characters',()=>{
+  const turns=[turn('Alice','"'+('I want to explain what happened and how I felt. '.repeat(5)).trim()+'"'),turn('Narrator','She rested her hand on the table and looked up at him. '.repeat(3).trim()),turn('Alice','"'+('We can talk about this honestly and work through it together. '.repeat(5)).trim()+'"')];
+  const text=turns.map(turn=>turn.text).join('\n');assert.ok(text.length>600 && text.length<900);
+  for(const sfx of [false,true]){
+    const result=batch(turns,{sfx});assert.equal(result.length,1);assert.equal(result[0].dialogue,true);assert.deepEqual(result[0].turns,turns);
+  }
+  assert.ok(groupedSpeechBatches(turns,500,'gemini',limits).length>1);
+});
 test('SFX stays between clips and bounds later requests to 900 characters',()=>{
   const cue={kind:'sfx',route:'sfx',speaker:'SFX',text:'[SFX: door]',sfx:{query:'door'}};
   const result=batch([turn('Narrator','Before.'),cue,turn('Alice','After. '.repeat(250))],{sfx:true});

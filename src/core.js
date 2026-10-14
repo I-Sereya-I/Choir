@@ -668,13 +668,17 @@ export function speechBatches(segments,maxChars,defaultRoute,batchGemini=true,li
 // The caller supplies provider capabilities and delivery/mixer compatibility.
 export function groupedSpeechBatches(segments,maxChars,defaultRoute,limitsForSegment,{sfx=false,startup=true}={}) {
   const batches=[],queue=segments.map(segment=>({...segment}));
-  let current=null,first=startup,currentLimits;
+  let current=null,first=startup,currentLimits,openingLimit;
   const flush=()=>{if(current){batches.push(current);if(!current.kind)first=false;current=null;}};
   const turnsFor=batch=>batch.turns || [{...batch}];
   while(queue.length){
     const source=queue.shift(),route=source.route || defaultRoute;
     if(source.kind){flush();batches.push({...source,route});continue;}
-    const limits=limitsForSegment(source,route),cap=Math.min(maxChars,limits.maxChars || maxChars,first?600:sfx?900:2400);
+    const limits=limitsForSegment(source,route),opening=sfx?900:1200;
+    // Keep a moderate passage intact. A long opening turn still starts with a
+    // short clip; later requests remain bounded by the provider and user limit.
+    openingLimit ??= source.text.length<=opening?opening:600;
+    const cap=Math.min(maxChars,limits.maxChars || maxChars,first?openingLimit:sfx?900:2400);
     const turns=current?turnsFor(current):[],names=new Map(turns.map(turn=>[turn.speaker,turn.voice]));
     const compatible=current && current.route===route && currentLimits.group===limits.group &&
       (!names.has(source.speaker) || names.get(source.speaker)===source.voice) &&

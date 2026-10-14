@@ -669,13 +669,17 @@ function speechBatches(segments,maxChars,defaultRoute,batchGemini=true,limitsFor
 // The caller supplies provider capabilities and delivery/mixer compatibility.
 function groupedSpeechBatches(segments,maxChars,defaultRoute,limitsForSegment,{sfx=false,startup=true}={}) {
   const batches=[],queue=segments.map(segment=>({...segment}));
-  let current=null,first=startup,currentLimits;
+  let current=null,first=startup,currentLimits,openingLimit;
   const flush=()=>{if(current){batches.push(current);if(!current.kind)first=false;current=null;}};
   const turnsFor=batch=>batch.turns || [{...batch}];
   while(queue.length){
     const source=queue.shift(),route=source.route || defaultRoute;
     if(source.kind){flush();batches.push({...source,route});continue;}
-    const limits=limitsForSegment(source,route),cap=Math.min(maxChars,limits.maxChars || maxChars,first?600:sfx?900:2400);
+    const limits=limitsForSegment(source,route),opening=sfx?900:1200;
+    // Keep a moderate passage intact. A long opening turn still starts with a
+    // short clip; later requests remain bounded by the provider and user limit.
+    openingLimit ??= source.text.length<=opening?opening:600;
+    const cap=Math.min(maxChars,limits.maxChars || maxChars,first?openingLimit:sfx?900:2400);
     const turns=current?turnsFor(current):[],names=new Map(turns.map(turn=>[turn.speaker,turn.voice]));
     const compatible=current && current.route===route && currentLimits.group===limits.group &&
       (!names.has(source.speaker) || names.get(source.speaker)===source.voice) &&
@@ -1372,7 +1376,8 @@ export async function setup(ctx) {
     </div>
     <div style="margin-top:10px">
       <label class="et-check"><input data-et="batchSpeech" type="checkbox"> Group speech requests (fewer calls)</label>
-      <small style="display:block;margin-top:6px">Groups compatible Fish S2/Gemini voices or consecutive passages from the same voice. Starts with a short clip, then groups longer speech; SFX cues stay separate. Grouped clips share a level: speaker level and Silent changes apply on the next Play. Master changes immediately; No voice stops grouped playback.</small>
+      <small style="display:block;margin-top:6px">Keeps moderate passages together with compatible Fish S2/Gemini voices, or consecutive passages from the same voice. Long openings still start with a short clip. SFX cues, request limits and different speaker settings can separate calls. Grouped clips share a level: speaker level and Silent changes apply on the next Play. Master changes immediately; No voice stops grouped playback.</small>
+      <small data-et="groupingStatus" role="status" style="display:block;margin-top:6px" hidden></small>
     </div>
     <div data-et="jevPlannerBox" hidden class="et-grid" style="margin-top:10px">
       <label>Decision connection<select data-et="decisionConnection"><option value="">Default Decision connection</option></select></label>
@@ -1747,6 +1752,7 @@ export async function setup(ctx) {
   function renderMixer(){
     const doc=root?.ownerDocument || (typeof document!=='undefined'?document:null);
     if(!doc)return;
+    updateGroupingStatus();
     refreshAutoPlanControls();
     const focused=doc.activeElement,focusLabel=channelsRoot.contains(focused)?focused.getAttribute('aria-label'):null,focusTabKey=channelTabs.contains(focused)?focused.dataset.channelKey:null,scrollTop=channelsRoot.scrollTop;
     updateNextControls();
@@ -1762,7 +1768,7 @@ export async function setup(ctx) {
       const dot=doc.createElement('span');dot.className='cm-channel-dot';dot.setAttribute('aria-hidden','true');
       const readout=doc.createElement('span');readout.className='cm-percent';readout.setAttribute('aria-hidden','true');head.append(dot,name,readout);
       const controls=doc.createElement('div');controls.className='cm-channel-controls';
-      const volume=makeMixerVolume(speaker,channel.volume,readout,value=>{channel.volume=value;applyVolume();},MAX_CHANNEL_VOLUME);
+      const volume=makeMixerVolume(speaker,channel.volume,readout,value=>{channel.volume=value;applyVolume();updateGroupingStatus();},MAX_CHANNEL_VOLUME);
       const silent=doc.createElement('button');silent.type='button';silent.className='cm-toggle';silent.dataset.kind='silent';silent.innerHTML=channel.mute?ICON_MUTED:ICON_SOUND;silent.setAttribute('aria-label',`${speaker} silent`);silent.setAttribute('aria-pressed',String(Boolean(channel.mute)));silent.title='Silent: mute playback. Audio can still be generated and cached.';silent.onclick=()=>{channel.mute=!channel.mute;applyVolume();renderMixer();persistMixer();};
       controls.append(volume);head.append(silent);
       const noVoice=doc.createElement('button');noVoice.type='button';noVoice.className='cm-toggle';noVoice.dataset.kind='no-voice';noVoice.innerHTML=speakerExcluded(speaker)?ICON_MIC_OFF:ICON_MIC;noVoice.setAttribute('aria-label',`${speaker} no voice`);noVoice.setAttribute('aria-pressed',String(speakerExcluded(speaker)));noVoice.title='No voice: skip this character, including cached playback. No new audio is generated; text and saved audio stay available.';noVoice.onclick=()=>run(()=>setSpeakerExcluded(speaker,!speakerExcluded(speaker)));head.append(noVoice);
@@ -3526,6 +3532,23 @@ export async function setup(ctx) {
         const nativeStyle=connection?.provider.startsWith('google')?String(effective.speech_style ?? effective.instructions ?? 'casual, relaxed conversation, natural pacing, understated expression'):'';
         return {chars:text.length,bytes:new TextEncoder().encode(text+styles+nativeStyle.repeat(turns.length)).length};
       }};
+  }
+  function updateGroupingStatus(){
+    const node=$('groupingStatus');if(!node)return;
+    node.hidden=!config?.batchSpeech;if(node.hidden)return;
+    const route=scope(config),connection=nativeConnections.find(item=>`native:${item.id}`===route);
+    const capability=nativeProviders.find(item=>item.id===connection?.provider)?.capabilities?.multiSpeaker;
+    const maxSpeakers=route==='gemini'?2:capability && (!capability.models || capability.models.includes(connection?.model))?capability.maxSpeakers:0;
+    const name=route==='gemini'?'Gemini':connection?.name || 'This connection';
+    const support=maxSpeakers?`${name} can combine up to ${maxSpeakers} ${route==='gemini' || connection?.provider.startsWith('google')?'preset ':''}voices per call.`:`${name} accepts one voice per call; different assigned voices need separate calls.`;
+    let count='';
+    if(plan?.segments?.length){
+      try{const batches=playbackBatches(plan.segments.map((segment,passageIndex)=>({...segment,passageIndex})),config);
+        const speech=batches.filter(batch=>!batch.kind).length;
+        count=` This plan: ${speech} speech ${speech===1?'batch':'batches'}${batches.some(batch=>batch.kind==='sfx')?'; SFX cues separate batches':''}. Cached audio needs no new TTS call.`;
+      }catch{}
+    }
+    node.textContent=support+count;
   }
   function ttsBatches(segments,snapshot,batchGemini=false,startup=true){
     if(snapshot.batchSpeech)return groupedSpeechBatches(segments,snapshot.chunk,scope(snapshot),(segment,route)=>groupedLimits(segment,route,snapshot),{sfx:snapshot.enableSfx!==false,startup})

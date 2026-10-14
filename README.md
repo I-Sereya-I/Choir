@@ -4,16 +4,16 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.15-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.16-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-332%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-335%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
 </div>
 
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.6-staging.15** places SFX between complete spoken phrases, preserving a subject with its action and rebuilding older SFX recordings from saved attribution. Complete phone widgets with a single CSS checkbox toggle are excluded, including notifications and expandable notes, while the surrounding story is preserved. **Planner LLM connection** stays visible. Optional **Group speech requests (fewer calls)** uses bounded multi-speaker clips, a short opening request, longer later speech with SFX off, and cue boundaries with SFX on. Native Fish/Google grouping uses the supplied Lumiverse relay patch; older hosts keep separate speakers. The mixer follows Lumiverse theme colors, and heuristic planning retains named persona attribution and specific explanations when a voice or speaker tag is missing.
+This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.6-staging.16** keeps moderate dialogue–narration–dialogue passages in one compatible multi-speaker request beyond the previous 600-character opening limit. The grouping control shows the selected connection's voice support and the current plan's speech-batch count. SFX stays between complete spoken phrases, and phone widgets are excluded while the surrounding story is preserved. **Planner LLM connection** stays visible. Native Fish/Google grouping uses the supplied Lumiverse relay patch; older hosts keep separate speakers. The mixer follows Lumiverse theme colors, and heuristic planning retains named persona attribution and specific explanations when a voice or speaker tag is missing.
 
 
 The floating mixer’s panel, launcher, text, tabs, sliders, volume fields and button states update immediately when you edit the theme or switch between light and dark mode. Enabled switches use the theme's success color, Silent uses its warning color, and No voice uses its primary color.
@@ -72,7 +72,7 @@ Advanced **Max characters per request** accepts a whole number from **80 to 1000
 
 **Planner LLM connection** stays visible for every planner engine. Selecting a connection does not make heuristic attribution use an LLM; it also supplies optional sound-cue planning.
 
-**Group speech requests (fewer calls)** in **Speech & Planner** is optional and off by default. It combines compatible adjacent speech instead of requesting each turn separately. The first clip is capped at **600 characters**, then later clips at **2400 characters** with SFX off or **900 characters** with SFX on, always within your Max characters setting and the provider limits. SFX, ambience and music cue markers interrupt grouping at their original positions. Existing concurrency and prefetch settings still bound the queue; completed clips are cached and reused.
+**Group speech requests (fewer calls)** in **Speech & Planner** is optional and off by default. It combines compatible adjacent speech instead of requesting each turn separately. Moderate opening passages can use up to **1200 characters** with SFX off or **900 characters** with SFX on. A long opening turn still starts with a **600-character** clip, then later clips use up to **2400 characters** with SFX off or **900 characters** with SFX on, always within your Max characters setting and the provider limits. A dialogue–narration–dialogue passage within these limits can be one Fish S2/Gemini request with each assigned voice preserved. The control shows voice support for the selected connection and the number of speech batches in the plan; cached batches need no new TTS call. Single-voice providers such as the current OpenAI adapter still need separate calls for different voice IDs. SFX, ambience and music cue markers interrupt grouping at their playback boundaries. Existing concurrency and prefetch settings still bound the queue; completed clips are cached and reused.
 
 Grouping can combine up to **two prebuilt Gemini voices** or **five Fish S2 voices** on the same connection. Gemini custom voices remain separate. Different connections, delivery parameters or speaker levels start new clips. Providers without multi-speaker support can still combine consecutive passages with the same speaker, voice and delivery. Grouped clips share one audio level. Master changes immediately; individual level and Silent changes apply on the next Play, which separates unequal levels. Changing **No voice** stops grouped playback; Play rebuilds it without the excluded character. Previous/Next move between the grouped clips, while read-along estimates the turn position within each clip.
 

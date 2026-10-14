@@ -1498,6 +1498,29 @@ test('optional Fish grouping sends four turns in one request and cached replay m
     await toggle(h,'batchSpeech',false);await h.play();assert.equal(h.synthesis.length,5);
   }finally{await h.close();}
 });
+
+test('Fish S2 sends a moderate dialogue-narration-dialogue passage as one call with both voice IDs',async()=>{
+ const h=await fishGroupingHarness();try{
+  const passage=['"'+('I want to explain what happened and how I felt. '.repeat(5)).trim()+'"','She rested her hand on the table, watched him quietly and considered everything he had said, drawing a slow breath as the room settled around them.','"'+('We can talk about this honestly and work through it together. '.repeat(5)).trim()+'"'].join(' ');
+  assert.ok(passage.length>600 && passage.length<900);h.message.content=passage;
+  await h.plan();assert.match(h.$('groupingStatus').textContent,/up to 5 voices per call/);assert.match(h.$('groupingStatus').textContent,/1 speech batch/);
+  await h.play();assert.equal(h.synthesis.length,1);assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>[turn.speaker,turn.voice]),[['Mira','m'],['Narrator','n'],['Mira','m']]);
+  assert.equal(h.synthesis[0].parameters.turns.map(turn=>turn.text).join(' '),passage);
+  await h.reload();await h.play();assert.equal(h.synthesis.length,1);
+ }finally{await h.close();}
+});
+
+test('grouping status explains a single-voice provider and updates its batch count with speaker levels',async()=>{
+ const h=await harness();try{
+  await toggle(h,'batchSpeech',true);await h.plan();assert.equal(h.$('groupingStatus').hidden,false);assert.match(h.$('groupingStatus').textContent,/one voice per call; different assigned voices need separate calls/);assert.match(h.$('groupingStatus').textContent,/4 speech batches/);
+  await toggle(h,'batchSpeech',false);assert.equal(h.$('groupingStatus').hidden,true);
+ }finally{await h.close();}
+ const fish=await fishGroupingHarness();try{
+  await fish.plan();assert.match(fish.$('groupingStatus').textContent,/1 speech batch/);
+  const level=document.querySelector('[aria-label="Mira volume percent"]');level.value='50';level.dispatchEvent(new fish.dom.window.Event('input',{bubbles:true}));
+  assert.match(fish.$('groupingStatus').textContent,/3 speech batches/);
+ }finally{await fish.close();}
+});
 test('grouping falls back to separate calls for unequal speaker levels and old relays',async()=>{
   for(const oldRelay of [false,true]){
     const h=await fishGroupingHarness(oldRelay?undefined:{channels:{Mira:{volume:0.5}}});try{
