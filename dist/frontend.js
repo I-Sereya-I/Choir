@@ -837,7 +837,7 @@ function fastClassifyPlan(transcript, config, failure) {
   const findSpeakerInTag = (tagText) => {
     const matches=candidates.filter(cand=>[cand.speaker,...(cand.aliases || [])].some(name=>{
         if(!name.trim())return false;
-        const esc = name.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+        const esc = name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         return new RegExp('(?<![\\p{L}\\p{N}_])' + esc + '(?![\\p{L}\\p{N}_])', 'iu').test(tagText);
     }));
     return {actor:matches.length===1?matches[0]:null,ambiguous:matches.length>1,matches};

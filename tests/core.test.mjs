@@ -495,6 +495,13 @@ test('fastClassifyPlan uses dialogue tag attribution and detects emotion style',
   assert.equal(plan.segments[2].style, 'whispering');
 });
 
+test('heuristic attribution accepts hyphenated character names and aliases with Unicode matching',()=>{
+  const c=config(),actor=c.fixed.find(actor=>actor.speaker==='Alice');
+  actor.speaker='Gabrielle - Debug';actor.aliases=['Gabi-X'];
+  const plan=fastClassifyPlan('Gabrielle - Debug said, "Hello." Gabi-X said, "Ready."',c);
+  assert.ok(plan);assert.deepEqual(plan.segments.filter(segment=>segment.text.startsWith('"')).map(segment=>segment.speaker),['Gabrielle - Debug','Gabrielle - Debug']);
+});
+
 test('local one-on-one attribution recognizes a named persona and keeps explicit persona turns',()=>{
   const c=config();c.fixed.splice(1,0,{speaker:'Jay',voice:'Puck',style:''});c.personaSpeaker='Jay';
   const text='The door opened. "Hello." Jay said, "Welcome."';
