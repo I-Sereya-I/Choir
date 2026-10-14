@@ -93,36 +93,79 @@ export function normalizeName(value) {
 
 // Multi-character cards commonly give each person a top-level heading or named XML section.
 // Require those explicit profiles before splitting a title: "War and Peace" is not a cast list.
-export function characterCardRoles(card={}) {
-  const description=String(card.description || '');
+export function characterCardRoles(card={}) {return characterCardRoleDiscovery(card).roles;}
+
+// Check all card fields and keep each profile inside its own section.
+export function characterCardRoleDiscovery(card={}) {
+  const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const clean=value=>value.replace(/[*_`]/g,'').replace(/^character(?:\s+\d+)?\s*:\s*/i,'').replace(/(?:['’]s)?\s+(?:data|profile|details|character sheet)$/i,'').trim();
+  const title=String(card.name || '').split(/\s*\|\s*/)[0];
+  const titleNames=title.split(/\s+and\s+|\s*[&+]\s*|,\s*/i).map(name=>name.trim()).filter(Boolean);
+  const nameFields=text=>[...text.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?(?:Character\s+)?Name(?:\*\*)?\s*:\s*([^\n\r]+)/gim)].map(match=>clean(match[1]));
+  const profiles=[];let needsAnalysis=false;
+  const add=(name,aliases,description,start)=>profiles.push({name,aliases,description:description.trim().slice(0,8000),__start:start});
+  for(const field of ['description','personality','scenario','first_mes']){
+  const fieldStart=profiles.length;
+  const description=String(card[field] || '');
+  if(!description.trim())continue;
   try{
     const data=JSON.parse(description.replace(/^\s*```(?:json)?\s*|\s*```\s*$/g,''));
     const entries=Array.isArray(data)?data:data.characters || data.cast || data.profiles;
-    if(Array.isArray(entries) && entries.length>1)return validateCardRoles(entries.map(entry=>({name:entry.name,aliases:entry.aliases || [],description:typeof entry.description==='string'?entry.description:JSON.stringify(entry)})));
+    if(Array.isArray(entries) && entries.length){
+      profiles.push(...validateCardRoles(entries.map(entry=>({name:entry.name,aliases:entry.aliases || [],description:typeof entry.description==='string'?entry.description:JSON.stringify(entry)}))));
+      continue;
+    }
   }catch{}
-  const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  const cleanHeading=value=>value.replace(/[*_`]/g,'').replace(/^character(?:\s+\d+)?\s*:\s*/i,'').replace(/(?:['’]s)?\s+(?:data|profile|details|character sheet)$/i,'').trim();
-  const headings=[...description.matchAll(/^#{1,6}[ \t]+([^#\n\r]{1,100})[ \t]*$/gm)].map(match=>({name:cleanHeading(match[1]),start:match.index,end:match.index+match[0].length}));
+  const headings=[...description.matchAll(/^(#{1,6})[ \t]+([^#\n\r]{1,100})[ \t]*$/gm)].map(match=>({name:clean(match[2]),level:match[1].length,start:match.index,end:match.index+match[0].length}));
   const sections=[...description.matchAll(/(?=<([\w-]+)\b[^>]*>([\s\S]*?)<\/\1\s*>)/g)].map(match=>({tag:match[1],text:match[2],start:match.index})).sort((a,b)=>a.text.length-b.text.length);
-  const title=String(card.name || '').split(/\s*\|\s*/)[0];
-  const names=title.split(/\s+(?:and|&|\+)\s+|,\s*/i).map(name=>name.trim()).filter(Boolean);
-  const explicitSections=sections.flatMap(section=>{
-    const names=[...section.text.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?(?:Character\s+)?Name(?:\*\*)?\s*:\s*([^\n\r]+)/gim)];
-    return names.length===1?[{name:names[0][1].replace(/[*_`]/g,'').trim(),description:section.text.trim().slice(0,8000),start:section.start}]:[];
+  const candidates=headings.flatMap((heading,index)=>{
+    const next=headings[index+1];
+    const block=description.slice(heading.end,next?.start),names=nameFields(block);
+    const inTitle=titleNames.some(name=>normalizeName(name)===normalizeName(heading.name));
+    const namedSection=sections.some(section=>normalizeName(section.tag.replace(/[_-]/g,' '))===normalizeName(heading.name));
+    const explicitLead=!/^(?:speech|personality|appearance|background|history|relationships|likes|dislikes|behavio[u]?r|notes|details|voice|goals|traits|scenario)$/i.test(heading.name) && /\b(?:lead|primary character|main character|playable character)\b/i.test(block);
+    return names.length===1 || inTitle || namedSection || explicitLead?[{...heading,fullName:names.length===1?names[0]:undefined}]:[];
   });
-  const sectionNames=new Set(),distinctSections=explicitSections.filter(role=>{const name=normalizeName(role.name);if(sectionNames.has(name))return false;sectionNames.add(name);return true;}).sort((a,b)=>a.start-b.start);
-  if(names.length<2 && distinctSections.length>1)return validateCardRoles(distinctSections.map(role=>({...role,aliases:role.name.includes(' ')?[role.name.split(' ')[0]]:[]})));
-  const candidates=names.length>1?names:headings.filter(heading=>new RegExp(`<${escape(heading.name)}(?:\\s|>)`,'i').test(description)).map(heading=>heading.name);
-  const roles=candidates.slice(0,20).flatMap(name=>{
-    const heading=headings.find(item=>normalizeName(item.name)===normalizeName(name));
-    const section=sections.find(item=>normalizeName(item.tag.replace(/[_-]/g,' '))===normalizeName(name) || new RegExp(`^\\s*(?:[-*]\\s*)?(?:\\*\\*)?Name(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?${escape(name)}(?=\\s|$)`,'im').test(item.text));
-    if(!heading && !section)return [];
-    const next=heading && headings.find(item=>item.start>heading.start && candidates.some(candidate=>normalizeName(candidate)===normalizeName(item.name)));
-    const profile=(section?.text || description.slice(heading.start,next?.start)).trim();
-    const fullName=/^\s*(?:[-*]\s*)?(?:\*\*)?Name(?:\*\*)?\s*:\s*([^\n\r]+)/im.exec(profile)?.[1].replace(/[*_`]/g,'').trim();
-    return [{name,...(fullName && normalizeName(fullName)!==normalizeName(name)?{aliases:[fullName]}:{}),description:profile.slice(0,8000)}];
-  });
-  return new Set(roles.map(role=>normalizeName(role.name))).size===roles.length && roles.length>1?roles:[];
+  const spans=[],seenSections=new Set();
+  for(const section of sections){
+    const names=nameFields(section.text);
+    const heading=candidates.find(item=>item.start>=section.start && item.start<section.start+section.text.length && (normalizeName(item.name)===normalizeName(section.tag.replace(/[_-]/g,' ')) || names.some(name=>normalizeName(name)===normalizeName(item.fullName))));
+    const sectionTitle=titleNames.find(name=>normalizeName(name)===normalizeName(section.tag.replace(/[_-]/g,' ')));
+    if(names.length!==1 && !sectionTitle && (!heading || normalizeName(heading.name)!==normalizeName(section.tag.replace(/[_-]/g,' '))))continue;
+    const fullName=names[0] || heading?.name || sectionTitle,key=normalizeName(fullName);
+    if(seenSections.has(key))continue;seenSections.add(key);
+    const short=titleNames.find(name=>normalizeName(name)===normalizeName(heading?.name) || new RegExp(`^${escape(name)}(?:\\s|$)`,'i').test(fullName));
+    add(short || fullName,[...(short && normalizeName(short)!==key?[fullName]:[]),...(!short && fullName.includes(' ')?[fullName.split(' ')[0]]:[])],section.text,section.start);
+    spans.push([section.start,section.start+section.text.length+section.tag.length*2+5]);
+  }
+  for(const heading of candidates){
+    if(spans.some(([start,end])=>heading.start>=start && heading.start<end))continue;
+    const next=headings.find(item=>item.start>heading.start && (candidates.some(candidate=>candidate.start===item.start) || item.level<=heading.level && !/^(?:speech|personality|appearance|background|history|relationships|likes|dislikes|behavio[u]?r|notes|details|voice|goals|traits|scenario)$/i.test(item.name)));
+    const profile=description.slice(heading.start,next?.start);
+    add(heading.name,heading.fullName && normalizeName(heading.fullName)!==normalizeName(heading.name)?[heading.fullName]:[],profile,heading.start);
+    spans.push([heading.start,next?.start ?? description.length]);
+  }
+  let remainder=description;
+  for(const [start,end] of spans.sort((a,b)=>b[0]-a[0]))remainder=remainder.slice(0,start)+remainder.slice(end);
+  if(remainder.replace(/<[^>]*>|^[ \t]*#{1,6}[^\n]*$/gm,'').trim())needsAnalysis=true;
+  profiles.splice(fieldStart,profiles.length-fieldStart,...profiles.slice(fieldStart).sort((a,b)=>a.__start-b.__start));
+  }
+  const aliasOwners=new Map();
+  for(const profile of profiles)for(const alias of profile.aliases){
+    const key=normalizeName(alias),owners=aliasOwners.get(key) || new Set();
+    owners.add(normalizeName(profile.name));aliasOwners.set(key,owners);
+  }
+  const ambiguousAliases=new Set([...aliasOwners].filter(([,owners])=>owners.size>1).map(([alias])=>alias));
+  const roles=[];
+  for(const profile of profiles){
+    const names=[profile.name,...profile.aliases].map(normalizeName).filter(name=>!ambiguousAliases.has(name));
+    const existing=roles.find(role=>normalizeName(role.name)===normalizeName(profile.name) || [role.name,...role.aliases].some(name=>!ambiguousAliases.has(normalizeName(name)) && names.includes(normalizeName(name))));
+    if(existing){
+      existing.aliases=[...new Set([...existing.aliases,profile.name,...profile.aliases])].filter(name=>normalizeName(name)!==normalizeName(existing.name));
+      if(!existing.description.includes(profile.description))existing.description=(existing.description+'\n'+profile.description).slice(0,8000);
+    }else roles.push(profile);
+  }
+  return {roles:roles.length?validateCardRoles(roles):[],needsAnalysis:needsAnalysis || !roles.length};
 }
 
 export function validateCardRoles(roles) {
@@ -146,9 +189,11 @@ export function validateCardRoles(roles) {
 // cannot safely be assigned to one person from their title alone.
 export function reconcileCardCast(value,card={}) {
   const title=String(card.name || '').trim(),name=title.split(/\s*\|+\s*/)[0].trim();
-  if(!title || !name || characterCardRoles(card).length)return value;
+  const roles=characterCardRoles(card);
+  if(!title || !name || roles.length>1)return value;
   const identities=new Set([title,name].map(normalizeName));
-  const leads=(value.fixed || []).slice(2).filter(actor=>[actor.speaker,...(actor.aliases || [])].some(alias=>identities.has(normalizeName(alias))));
+  const profileNames=new Set(roles.flatMap(role=>[role.name,...role.aliases]).map(normalizeName));
+  const leads=(value.fixed || []).slice(2).filter(actor=>[actor.speaker,...(actor.aliases || [])].some(alias=>identities.has(normalizeName(alias))) && (!roles.length || profileNames.has(normalizeName(name)) || [actor.speaker,...(actor.aliases || [])].some(alias=>profileNames.has(normalizeName(alias)))));
   if(leads.length!==1)return value;
   const lead=leads[0],canonical=normalizeName(lead.speaker);
   const occupied=new Set((value.fixed || []).filter(actor=>actor!==lead).flatMap(actor=>[actor.speaker,...(actor.aliases || [])]).map(normalizeName));
@@ -391,18 +436,39 @@ export function unisonSpeakers(transcript,unit,config) {
   if(unit.kind!=='dialogue')return null;
   const following=transcript.slice(unit.end).split(/[.!?\n"“”]/)[0];
   const preceding=transcript.slice(Math.max(0,unit.start-400),unit.start).split(/["“”]/).at(-1);
-  const tag=following.match(/^\s*[,;]?\s*(.{0,100}?\b(?:say|said|reply|replied|ask|asked|shout|shouted|whisper|whispered|call|called|speak|spoke|answer|answered|cry|cried|exclaim|exclaimed)\b[^.!?]{0,50}?\b(?:in unison|together|simultaneously)\b)/i)?.[1]
-    || preceding.match(/([^.!?\n]{0,120}\b(?:say|said|reply|replied|ask|asked|shout|shouted|whisper|whispered|call|called|speak|spoke|answer|answered|cry|cried|exclaim|exclaimed)\b[^.!?]{0,50}?\b(?:in unison|together|simultaneously)\b[^.!?]*)$/i)?.[1];
+  const verbs=/\b(?:say|says|said|reply|replies|replied|ask|asks|asked|shout|shouts|shouted|yell|yells|yelled|scream|screams|screamed|whisper|whispers|whispered|call|calls|called|speak|speaks|spoke|answer|answers|answered|cry|cries|cried|exclaim|exclaims|exclaimed|chant|chants|chanted|sing|sings|sang|murmur|murmurs|murmured|declare|declares|declared)\b/i;
+  const collective=/\b(?:in (?:perfect |complete )?unison|together|simultaneously)\b/i;
+  const tag=[following,preceding.split(/[.!?\n]/).at(-1)].find(text=>text.length<=250 && verbs.test(text) && collective.test(text));
   if(!tag)return null;
   const cast=[...(config.fixed || []),...(config.npcs || [])].filter(actor=>normalizeName(actor.speaker)!=='narrator');
-  const mentioned=text=>cast.filter(actor=>[actor.speaker,...(actor.aliases || [])].some(name=>name && new RegExp(`(?<![\\p{L}\\p{N}_])${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?![\\p{L}\\p{N}_])`,'iu').test(text))).map(actor=>actor.speaker);
-  const explicit=mentioned(tag);
-  if(explicit.length>=2)return explicit;
-  if(!/\b(?:they|both|all)\b/i.test(tag))return [];
-  // Nearby named participants establish who "they" means; an explicit "both"
-  // requires exactly two people.
+  const mentions=text=>cast.flatMap(actor=>[actor.speaker,...(actor.aliases || [])].flatMap(name=>name?[...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}_])${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?![\\p{L}\\p{N}_])`,'giu'))].map(match=>({speaker:actor.speaker,start:match.index,end:match.index+match[0].length})):[])).sort((a,b)=>a.start-b.start || b.end-a.end).filter((match,index,list)=>!list.slice(0,index).some(previous=>previous.start<=match.start && previous.end>=match.end));
+  const groupIn=text=>{
+    const names=mentions(text),groups=[];let group=[];
+    for(const name of names){
+      const previous=group.at(-1),between=previous && text.slice(previous.end,name.start);
+      if(previous && !/^(?:\s*,\s*(?:(?:and|&)\s*)?|\s+(?:and|&|with|alongside)\s+)$/i.test(between)){if(group.length>1)groups.push(group);group=[];}
+      group.push(name);
+    }
+    if(group.length>1)groups.push(group);
+    return groups.at(-1)?.map(name=>name.speaker);
+  };
+  const subject=tag.slice(0,verbs.exec(tag).index);
+  const resolveGroup=group=>{const names=[...new Set(group)];return names.length>=2 && (!/\bboth\b/i.test(subject) || names.length===2)?names:[];};
+  const explicit=groupIn(subject);
+  if(explicit)return resolveGroup(explicit);
+  if(!/\b(?:they|both|all)\b/i.test(subject))return [];
   const clauses=preceding.split(/[.!?\n]/).filter(value=>value.trim());
-  const names=mentioned(clauses.slice(-3).join('. '));
+  // Prefer the nearest named group. Recipients and observers do not join it.
+  for(const clause of clauses.slice(-3).reverse()){
+    const group=groupIn(clause);
+    if(group)return resolveGroup(group);
+  }
+  const names=[...new Set(clauses.slice(-3).flatMap(clause=>{
+    const named=mentions(clause);
+    if(named.length!==1 || /\b(?:watch(?:ed|es)?|observ(?:e|es|ed)|listen(?:ed|s)?)\b/i.test(clause))return [];
+    const first=named[0];
+    return clause.slice(0,first.start).trim().replace(/^[,;]\s*/,'')?'':first.speaker;
+  }).filter(Boolean))];
   return names.length>=2 && (!/\bboth\b/i.test(tag) || names.length===2)?names:[];
 }
 
@@ -523,7 +589,7 @@ export function attributionPlan(plan, config) {
 
 export function restoreAttribution(saved, transcript, config) {
   const actors=[...config.fixed,...config.npcs];
-  return validatePlan({segments:saved.segments.map(segment=>{
+  const selection=segment=>{
     const actor=actors.find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker) || (a.aliases || []).some(alias=>normalizeName(alias)===normalizeName(segment.speaker)));
     const route=actor?.route || config.defaultRoute || '';
     const npc=!config.fixed.includes(actor);
@@ -532,12 +598,11 @@ export function restoreAttribution(saved, transcript, config) {
     const selectedRoute=selectedActor?.route || policy?.route || route;
     const choices=config.voices.filter(v=>(v.route || '')===selectedRoute && (policy?.mode!=='preferred' || policy.voices.includes(v.id)));
     const voice=selectedActor?.voice || choices.find(v=>!selectedActor?.gender || selectedActor.gender==='auto' || v.gender===selectedActor.gender)?.id;
-    const unison=segment.unison?.map(member=>{
-      const actor=actors.find(actor=>[actor.speaker,...(actor.aliases || [])].some(name=>normalizeName(name)===normalizeName(member.speaker)));
-      const route=actor?.route || config.defaultRoute || '';
-      return {...member,voice:actor?.voice || config.voices.find(voice=>(voice.route || '')===route && (!actor?.gender || actor.gender==='auto' || voice.gender===actor.gender))?.id,route};
-    });
-    return {...segment,voice,route:selectedRoute,...(unison?{unison}:{})};
+    return {voice,route:selectedRoute};
+  };
+  return validatePlan({segments:saved.segments.map(segment=>{
+    const unison=segment.unison?.map(member=>({...member,...selection(member)}));
+    return {...segment,...selection(segment),...(unison?{unison}:{})};
   })},transcript,config);
 }
 

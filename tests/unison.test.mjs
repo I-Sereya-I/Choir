@@ -1,9 +1,39 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {characterCardRoleDiscovery} from '../src/core.js';
 import {characterCardRoles,fastClassifyPlan,validatePlan,speechSourceUnits,resolvePlanReferences,attributionPlan,restoreAttribution,groupedSpeechBatches,mixUnisonAudio,unisonSpeakers} from '../src/core.js';
 
 const cast=()=>({fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Levi',voice:'l',style:'Gentle',aliases:['Levi Cline']},{speaker:'Cole',voice:'c',style:'Low',aliases:['Cole Lane']}],npcs:[],voices:['n','l','c','x'].map(id=>({id})),useStyle:true});
 const passage='They stop at the reception desk. Levi’s hand finds the edge of the counter. Cole’s hand finds his pocket. "User," they say in unison.';
+
+test('collective attribution excludes listeners and observers and supports common speech verbs',()=>{
+ const config=cast();config.fixed.push({speaker:'Judy',voice:'x',style:''});
+ for(const text of ['"Hello," Levi and Cole said to Judy in unison.','Judy watched Levi and Cole enter. "Hello," they said in unison.','"Hello," Levi and Cole yelled in unison.','Levi and Cole scream together, "Hello."','Together, Levi and Cole chanted, "Hello."']){
+  const plan=fastClassifyPlan(text,config,{});assert.ok(plan,text);assert.deepEqual(plan.segments.find(segment=>segment.unison).unison.map(member=>member.speaker),['Levi','Cole'],text);
+ }
+ const failure={};assert.equal(fastClassifyPlan('Levi, Cole and Judy arrived. "Hello," they both said in unison.',config,failure),null);assert.equal(failure.reason,'ambiguous-unison');
+ assert.equal(fastClassifyPlan('Levi told Judy where Cole stood. "Hello," they said in unison.',config,{}),null);
+});
+
+test('card profiles include leads outside the title and bound nested headings and other fields',()=>{
+ const roles=characterCardRoles({name:'Alice&Bob',description:'# Cast\n## Alice\nName: Alice Ward\n### Voice\nBright.\n## Bob\nName: Bob Gray\nDeep.\n## Clara\nName: Clara Wood\nLow alto.',personality:'<Alice>Warm.</Alice>',scenario:'# Diego\nName: Diego Stone\nA fourth lead.'});
+ assert.deepEqual(roles.map(role=>role.name),['Alice','Bob','Clara','Diego']);
+ assert.ok(!roles[0].description.includes('Deep.'));assert.ok(!roles[1].description.includes('Low alto.'));assert.ok(!roles.some(role=>role.name==='Cast'));
+ const bare=characterCardRoles({name:'Alice & Bob',description:'# Alice\nKind.\n# Bob\nQuiet.\n# Clara\nThe third lead of this card.'});assert.deepEqual(bare.map(role=>role.name),['Alice','Bob','Clara']);
+ const unknown=characterCardRoleDiscovery({name:'Alice & Bob',description:'# Alice\nKind.\n# Bob\nQuiet.',scenario:'Clara is also a playable lead.'});assert.equal(unknown.needsAnalysis,true);
+ const shared=characterCardRoles({name:'Two Alices',description:'<first>Name: Alice Smith</first><second>Name: Alice Brown</second>',personality:'<first>Name: Alice Smith</first>'});
+ assert.deepEqual(shared.map(role=>[role.name,role.aliases]),[['Alice Smith',[]],['Alice Brown',[]]]);
+});
+
+test('cached unison applies changed NPC voice pools, routes and shared-voice policy to each member',()=>{
+ const original=cast();original.fixed=original.fixed.slice(0,1);original.npcs=[{speaker:'Levi',voice:'l',style:''},{speaker:'Cole',voice:'c',style:''}];
+ const text='"Hello," Levi and Cole said in unison.',saved=attributionPlan(fastClassifyPlan(text,original,{}),original);
+ for(const mode of ['preferred','single']){
+  const updated={...original,voices:[...original.voices,{id:'pool',route:'other'}],npcPolicy:{mode,route:'other',voices:['pool'],voice:'pool'}};
+  const line=restoreAttribution(saved,text,updated).segments.find(segment=>segment.unison);
+  assert.deepEqual(line.unison.map(member=>[member.voice,member.route]),[['pool','other'],['pool','other']]);
+ }
+});
 
 test('possessive formatted headings and named XML profiles split the Levi and Cole card',()=>{
  const roles=characterCardRoles({name:'Levi & Cole',description:'<{{char}}>\n<levi_cline>\n# _Levi\'s Data_\n- Name: Levi Cline\n# Speech\nGentle and polite.\n</levi_cline>\n<cole_lane>\n# _Cole\'s Data_\n- Name: Cole Lane\n# Speech\nLow and raspy.\n</cole_lane>\n</{{char}}>'});

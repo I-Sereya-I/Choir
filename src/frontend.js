@@ -1,3 +1,4 @@
+import { characterCardRoleDiscovery } from './core.js';
 import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, planningSections, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset } from './core.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
@@ -1705,7 +1706,7 @@ export async function setup(ctx) {
     $('plannerHint').textContent=isHeuristic
       ? 'Attribution stays on this device. Ambiguous dialogue stops planning; choose Jev or LLM to resolve it. Speech synthesis still uses your TTS provider.'
       : isJev
-        ? `Jev classifies speakers. Cards without clear individual profiles use one cached Planner LLM analysis before planning.${$('allowLlmFallback')?.checked ? ' If Jev fails, the enabled LLM fallback can incur extra cost.' : ' LLM fallback is disabled.'}`
+        ? `Jev classifies speakers. Unstructured card content uses one cached Planner LLM analysis to check for additional leads before planning.${$('allowLlmFallback')?.checked ? ' If Jev fails, the enabled LLM fallback can incur extra cost.' : ' LLM fallback is disabled.'}`
         : 'Your selected LLM connection identifies the card’s individual characters, then plans speakers and voices. Card analysis is cached until the card changes. Planning and Test planner make LLM requests.';
   }
   function updateProviderVisibility() {
@@ -1803,16 +1804,17 @@ export async function setup(ctx) {
     if(planSource)await restoreSavedPlan(planSource.messageId);
     status(retentionError?`Settings saved. Audio retention could not be applied: ${retentionError}`:'Cast and audio retention saved. Saved attribution reused; changed voices generate only affected audio.');
   }
+  let cataloguesReady=false;
   async function loadProviders() {
     const version=loadVersion;
     const results=await Promise.allSettled([
       api('/tts-connections?limit=200').then(r=>r.json()),api('/tts-connections/providers').then(r=>r.json()),api('/connections?limit=200').then(r=>r.json()),api('/decision-connections?limit=200').then(r=>r.json())
     ]);
     if(disposed || version!==loadVersion)return;
-    nativeConnections=results[0].status==='fulfilled' ? results[0].value.data || [] : [];
-    nativeProviders=results[1].status==='fulfilled' ? results[1].value.providers || [] : [];
+    nativeConnections=results[0].status==='fulfilled' ? results[0].value.data || [] : nativeConnections;
+    nativeProviders=results[1].status==='fulfilled' ? results[1].value.providers || [] : nativeProviders;
     const decisionConnections=results[3].status==='fulfilled' ? results[3].value.data || [] : [];
-    if(config.mode==='native' && !nativeConnections.length) {
+    if(config.mode==='native' && results[0].status==='fulfilled' && !nativeConnections.length) {
       config.mode='gemini';
       if($('mode'))$('mode').value='gemini';
     } else if(config.mode==='native' && !config.connection && nativeConnections.length) {
@@ -1820,6 +1822,7 @@ export async function setup(ctx) {
     }
     $('connection').replaceChildren();option($('connection'),'','Choose connection');
     nativeConnections.forEach(c=>option($('connection'),c.id,`${c.name} · ${c.provider}`));
+    if(config.connection && !nativeConnections.some(connection=>connection.id===config.connection))option($('connection'),config.connection,'Saved TTS connection · unavailable');
     $('connection').value=config.connection;
     $('planner').replaceChildren();option($('planner'),'','Default LLM connection');
     const plannerConnections=results[2].status==='fulfilled'?results[2].value.data || []:[];
@@ -1837,10 +1840,11 @@ export async function setup(ctx) {
       }
       $('decisionConnection').value=config.decisionConnection || '';
     }
+    if(config.mode==='native' && results[0].status==='rejected'){renderCast();throw new Error(`Could not load TTS connections: ${results[0].reason.message}. Your selected connection is retained; use Reload to retry.`);}
     await loadVoices(version);
-    if(config.mode==='native' && results[0].status==='rejected')throw results[0].reason;
   }
   async function loadVoices(version=loadVersion) {
+    cataloguesReady=false;
     voiceCatalogues.clear();
     const catalogue=await ensureCatalogue(scope(config),version);
     if(disposed || version!==loadVersion)return;
@@ -1855,13 +1859,14 @@ export async function setup(ctx) {
     const parameters=nativeProviders.find(v=>v.id===connection?.provider)?.capabilities?.parameters || {};
     for(const node of $('styleParam').options)node.disabled=Boolean(node.value && !parameters[node.value]);
     if(config.styleParam && !parameters[config.styleParam]){config.styleParam='';$('styleParam').value='';}
-    renderCast();
+    cataloguesReady=true;renderCast();refreshSectionControls();
   }
   async function switchChat() {
     const id=ctx.getActiveChat().chatId;
     if(id===chatId && config)return;
     // Capture the old chat before awaiting its save; a later navigation must win.
     const version=++loadVersion;
+    cataloguesReady=false;
     closeDefaultEditor?.();
     cancelAutoReplies();stop(false);clearPlan();
     try{await flushSettings();}catch(error){status(`Previous chat settings could not be saved: ${error.message}`,true);}
@@ -1998,25 +2003,46 @@ export async function setup(ctx) {
   // Only placeholder lead names are replaced, so names the user typed stay. Runs after each chat load and
   // whenever the persona changes, because the persona may become known only after the chat opened.
   const cardFingerprint=card=>sha256Hex(JSON.stringify(['name','description','personality','scenario','first_mes'].map(field=>card?.[field] || '')));
-  function rolesForCard(card){const local=characterCardRoles(card || {});return local.length?local:config?.cardCastAnalysis?.key===activeCardKey?validateCardRoles(config.cardCastAnalysis.roles):[];}
+  function rolesForCard(card){const local=characterCardRoles(card || {}),cached=config?.cardCastAnalysis?.key===activeCardKey?validateCardRoles(config.cardCastAnalysis.roles):[];return cached.length?cached:local;}
   function expandCardRoles(value,roles,character){
     let renamed=false;
+    const matchesRole=(actor,role)=>actor && [actor.speaker,...(actor.aliases || [])].some(name=>[role.name,...(role.aliases || [])].some(other=>normalizeName(name)===normalizeName(other)));
+    const transferChoices=(source,target)=>{
+      value.singleVoices=Object.fromEntries(Object.entries(value.singleVoices || {}).map(([route,choices])=>{
+        const previous=source && Object.keys(choices).find(name=>normalizeName(name)===normalizeName(source.speaker));
+        if(Object.hasOwn(choices,target.speaker) || !previous)return [route,choices];
+        const updated={...choices,[target.speaker]:choices[previous]};if(previous!==target.speaker)delete updated[previous];
+        return [route,updated];
+      }));
+    };
+    const mergeAliases=(actor,role)=>{
+      const occupied=new Set(value.fixed.filter(other=>other!==actor).flatMap(other=>[other.speaker,...(other.aliases || [])]).map(normalizeName));
+      const names=[...(actor.aliases || []),role.name,...(role.aliases || [])].filter(name=>normalizeName(name)!==normalizeName(actor.speaker) && !occupied.has(normalizeName(name)));
+      const aliases=[...new Map(names.map(name=>[normalizeName(name),name])).values()];
+      if(JSON.stringify(aliases)!==JSON.stringify(actor.aliases || [])){actor.aliases=aliases;renamed=true;}
+    };
+    if(roles.length){value.cardCastSourceTitle=character.name;value.cardCastSourceId=ctx.getActiveChat().characterId;}
     if(roles.length>1)value.cardGroupName=character.name;
     if(roles.length && !leadPlaceholder(value.fixed,2) && normalizeName(value.fixed[2]?.speaker)!==normalizeName(character.name) && (value.cardCastSourceTitle===character.name || value.cardCastSourceId && value.cardCastSourceId===ctx.getActiveChat().characterId || value.cardGroupName===character.name)){
       const template=value.fixed[2];
-      for(const role of roles)if(!value.fixed.some(actor=>normalizeName(actor.speaker)===normalizeName(role.name))){
-        const prior=Object.values(value.casts || {}).flat().find(actor=>normalizeName(actor.speaker)===normalizeName(role.name));
-        value.fixed.push({...template,...prior,speaker:role.name,voice:prior?.voice || '',aliases:role.aliases || [],pronunciation:prior?.pronunciation || ''});renamed=true;
+      for(const role of roles){
+        const existing=value.fixed.find(actor=>matchesRole(actor,role));
+        if(existing){mergeAliases(existing,role);continue;}
+        const prior=Object.values(value.casts || {}).flat().find(actor=>matchesRole(actor,role));
+        const added={...template,...prior,speaker:role.name,voice:prior?.voice || '',aliases:role.aliases || [],pronunciation:prior?.pronunciation || ''};
+        transferChoices(prior,added);value.fixed.push(added);renamed=true;
       }
       const names=new Set(value.fixed.flatMap(actor=>[actor.speaker,...(actor.aliases || [])]).map(normalizeName));
-      value.casts=Object.fromEntries(Object.entries(value.casts || {}).map(([route,actors])=>[route,actors.filter(actor=>!names.has(normalizeName(actor.speaker)))]));
+      value.casts=Object.fromEntries(Object.entries(value.casts || {}).map(([route,actors])=>[route,actors.filter(actor=>![actor.speaker,...(actor.aliases || [])].some(name=>names.has(normalizeName(name))))]));
       return {value,renamed};
     }
     if(roles.length && (leadPlaceholder(value.fixed,2) || normalizeName(value.fixed[2]?.speaker)===normalizeName(character.name))){
       const template=value.fixed[2],occupied=new Set(value.fixed.filter((_,index)=>index!==2).map(actor=>normalizeName(actor.speaker)));
       const leads=roles.filter(role=>!occupied.has(normalizeName(role.name))).map((role,index)=>{
-        const prior=Object.values(value.casts || {}).flat().find(actor=>[role.name,...(role.aliases || [])].some(name=>normalizeName(name)===normalizeName(actor.speaker)));
-        return {...template,...prior,speaker:role.name,voice:prior?.voice || (index===0?template.voice:''),aliases:[...new Set([...(roles.length===1?template.aliases || []:[]),...(role.aliases || [])])],pronunciation:prior?.pronunciation || (roles.length===1?template.pronunciation:'') || ''};
+        const prior=Object.values(value.casts || {}).flat().find(actor=>matchesRole(actor,role));
+        const added={...template,...prior,speaker:role.name,voice:prior?.voice || (index===0?template.voice:''),aliases:[...new Set([...(roles.length===1?template.aliases || []:[]),...(role.aliases || [])])],pronunciation:prior?.pronunciation || (roles.length===1?template.pronunciation:'') || ''};
+        transferChoices(prior,added);if(index===0)transferChoices(template,added);
+        return added;
       });
       if(leads.length){
         value.fixed.splice(2,1,...leads);
@@ -2029,9 +2055,8 @@ export async function setup(ctx) {
   }
   function pendingCardAnalysis(){
     const card=activeCharacterCard;
-    return card && resolvePlannerMode(config)!=='heuristic' && !characterCardRoles(card).length && config.cardCastAnalysis?.key!==activeCardKey
-      && ['description','personality','scenario','first_mes'].some(field=>String(card[field] || '').trim())
-      && (leadPlaceholder(config.fixed,2) || normalizeName(config.fixed[2]?.speaker)===normalizeName(card.name) || config.cardCastSourceTitle===card.name || config.cardCastSourceId && config.cardCastSourceId===ctx.getActiveChat().characterId);
+    return card && resolvePlannerMode(config)!=='heuristic' && characterCardRoleDiscovery(card).needsAnalysis && config.cardCastAnalysis?.key!==activeCardKey
+      && ['description','personality','scenario','first_mes'].some(field=>String(card[field] || '').trim());
   }
   async function discoverCardCast(signal){
     const id=ctx.getActiveChat().characterId,version=loadVersion;
@@ -2040,14 +2065,14 @@ export async function setup(ctx) {
     activeCharacterCard=card;activeCardKey=await cardFingerprint(card);
     if(signal.aborted || disposed || version!==loadVersion)throw abortError();
     const structured=characterCardRoles(card || {});
-    if(structured.length){const expanded=expandCardRoles(config,structured,card);config=expanded.value;if(expanded.renamed){clearPlan();renderCast();await persistConfig(chatId,config);}return;}
+    if(structured.length){const expanded=expandCardRoles(config,rolesForCard(card),card);config=expanded.value;if(expanded.renamed){clearPlan();renderCast();await persistConfig(chatId,config);}}
     if(!pendingCardAnalysis())return;
     status('Identifying this card’s characters with the Planner LLM…');
     const result=await rpc('cardCast',{card:Object.fromEntries(['name','description','personality','scenario','first_mes'].map(field=>[field,String(card[field] || '')])),connectionId:config.planner},signal,60000,progress=>status(progress.stage));
     if(signal.aborted || disposed || version!==loadVersion)throw abortError();
     const roles=validateCardRoles(result.roles);
-    config.cardCastAnalysis={key:activeCardKey,roles};config.cardCastSourceTitle=card.name;config.cardCastSourceId=id;
-    const expanded=expandCardRoles(config,roles,card);config=expanded.value;
+    config.cardCastAnalysis={key:activeCardKey,roles:roles.length?roles:structured};config.cardCastSourceTitle=card.name;config.cardCastSourceId=id;
+    const expanded=expandCardRoles(config,rolesForCard(card),card);config=expanded.value;
     if(expanded.renamed){clearPlan();renderCast();}
     await persistConfig(chatId,config);
     return true;
@@ -2088,7 +2113,7 @@ export async function setup(ctx) {
     const text=(value,limit)=>typeof value==='string'?value.trim().slice(0,limit):'';
     activeCardKey=await cardFingerprint(character);
     const roles=rolesForCard(character);
-    const profiles=roles.length?roles.map(role=>[cast.fixed.find(actor=>normalizeName(actor.speaker)===normalizeName(role.name))?.speaker || role.name,{...character,name:role.name,description:role.description},'character']):[[cast.fixed[2]?.speaker,character,'character']];
+    const profiles=roles.length?roles.map(role=>[cast.fixed.find(actor=>[actor.speaker,...(actor.aliases || [])].some(name=>[role.name,...(role.aliases || [])].some(other=>normalizeName(name)===normalizeName(other))))?.speaker || role.name,{...character,name:role.name,description:role.description},'character']):[[cast.fixed[2]?.speaker,character,'character']];
     return [...profiles,[cast.fixed[1]?.speaker,persona,'persona']].flatMap(([speaker,profile,role])=>!speaker || !profile?[]:[{
       speaker,name:text(profile.name,100),role,description:text(profile.description,8000),personality:text(profile.personality,2000),
       // Scenario cards often leave the description empty and introduce their characters in the scenario and greeting.
@@ -2661,6 +2686,20 @@ export async function setup(ctx) {
       ? (segment.style.trim().startsWith('[')?`${segment.style.trim()} ${segment.text}`:`[${segment.style.trim()}] ${segment.text}`):segment.text;
     return nativeSpeech(connection,{voice:segment.voice,text,parameters:request.parameters},signal,segment.speaker);
   }
+  async function synthesizeUnisonBlob(segment,snapshot,signal,loadMember){
+    const Context=globalThis.AudioContext || globalThis.webkitAudioContext;
+    if(!Context)throw new Error('This browser cannot mix simultaneous voices.');
+    audioContext ||= new Context();const tracks=[];
+    for(const member of speechMembers(segment)){
+      signal.throwIfAborted();
+      const audio=await loadMember(member);
+      signal.throwIfAborted();
+      const decoded=await audioContext.decodeAudioData(await audio.arrayBuffer());
+      signal.throwIfAborted();
+      tracks.push({channels:Array.from({length:decoded.numberOfChannels},(_,index)=>decoded.getChannelData(index)),level:mixerVolume(1,member.speaker,mixerState.channels)});
+    }
+    return new Blob([mixUnisonAudio(tracks,audioContext.sampleRate,{normalize:snapshot.normalizeLoudness})],{type:'audio/wav'});
+  }
   function createStreamingPlayer(snapshot,source,cached,apiKey,ctrl,token) {
     const segments=[];
     const warnings=new Set();
@@ -2743,18 +2782,12 @@ export async function setup(ctx) {
             } else if(seg.kind==='sfx') {
               blob=await fetchFoleyAudio(seg,snapshot,ctrl.signal);
             } else if(seg.unison){
-              const Context=globalThis.AudioContext || globalThis.webkitAudioContext;
-              if(!Context)throw new Error('This browser cannot mix simultaneous voices.');
-              audioContext ||= new Context();const tracks=[];
-              for(const member of speechMembers(seg)){
+              blob=await synthesizeUnisonBlob(seg,snapshot,ctrl.signal,async member=>{
                 const memberKey=cacheKey(member,snapshot);
                 let audio=passages[memberKey];
                 if(!audio){audio=await synthesizeSpeechBlob(member,snapshot,apiKey,ctrl.signal);passages[memberKey]=audio;await persist();}
-                if(ctrl.signal.aborted)throw abortError();
-                const decoded=await audioContext.decodeAudioData(await audio.arrayBuffer());
-                tracks.push({channels:Array.from({length:decoded.numberOfChannels},(_,index)=>decoded.getChannelData(index)),level:mixerVolume(1,member.speaker,mixerState.channels)});
-              }
-              blob=new Blob([mixUnisonAudio(tracks,audioContext.sampleRate,{normalize:snapshot.normalizeLoudness})],{type:'audio/wav'});
+                return audio;
+              });
             } else {
               blob=await synthesizeSpeechBlob(seg,snapshot,apiKey,ctrl.signal);
             }
@@ -3010,6 +3043,7 @@ export async function setup(ctx) {
     entry.details.hidden=!isSecEnabled;entry.list.replaceChildren();if(entry.details.hidden)return;
     entry.details.style.flexBasis=config?.batchSpeech?'100%':'';
     entry.summary.textContent=config?.batchSpeech?'Audio clips':'Sections';
+    if(!cataloguesReady){const label=document.createElement('span');label.textContent='Loading voice catalogues…';entry.list.append(label);return;}
     let source,segments;
     if(planSource?.chatId===targetChat && planSource.messageId===entry.messageId && sameSpeech(planSource.content,content)){source=planSource;segments=plan.segments;}
     else {
@@ -3037,7 +3071,7 @@ export async function setup(ctx) {
     let statuses=messageStatuses.get(messageId);if(!statuses){statuses=new Set();messageStatuses.set(messageId,statuses);}statuses.add(progress);
     const sections=document.createElement('details');sections.hidden=true;sections.style.cssText='font:12px system-ui;max-width:100%';
     const summary=document.createElement('summary');summary.textContent='Sections';summary.style.cursor='pointer';const sectionList=document.createElement('div');sectionList.style.cssText='display:flex;flex-wrap:wrap;gap:4px;padding-top:5px';sections.append(summary,sectionList);
-    const entry={messageId,details:sections,summary,list:sectionList,controls,version:0};messageSections.add(entry);void renderSectionControls(entry);
+    const entry={messageId,details:sections,summary,list:sectionList,controls,version:0};messageSections.add(entry);void renderSectionControls(entry).catch(error=>{if(!disposed)status(`Section controls unavailable: ${error.message}`,true);});
     const isSecEnabled=Boolean(config?.sectionButtons);
     controls.hidden=!isSecEnabled;
     controls.style.display=isSecEnabled?'flex':'none';
@@ -3147,7 +3181,7 @@ export async function setup(ctx) {
       if(token===revision)status(`Planner test passed: ${result.provider} · ${result.model}. Response: ${result.response}`);
     } finally {if(token===revision){controller=null;setBusy(false);}}
   });
-  function latestReply(){return ctx.messages.getRecent(200).filter(v=>!v.is_user && !v.extra?.is_system).at(-1);}
+  function latestReply(){return disposed?null:ctx.messages.getRecent(200).filter(v=>!v.is_user && !v.extra?.is_system).at(-1);}
   async function planLatest(){
     const latest=latestReply();
     if(!latest)throw new Error('No assistant reply in the active chat.');
@@ -3454,22 +3488,8 @@ export async function setup(ctx) {
 
   async function synthesizeSegment(seg,snapshot,apiKey,signal) {
     if(seg.kind)return fetchFoleyAudio(seg,snapshot,signal);
-    const request=synthesisSettings(seg,snapshot);
-    if((seg.route || scope(snapshot))==='gemini') {
-      if(!apiKey)throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');
-      const result=await rpc('gemini',{segment:request.segment,model:snapshot.model,apiKey,allowVoiceFallback:snapshot.allowVoiceFallback},signal);
-      const audio=audioBytes(result.base64,result.mimeType);
-      return new Blob([audio.data],{type:audio.mimeType});
-    } else {
-      const route=seg.route || scope(snapshot);
-      const connection=nativeConnections.find(c=>`native:${c.id}`===route);
-      if(!connection)throw new Error(`TTS connection for ${seg.speaker} is no longer available. Choose another connection and plan again.`);
-      const isFish=detectProvider(route)==='fish_audio';
-      const textToSend=isFish && connection.provider!=='openrouter_tts' && snapshot.useStyle && seg.style && !seg.text.startsWith('[')
-        ? (seg.style.trim().startsWith('[') ? `${seg.style.trim()} ${seg.text}` : `[${seg.style.trim()}] ${seg.text}`)
-        : seg.text;
-      return await nativeSpeech(connection,{voice:seg.voice,text:textToSend,parameters:request.parameters},signal,seg.speaker);
-    }
+    if(seg.unison)return synthesizeUnisonBlob(seg,snapshot,signal,member=>getCachedOrSynthesize(member,snapshot,apiKey,signal));
+    return synthesizeSpeechBlob(seg,snapshot,apiKey,signal);
   }
 
 
@@ -3692,7 +3712,7 @@ const paragraphAudioCache = new Map();
 
 
   const cleanup=()=>{
-    if(disposed)return;cancelAutoReplies();saveOnLeave();stop(false);$('key').value='';disposed=true;loadVersion++;
+    if(disposed)return;disposed=true;loadVersion++;cancelAutoReplies();saveOnLeave();stop(false);$('key').value='';
     for(const done of [...pending.values()])done(abortError());
     unsubs.splice(0).forEach(fn=>fn());removeStyle();cleanupPlacements();
     audioDatabase?.then(db=>db.close()).catch(()=>{});

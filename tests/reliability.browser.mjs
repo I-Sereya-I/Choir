@@ -179,6 +179,19 @@ test('HTTP hosts without secure crypto APIs keep the drawer, mixer, RPC, saved p
   }finally{if(h)await h.close();Object.defineProperty(globalThis,'crypto',descriptor);}
 });
 
+test('teardown releases playback after the host invalidates the message bridge',async()=>{
+ const h=await harness();let closed=false;try{
+  const mixer=h.dom.window.document.querySelector('[data-choir-mixer]');
+  await h.plan();h.state.blockAudio=true;h.footer.querySelector('button').click();
+  await until(()=>h.audios.some(audio=>!audio.paused));
+  h.ctx.messages.getRecent=()=>{throw new Error('SPINDLE_FRONTEND_INACTIVE: domain bridge is disposed');};
+  await h.close();closed=true;
+  assert.ok(h.audios.every(audio=>audio.paused));
+  assert.equal(mixer.isConnected,false);
+  assert.equal(h.toolbarActions.size,0);
+ }finally{if(!closed)await h.close();}
+});
+
 test('the staging badge follows the installed Choir branch and unavailable branch information never breaks the drawer',async()=>{
  const h=await harness();try{
   await until(()=>!h.$('branchBadge').hidden);assert.equal(h.$('branchBadge').textContent,'Staging');
@@ -544,6 +557,74 @@ test('Levi and Cole profile headings migrate the cast and unison creates one ove
   h.dom.window.document.querySelector('[aria-label="Cole no voice"]').click();await h.play();assert.equal(h.synthesis.length,generated);
   assert.deepEqual(h.store.get('chat:chat-a').fixed[2].aliases,['Levi Cline']);assert.deepEqual(h.store.get('chat:chat-a').fixed[3].aliases,['Cole Lane']);
  }finally{await h.close();globalThis.AudioContext=originalContext;}
+});
+
+test('card splitting transfers One TTS voice choices on every connection',async()=>{
+ const h=await harness();try{
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.connectionMode='one';saved.fixed[2].speaker='Alice & Bob';saved.fixed[2].aliases=[];
+  saved.singleVoices={'native:a':{'Alice & Bob':'g',Narrator:'n',You:'y'},'native:b':{'Alice & Bob':'new'},gemini:{'Alice & Bob':'Kore'}};h.store.set('chat:chat-a',saved);
+  h.store.set('settings:global',{plannerMode:'heuristic',useFastClassifier:true,enableSfx:false,enableAmbience:false});h.state.character={name:'Alice & Bob'};await h.reload();
+  assert.equal(globalThis.__CHOIR_API__.planParagraph('"Hello," Alice & Bob said.').segments[0].voice,'g');
+  h.state.character.description='# Alice\nName: Alice Ward\nBright.\n# Bob\nName: Bob Gray\nDeep.';await h.reload();
+  const config=globalThis.__CHOIR_API__.getConfig();assert.equal(globalThis.__CHOIR_API__.planParagraph('"Hello," Alice said.').segments[0].voice,'g');
+  assert.equal(config.singleVoices['native:a'].Alice,'g');assert.equal(config.singleVoices['native:b'].Alice,'new');assert.equal(config.singleVoices.gemini.Alice,'Kore');
+  assert.ok(!Object.hasOwn(config.singleVoices['native:a'],'Alice & Bob'));
+  await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'g');
+ }finally{await h.close();}
+});
+
+test('partial card profiles include all leads and analyse unclaimed scenario text once without losing voices',async()=>{
+ const h=await harness();try{
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed[2].speaker='Alice & Bob';saved.fixed[2].aliases=[];h.store.set('chat:chat-a',saved);
+  h.state.character={name:'Alice & Bob',description:'# Alice\nName: Alice Ward\nBright.\n# Bob\nName: Bob Gray\nDeep.\n# Clara\nName: Clara Wood\nAlto.'};h.message.content='The room fell quiet.';await h.reload();await h.plan();
+  assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>actor.speaker),['Alice','Bob','Clara']);
+  const profiles=h.requests.filter(request=>request.action==='plan').at(-1).input.config.characterProfiles;assert.equal(profiles.length,3);assert.ok(!profiles[1].description.includes('Alto.'));
+  h.state.character.scenario='Diego is another playable lead, with a gravelly voice.';h.state.cardRoles=[{name:'Alice Ward',aliases:['Alice'],description:'Bright.'},{name:'Bob Gray',aliases:['Bob'],description:'Deep.'},{name:'Clara Wood',aliases:['Clara'],description:'Alto.'},{name:'Diego',description:'Gravelly.'}];
+  await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>actor.speaker),['Alice','Bob','Clara','Diego']);assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'m');
+  await h.reload();await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);
+ }finally{await h.close();}
+});
+
+test('Cue mixes both unison voices and reuses cached members after failures, levels and exclusions change',async()=>{
+ const original=globalThis.AudioContext;let decoded=0;
+ globalThis.AudioContext=class{
+  sampleRate=24000;async resume(){}async close(){}
+  async decodeAudioData(){const channel=decoded++%2?Float32Array.of(0.2,0.3):Float32Array.of(0.4,0.2);return {numberOfChannels:1,getChannelData:()=>channel};}
+  createMediaElementSource(){return {connect(){},disconnect(){}};}createGain(){return {gain:{value:1},connect(){},disconnect(){}};}
+ };
+ const h=await harness({enabled:true});try{
+  h.store.set('settings:global',{plannerMode:'heuristic',useFastClassifier:true,enableSfx:false,enableAmbience:false,enableMusic:false,prefetch:0,normalizeLoudness:false});await h.reload();
+  const text='"Hello," You and Mira said in unison.';await globalThis.__CHOIR_API__.playParagraph({text});
+  assert.deepEqual(h.synthesis.filter(input=>input.text==='"Hello,"').map(input=>input.voice),['y','m']);
+  const wav=h.audioBlobs.find(blob=>blob.type==='audio/wav');assert.ok(wav);assert.equal(new DataView(await wav.arrayBuffer()).getInt16(44,true),Math.round(0.6*32767));
+  const generated=h.synthesis.length;await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(h.synthesis.length,generated);
+  h.dom.window.document.querySelector('[aria-label="Mira silent"]').click();await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(h.synthesis.length,generated);
+  const remix=h.audioBlobs.filter(blob=>blob.type==='audio/wav').at(-1);assert.equal(new DataView(await remix.arrayBuffer()).getInt16(44,true),Math.round(0.4*32767));
+  h.dom.window.document.querySelector('[aria-label="Mira no voice"]').click();await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(h.synthesis.length,generated);
+  h.dom.window.document.querySelector('[aria-label="Mira no voice"]').click();h.state.failVoice='m';const next='"Ready," You and Mira said in unison.';
+  await assert.rejects(globalThis.__CHOIR_API__.playParagraph({text:next}),/429/);h.state.failVoice=null;await globalThis.__CHOIR_API__.playParagraph({text:next});
+  assert.deepEqual(h.synthesis.filter(input=>input.text==='"Ready,"').map(input=>input.voice),['y','m','m']);
+ }finally{await h.close();globalThis.AudioContext=original;}
+});
+
+test('connection-list outages retain the selected native adapter and voices and can be reloaded',async()=>{
+ const h=await harness();try{
+  const originalFetch=globalThis.fetch;globalThis.fetch=async(url,options)=>String(url).endsWith('/tts-connections?limit=200')?new Response('Temporary outage',{status:502}):originalFetch(url,options);
+  await h.reload();const config=globalThis.__CHOIR_API__.getConfig();assert.equal(config.mode,'native');assert.equal(config.connection,'a');assert.equal(config.fixed[2].voice,'m');
+  assert.equal(h.$('mode').value,'native');assert.equal(h.$('connection').value,'a');assert.match(h.$('status').textContent,/Could not load TTS connections/);
+  globalThis.fetch=originalFetch;await h.reload();assert.equal(h.$('connection').value,'a');await h.plan();await h.play();assert.ok(h.synthesis.some(input=>input.voice==='m'));
+ }finally{await h.close();}
+});
+
+test('late message decorators wait for catalogues before restoring saved grouped clip controls',async()=>{
+ const h=await harness();let release,cleanupExtra;try{
+  await h.plan();const saved=structuredClone(h.store.get('chat:chat-a'));saved.batchSpeech=true;saved.sectionButtons=true;h.store.set('chat:chat-a',saved);
+  const originalFetch=globalThis.fetch;globalThis.fetch=async(url,options)=>{if(String(url).endsWith('/voices') && !release)await new Promise(resolve=>release=resolve);return originalFetch(url,options);};
+  const originalDecorator=h.ctx.ui.registerDomDecorator;let decorator;h.ctx.ui.registerDomDecorator=options=>{decorator=options;return originalDecorator(options);};
+  const reloading=h.reload();await until(()=>release && decorator);cleanupExtra=decorator.render(h.footer,{messageId:h.message.id});
+  assert.match(h.footer.textContent,/Loading voice catalogues/);assert.ok(!h.$('status').textContent.includes('Load an available voice list'));
+  release();await reloading;await until(()=>h.footer.querySelector('[data-choir-clip]'));assert.ok(!h.$('status').textContent.includes('Section controls unavailable'));
+ }finally{release?.();cleanupExtra?.();await h.close();}
 });
 
 test('cast capture retains voices when the host returns different parent wrappers and repairs a missing narrator',async()=>{

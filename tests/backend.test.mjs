@@ -24,6 +24,12 @@ test('Jev expands explicit unison to both independently cast voices even if its 
   assert.deepEqual([...line.unison.map(member=>[member.speaker,member.voice])],[['Levi','low'],['Cole','bright']]);assert.equal(line.text,'"Hello."');assert.equal(message.result.npcs.length,0);
 });
 const castConfig={...config,fixed:[...config.fixed,{speaker:'Mira',voice:'Kore',style:''}]};
+test('Jev unison with yelled excludes the named recipient',async()=>{
+ const cast={voices:[{id:'n'},{id:'a'},{id:'b'},{id:'j'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Alice',voice:'a',style:''},{speaker:'Bob',voice:'b',style:''},{speaker:'Judy',voice:'j',style:''}],npcs:[],useStyle:false};
+ const h=await harness(null,null,null,null,null,{evaluate:async()=>({answers:{speaker_0:{choice:'Alice'}}})});
+ h.send('planJev',{transcript:'"Hello," Alice and Bob yelled to Judy in unison.',config:cast});
+ const message=(await h.result()).message;assert.equal(message.error,undefined);assert.deepEqual([...message.result.segments.find(segment=>segment.unison).unison.map(member=>member.speaker)],['Alice','Bob']);
+});
 test('Gemini accepts speech beyond the old 2000-character cap when it fits the input budget',async()=>{
   let calls=0;const h=await harness(null,async(url,options)=>{calls++;assert.equal(JSON.parse(options.body).contents[0].parts[0].text.length,3000);return {status:200,body:JSON.stringify({candidates:[{content:{parts:[{inlineData:{data:'YQ==',mimeType:'audio/wav'}}]}}]})};});
   h.send('gemini',{apiKey:'test-key',model:'gemini-3.8-flash-tts',segment:{text:'x'.repeat(3000),voice:'Kore',style:'Warm'}});
