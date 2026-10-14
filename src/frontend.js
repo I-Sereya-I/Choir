@@ -277,7 +277,7 @@ export async function setup(ctx) {
     </div>
     <div style="margin-top:10px">
       <label class="et-check"><input data-et="batchSpeech" type="checkbox"> Group speech requests (fewer calls)</label>
-      <small>Groups compatible Fish S2/Gemini voices or consecutive passages from the same voice. Starts with a short clip, then groups longer speech; SFX cues stay separate. Grouped clips share a level: speaker level and Silent changes apply on the next Play. Master changes immediately; No voice stops grouped playback.</small>
+      <small style="display:block;margin-top:6px">Groups compatible Fish S2/Gemini voices or consecutive passages from the same voice. Starts with a short clip, then groups longer speech; SFX cues stay separate. Grouped clips share a level: speaker level and Silent changes apply on the next Play. Master changes immediately; No voice stops grouped playback.</small>
     </div>
     <div data-et="jevPlannerBox" hidden class="et-grid" style="margin-top:10px">
       <label>Decision connection<select data-et="decisionConnection"><option value="">Default Decision connection</option></select></label>
