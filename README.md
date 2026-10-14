@@ -11,6 +11,9 @@
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
 
+The `Setup-test` branch adds an in-app first-time setup wizard. See
+[Onboarding](ONBOARDING.md) for behavior, persistence, connection setup, and tests.
+
 </div>
 
 This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.6-staging.23** preserves connection-specific voice selections when cards split into individual leads, bounds card profiles independently, and checks unstructured card content with a cached Planner LLM analysis. Unison excludes listeners, handles common speech verbs, and mixes all participants in main and Cue playback. Cached unison respects changed NPC policies and mixer levels. Connection-list failures retain the selected adapter, and saved clip controls wait for their voice catalogues. Native Fish/Google/OpenRouter grouping retains the supplied Lumiverse relay patch.

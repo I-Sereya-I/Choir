@@ -1,4 +1,5 @@
 import { characterCardRoleDiscovery } from './core.js';
+import { createSetupWizard, saveSetupSettings, ONBOARDING_KEY } from './setup.js';
 import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, planningSections, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset } from './core.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
@@ -217,6 +218,7 @@ export async function setup(ctx) {
         <button data-et="stop" disabled title="Stop planning, speech generation, and playback">${ICON_STOP} Stop</button>
         <button data-et="save" class="et-btn-primary" hidden>Retry save</button>
         <button data-et="showMixer">Open mixer</button>
+        <button data-et="setupWizard">Run Setup Wizard Again</button>
       </div>
     </div>
     <p data-et="latestNotice" role="status" hidden>latest already planned, click on plan latest to redo it</p>
@@ -845,6 +847,119 @@ export async function setup(ctx) {
   let closeDefaultEditor;
   unsubs.push(()=>closeDefaultEditor?.());
   const preferenceSnapshot=value=>Object.fromEntries(preferenceFields.filter(name=>value && Object.hasOwn(value,name)).map(name=>[name,structuredClone(value[name])]));
+  // The wizard uses the same connections, catalogue, synthesis, and default
+  // format as the settings panel. It never persists a chat cast.
+  let setupTestController=null,setupAutoStarted=false;
+  const wizardConnections=async(signal)=>{
+    const paths=['/tts-connections?limit=200','/connections?limit=200','/decision-connections?limit=200'];
+    const results=await Promise.allSettled([...paths.map(path=>api(path,{signal}).then(response=>response.json())),rpc('ping',{},signal,8000)]);
+    if(signal?.aborted)throw abortError();
+    const result={tts:[],llm:[],decision:[],errors:[]};
+    ['tts','llm','decision'].forEach((kind,index)=>{
+      if(results[index].status==='fulfilled')result[kind]=results[index].value.data || [];
+      else result.errors.push(`Could not load ${kind==='tts'?'TTS':kind==='llm'?'LLM':'Decision'} connections: ${results[index].reason.message}. Refresh to retry.`);
+    });
+    // Use the fresh TTS list for every catalogue and synthesis lookup.
+    if(results[0].status==='fulfilled')nativeConnections=result.tts;
+    result.directJev=results[3].status==='fulfilled' && results[3].value.decisionsAvailable===false;
+    return result;
+  };
+  async function withSetupTest(signal,operation){
+    if(disposed || signal.aborted)throw abortError();
+    stop(false);const ctrl=new AbortController();setupTestController=controller=ctrl;const token=revision;
+    const cancel=()=>ctrl.abort();signal.addEventListener('abort',cancel,{once:true});setBusy(true);
+    try{return await operation(ctrl.signal);}
+    finally{
+      signal.removeEventListener('abort',cancel);ctrl.abort();
+      if(setupTestController===ctrl)setupTestController=null;
+      if(controller===ctrl)controller=null;
+      if(!disposed && token===revision)setBusy(false);
+    }
+  }
+  const setupWizard=createSetupWizard(ctx,{
+    report:message=>status(message,true),
+    session:()=>({gemini:$('key').value.trim(),jev:$('jevKey').value.trim()}),
+    setSession:(kind,value)=>{$(kind==='gemini'?'key':'jevKey').value=value;},
+    connections:wizardConnections,
+    voices:route=>ensureCatalogue(route),
+    stopTest:()=>{if(setupTestController){setupTestController.abort();setupTestController=null;stop(false);}},
+    connectionGuide:()=>{tab.activate?.();status('Open Lumiverse’s Connect panel, then TTS, LLM, or Decision to configure a connection. Return to Choir, run setup again, and refresh connections.');},
+    snapshot:async()=>{
+      await flushSettings();
+      const [global,preset,legacy,chat,connections]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),ctx.settings.get(CAPTURED_DEFAULTS_KEY),ctx.settings.get('settings:defaults'),chatId?ctx.settings.get(settingsKey(chatId)):null,wizardConnections()]);
+      const value=structuredClone(config || defaults());
+      if(value.connectionMode==='one')value.fixed=casting(value).fixed;
+      return {config:value,preset,connections,existing:Boolean(global || preset || legacy || chat)};
+    },
+    testPlanner:(draft,signal)=>withSetupTest(signal,async testSignal=>{
+      const result=await rpc('testPlanner',{
+        plannerMode:draft.plannerMode,connectionId:draft.planner,decisionConnection:draft.decisionConnection,
+        jevApiKey:$('jevKey').value.trim(),jevEndpoint:draft.jevEndpoint,
+        config:{fixed:[{speaker:'Narrator',voice:'local',style:''}],npcs:[],voices:[{id:'local'}],useStyle:false}
+      },testSignal,65000);
+      return `${result.provider} · ${result.model}: ${result.response}`;
+    }),
+    testVoice:(draft,actor,signal)=>withSetupTest(signal,async testSignal=>{
+      const route=draft.connectionMode==='one'?scope(draft):actor.route || scope(draft);
+      const request=synthesisSettings({speaker:actor.speaker || 'NPC',voice:actor.voice,text:'Hello! Choir is ready to bring your story to life.',style:actor.style || '',route},draft);
+      let blob;
+      if(route==='gemini'){
+        const apiKey=$('key').value.trim();if(!apiKey)throw new Error('Enter a Gemini API key for this page session.');
+        const result=await rpc('gemini',{segment:request.segment,model:draft.model,apiKey,allowVoiceFallback:draft.allowVoiceFallback},testSignal);
+        const audio=audioBytes(result.base64,result.mimeType);blob=new Blob([audio.data],{type:audio.mimeType});
+      }else{
+        if(!request.connection)throw new Error('This TTS connection is no longer available. Refresh connections.');
+        const text=detectProvider(route)==='fish_audio' && request.connection.provider!=='openrouter_tts'?`[cheerful] ${request.segment.text}`:request.segment.text;
+        blob=await nativeSpeech(request.connection,{voice:actor.voice,text,parameters:request.parameters},testSignal,actor.speaker || 'NPC');
+      }
+      if(testSignal.aborted)throw abortError();
+      await playBlob(blob,testSignal,actor.speaker || 'NPC',0,draft.normalizeLoudness);
+    }),
+    save:async(draft,initial,signal)=>{
+      await flushSettings();if(disposed || signal.aborted)throw abortError();
+      const route=scope(draft),fixed=draft.fixed.map(actor=>({...actor,route:draft.connectionMode==='one'?route:actor.route || route}));
+      const policy={...draft.npcPolicy,route:draft.connectionMode==='one'?'':draft.npcPolicy.route || ''};
+      const selected=fixed.filter(actor=>!actor.excluded).map(actor=>({id:actor.voice,route:actor.route}));
+      if(['single','preferred'].includes(policy.mode))selected.push(...(policy.mode==='single'?[policy.voice]:policy.voices).map(id=>({id,route:policy.route || route})));
+      const routes=[...new Set([route,...fixed.map(actor=>actor.route),...(policy.mode==='skip'?[]:[policy.route || route])])];
+      const lists=await Promise.all(routes.map(async route=>{
+        let list;
+        try{list=await ensureCatalogue(route);}
+        catch(error){if(detectProvider(route)!=='fish_audio' || !selected.some(voice=>voice.route===route && voice.id))throw error;list=[];}
+        return list.map(voice=>({...voice,route}));
+      }));
+      // Existing defaults support explicit provider IDs not returned by a
+      // catalogue (e.g. private/community Fish voices). Preserve that behavior.
+      const catalogue=new Map(lists.flat().map(voice=>[JSON.stringify([voice.route,voice.id]),voice]));
+      for(const voice of selected)if(voice.id && !catalogue.has(JSON.stringify([voice.route,voice.id]))){
+        if(detectProvider(voice.route)==='fish_audio'){
+          if(!/^[A-Za-z0-9_-]{1,200}$/.test(voice.id))throw new Error('Enter a Fish Audio voice ID using letters, numbers, hyphens or underscores.');
+          if([...GEMINI_VOICES,...OPENAI_VOICES].some(item=>item.id===voice.id))throw new Error(`Fish Audio requires a Fish voice ID; ${voice.id} belongs to Gemini or OpenAI.`);
+        }else if(detectProvider(voice.route)==='gemini'){
+          if(!/^voice_[A-Za-z0-9_-]+$/.test(voice.id))throw new Error(`Choose an available Gemini voice for ${voice.id}, or a designed voice ID beginning with voice_.`);
+        }else throw new Error(`Voice ${voice.id} is not in this connection’s catalogue. Choose an available voice or configure the voice catalogue in Lumiverse.`);
+        catalogue.set(JSON.stringify([voice.route,voice.id]),{...voice,name:voice.id});
+      }
+      validateNumericSettings(draft);
+      validateCastConfig({fixed:fixed.map(actor=>actor.excluded?{...actor,voice:''}:actor),npcs:[],voices:[...catalogue.values()],defaultRoute:route,npcPolicy:policy,useStyle:draft.useStyle});
+      if(disposed || signal.aborted)throw abortError();
+      const [global,preset]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),ctx.settings.get(CAPTURED_DEFAULTS_KEY)]);
+      const choices=preferenceSnapshot(draft),baseline=preferenceSnapshot(initial);
+      // Preserve fields edited elsewhere while the wizard was open.
+      const changes=Object.fromEntries(Object.entries(choices).filter(([name,value])=>!Object.hasOwn(global || {},name) || JSON.stringify(value)!==JSON.stringify(baseline[name])));
+      const defaultsPreset={...(preset || {}),version:2,npcPolicy:structuredClone(policy),leadVoices:fixed.map(actor=>Object.fromEntries(defaultVoiceFields.filter(name=>Object.hasOwn(actor,name)).map(name=>[name,actor[name]]))),
+        voiceCatalogue:[...new Map([...(preset?.voiceCatalogue || []),...selected.filter(voice=>voice.id).map(voice=>catalogue.get(JSON.stringify([voice.route,voice.id])))].map(voice=>[JSON.stringify([voice.route,voice.id]),voice])).values()]};
+      await saveSetupSettings(ctx.settings,[[GLOBAL_SETTINGS_KEY,{...(global || {}),...changes}],[CAPTURED_DEFAULTS_KEY,defaultsPreset]],{version:1,completed:true,deferred:false});
+      capturedDefaults=defaultsPreset;++defaultsRevision;
+      if(!disposed){
+        // Reload through the normal path: saved chats retain their own cast;
+        // unsaved/new chats inherit the just-captured defaults.
+        await run(()=>switchChat(true));
+      }
+    }
+  });
+  $('setupWizard').onclick=()=>void setupWizard.open();
+  unsubs.push(()=>setupWizard.dispose());
   function refreshDefaultControls(){
     for(const name of ['captureDefaults','captureNpcDefaults'])$(name).disabled=busy || defaultOperation || !chatId || !castRows.length;
     $('applyDefaults').disabled=busy || defaultOperation || !chatId || !castRows.length || !capturedDefaults?.leadVoices;
@@ -1840,6 +1955,8 @@ export async function setup(ctx) {
       }
       $('decisionConnection').value=config.decisionConnection || '';
     }
+    // Welcome must not wait for an external provider's voice catalogue.
+    if(!setupAutoStarted){setupAutoStarted=true;void setupWizard.start();}
     if(config.mode==='native' && results[0].status==='rejected'){renderCast();throw new Error(`Could not load TTS connections: ${results[0].reason.message}. Your selected connection is retained; use Reload to retry.`);}
     await loadVoices(version);
   }
@@ -1861,9 +1978,9 @@ export async function setup(ctx) {
     if(config.styleParam && !parameters[config.styleParam]){config.styleParam='';$('styleParam').value='';}
     cataloguesReady=true;renderCast();refreshSectionControls();
   }
-  async function switchChat() {
+  async function switchChat(force=false) {
     const id=ctx.getActiveChat().chatId;
-    if(id===chatId && config)return;
+    if(!force && id===chatId && config)return;
     // Capture the old chat before awaiting its save; a later navigation must win.
     const version=++loadVersion;
     cataloguesReady=false;
@@ -3721,6 +3838,7 @@ const paragraphAudioCache = new Map();
   mixer.addEventListener('choir:replace',cleanup,{once:true});unsubs.push(()=>mixer.removeEventListener('choir:replace',cleanup));
   await run(switchChat);
   if(disposed)return cleanup;
+  if(!setupAutoStarted){setupAutoStarted=true;void setupWizard.start();}
   // Branch metadata is optional UI information; it must not delay startup.
   const branchLookup=new AbortController();unsubs.push(()=>branchLookup.abort());
   void (async()=>{
