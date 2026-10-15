@@ -43,12 +43,6 @@ async function harness(mixerPreferences,mobile=false){
       state.branchLookups=(state.branchLookups || 0)+1;if(state.branchLookupFails)throw Error('Branch information unavailable');
       return Response.json({extensions:[{identifier:'other-extension',metadata:{branch:'staging'}},{identifier:'choir',metadata:{branch:state.extensionBranch===undefined?'staging':state.extensionBranch}}]});
     }
-    if(url.startsWith('https://freesound.test/ambience.mp3?')){state.bedFetches.push(url);if(state.holdBeds)await new Promise(resolve=>state.releaseBed=resolve);return new Response(`AMBIENCE:${new URL(url).searchParams.get('q')}`,{headers:{'Content-Type':'audio/mpeg'}});}
-    if(url==='https://freesound.test/preview.mp3'){
-      state.previewFetches.push(url);
-      if(state.holdPreview)await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>{state.previewAborted++;reject(new DOMException('Stopped','AbortError'));},{once:true}));
-      return new Response('FREESOUND_PREVIEW',{status:state.previewStatus || 200,headers:{'Content-Type':state.previewType || 'audio/mpeg'}});
-    }
     if(url.endsWith('/tts/synthesize')){
       const input=JSON.parse(options.body);synthesis.push(input);const requestNumber=synthesis.length;
       if(requestNumber===state.holdSynthesisAt){
@@ -79,6 +73,16 @@ async function harness(mixerPreferences,mobile=false){
     else value={data:connections};
     return Response.json(value);
   };
+  // Stands in for the backend's freesoundPreview action, which downloads through Lumiverse's CORS proxy.
+  const previewControllers=new Map();
+  const freesoundPreview=async(url,signal)=>{
+    if(url.startsWith('https://freesound.test/ambience.mp3?')){state.bedFetches.push(url);if(state.holdBeds)await new Promise(resolve=>state.releaseBed=resolve);return {base64:btoa(`AMBIENCE:${new URL(url).searchParams.get('q')}`),mimeType:'audio/mpeg'};}
+    state.previewFetches.push(url);
+    if(state.holdPreview)await new Promise((resolve,reject)=>signal.addEventListener('abort',()=>{state.previewAborted++;reject(new DOMException('Stopped','AbortError'));},{once:true}));
+    if(state.previewStatus && state.previewStatus!==200)throw Error(`Freesound preview HTTP ${state.previewStatus}`);
+    if(state.previewType && !state.previewType.startsWith('audio/'))throw Error(`CORS proxy transparent proxy only serves audio data (received Content-Type: ${state.previewType})`);
+    return {base64:btoa('FREESOUND_PREVIEW'),mimeType:'audio/mpeg'};
+  };
   let backend,decorationCleanup;
   const ctx={settings:{get:async key=>structuredClone(store.get(key) ?? null),set:async(key,value)=>{const snapshot=structuredClone(value);if(state.failPlanSave && /^(plan:|activeplan:)/.test(key) || state.failConfigSave && /^(chat:|settings:)/.test(key) || state.failDefaultsSave && key==='settings:captured-defaults')throw Error('Settings storage failed');if(state.configDelay && /^(chat:|settings:)/.test(key))await new Promise(resolve=>setTimeout(resolve,state.configDelay));store.set(key,snapshot);}},
     messages:{getRecent:()=>state.active==='chat-a'?(state.messages || [message]):[],getContent:id=>state.active==='chat-a'?(state.messages || [message]).find(item=>item.id===id)?.content ?? null:null},
@@ -87,7 +91,12 @@ async function harness(mixerPreferences,mobile=false){
     ui:{mount:point=>point==='chat_actions'?toolbar:undefined,registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:options=>{const action={...options,onClick(handler){this.click=handler;},destroy(){if(toolbarActions.get(options.id)===action)toolbarActions.delete(options.id);}};toolbarActions.set(options.id,action);return action;},
       registerDomDecorator:options=>{decorationCleanup=options.render(footer,{messageId:message.id});return decorationCleanup;}},
     onBackendMessage:fn=>{backend=fn;return()=>backend=null;},sendToBackend:request=>{
-      requests.push(structuredClone(request));if(request.action==='cancel')return;
+      requests.push(structuredClone(request));if(request.action==='cancel'){previewControllers.get(request.id)?.abort();return;}
+      if(request.action==='freesoundPreview'){
+        const ctrl=new AbortController();previewControllers.set(request.id,ctrl);
+        freesoundPreview(request.input.url,ctrl.signal).then(result=>backend?.({namespace:'choir',id:request.id,result}),error=>{if(!ctrl.signal.aborted)backend?.({namespace:'choir',id:request.id,error:error.message});});
+        return;
+      }
       setTimeout(()=>{
         if(!backend)return;
         if(request.action==='plan' && state.held || request.action==='designVoice' && state.holdDesignVoice || request.action==='freesound' && state.holdFoley || request.action==='sfx' && state.holdSfx){heldPlans.push(request);return;}

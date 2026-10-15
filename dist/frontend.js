@@ -4759,12 +4759,10 @@ export async function setup(ctx) {
       previewUrl=result?.results?.find(sound=>sound.previewUrl)?.previewUrl;
     }
     if(!previewUrl)throw new Error(`No Freesound result for "${query}"`);
-    const audioResp=await fetch(previewUrl,{signal});
-    if(!audioResp.ok)throw new Error(`Freesound preview HTTP ${audioResp.status}`);
-    const mime=audioResp.headers.get('Content-Type') || '';
-    if(mime && !/^(audio\/|application\/octet-stream)/i.test(mime))throw new Error('Freesound preview did not return audio');
-    const blob=await audioResp.blob();
+    // Lumiverse's CORS proxy downloads the preview; the extension never fetches other sites itself.
+    const preview=await rpc('freesoundPreview',{url:previewUrl},signal,30000);
     signal.throwIfAborted();
+    const audio=audioBytes(preview.base64,preview.mimeType);const blob=new Blob([audio.data],{type:audio.mimeType});
     if(!blob.size)throw new Error('Freesound returned an empty preview');
     foleyCache.set(key,blob);
     if(foleyCache.size>64)foleyCache.delete(foleyCache.keys().next().value);

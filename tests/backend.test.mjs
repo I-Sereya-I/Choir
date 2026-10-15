@@ -78,6 +78,18 @@ test('Freesound uses the current search endpoint, authenticates in a header and 
  h.send('freesound',{apiKey:'test-freesound-key',query:'page turn'});assert.equal((await h.result()).message.result.results[0].previewUrl,'https://freesound.test/high.mp3');
  const denied=await harness(null,async()=>({status:401,body:'Unauthorized'}));denied.send('freesound',{apiKey:'invalid-key',query:'page turn'});assert.match((await denied.result()).message.error,/Freesound HTTP 401/);
 });
+test('Freesound previews download through the CORS proxy as checked audio, only from freesound.org',async()=>{
+ const requests=[];
+ const h=await harness(null,async(url,options)=>{requests.push({url,options});return url.includes('missing')?{status:404,body:''}:{status:200,headers:{'content-type':'audio/mpeg; charset=binary'},body:'QUJD',encoding:'base64'};});
+ h.send('freesoundPreview',{url:'https://cdn.freesound.org/previews/1/1-hq.mp3'});
+ assert.deepEqual({...(await h.result()).message.result},{base64:'QUJD',mimeType:'audio/mpeg'});
+ assert.deepEqual({...requests[0].options},{responseType:'arraybuffer',mediaType:'audio'});
+ for(const [url,error] of [['https://example.com/x.mp3',/not from freesound\.org/],['https://cdn.freesound.org/missing.mp3',/Freesound preview HTTP 404/]]){
+  const other=await harness(null,async(...args)=>{requests.push(args);return {status:404,body:''};});
+  other.send('freesoundPreview',{url});assert.match((await other.result()).message.error,error);
+ }
+ assert.equal(requests.length,2);
+});
 
 const sounds=[
   {id:1,name:'Glass Smash, Bottle',duration:1.24,tags:['glass','smash','bottle','break','shatter','impact','debris','crash','extra'],previews:{'preview-hq-mp3':'https://freesound.test/smash.mp3'}},
@@ -212,7 +224,7 @@ async function harness(generate, cors, provider, deadline, stream, decisions,con
   let handler;const sent=[];let wake;
   const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider,...connectionOverrides};
   vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate,rawStream:stream},connections:{get:async()=>connection,list:async()=>[connection]},cors,decisions},
-    console,Map,Set,AbortController,TextEncoder,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView,fetch:globalThis.fetch});
+    console,Map,Set,AbortController,TextEncoder,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView});
   return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
     result:()=>sent.some(item=>item.message.result || item.message.error)?Promise.resolve(sent.findLast(item=>item.message.result || item.message.error)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
 }
@@ -452,18 +464,19 @@ test('searchVoices handles empty query or network failure', async () => {
 
 import { classifyWithJev, planWithJev, speakerNameCandidates } from '../src/backend.js';
 
+// The backend reaches the network only through spindle.cors, so these src imports get a stand-in for it.
+async function withCors(respond, run) {
+  const original = globalThis.spindle;
+  globalThis.spindle = { cors: async (url, options) => { const { status = 200, body } = await respond(url, options); return { status, body: JSON.stringify(body) }; } };
+  try { await run(); } finally { globalThis.spindle = original; }
+}
+
 test('classifyWithJev asks the TypeSafe Decision API one choice question per item and returns candidate strings', async () => {
-  const originalFetch = globalThis.fetch;
   let request;
-  try {
-    globalThis.fetch = async (url, options) => {
-      request = { url, options, body: JSON.parse(options.body) };
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ model: 'jev-1.13.0', answers: { q0: { type: 'choice', choice: 'Alice', confidence: 0.9 }, q1: { type: 'choice', choice: 'Bob' } } })
-      };
-    };
+  await withCors(async (url, options) => {
+    request = { url, options, body: JSON.parse(options.body) };
+    return { body: { model: 'jev-1.13.0', answers: { q0: { type: 'choice', choice: 'Alice', confidence: 0.9 }, q1: { type: 'choice', choice: 'Bob' } } } };
+  }, async () => {
     const items = [
       { text: '"Hello"', context: 'Alice said' },
       { text: '"Hi there"', context: 'Bob replied' }
@@ -487,21 +500,17 @@ test('classifyWithJev asks the TypeSafe Decision API one choice question per ite
         q1: { type: 'choice', instructions: 'Which character speaks this dialogue: ""Hi there""?', criteria }
       }
     });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  });
 });
 
 test('classifyWithJev resolves a saved /classify endpoint to its base and rejects unknown answers', async () => {
-  const originalFetch = globalThis.fetch;
   const urls = [];
   let answer = 'Guard';
-  try {
-    globalThis.fetch = async (url, options) => {
-      urls.push(url);
-      assert.equal(options.headers.Authorization, 'Bearer existing-token');
-      return { ok: true, status: 200, json: async () => ({ answers: { q0: { choice: answer } } }) };
-    };
+  await withCors(async (url, options) => {
+    urls.push(url);
+    assert.equal(options.headers.Authorization, 'Bearer existing-token');
+    return { body: { answers: { q0: { choice: answer } } } };
+  }, async () => {
     for (const endpoint of ['https://custom.api.endpoint/v1/classify', 'https://custom.api.endpoint/v1']) {
       assert.deepEqual(await classifyWithJev({ items: [{ text: '"Halt!"' }], candidates: ['Guard'], apiKey: 'Bearer existing-token', endpoint }), ['Guard']);
     }
@@ -511,9 +520,7 @@ test('classifyWithJev resolves a saved /classify endpoint to its base and reject
       () => classifyWithJev({ items: [{ text: '"Halt!"' }], candidates: ['Guard'], apiKey: 'Bearer existing-token' }),
       /incomplete or unknown classification choices/
     );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  });
 });
 
 test('classifyWithJev validates required apiKey, choices, and handles network failure', async () => {
@@ -528,36 +535,20 @@ test('classifyWithJev validates required apiKey, choices, and handles network fa
   const emptyRes = await classifyWithJev({ items: [], candidates: ['Alice'], apiKey: 'key' });
   assert.deepEqual(emptyRes, []);
 
-  const originalFetch = globalThis.fetch;
-  try {
-    globalThis.fetch = async () => ({
-      ok: false,
-      status: 401,
-      json: async () => ({ error: { message: 'Invalid API key' } })
-    });
-    await assert.rejects(
-      () => classifyWithJev({ items: [{ text: '"test"' }], candidates: ['Alice'], apiKey: 'bad-key' }),
-      /Jev classification failed: Jev classification HTTP 401: Invalid API key/
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  await withCors(async () => ({ status: 401, body: { error: { message: 'Invalid API key' } } }), () => assert.rejects(
+    () => classifyWithJev({ items: [{ text: '"test"' }], candidates: ['Alice'], apiKey: 'bad-key' }),
+    /Jev classification failed: Jev classification HTTP 401: Invalid API key/
+  ));
 });
 
 test('planWithJev classifies dialogue speakers and emotion tags into valid speech plan segments', async () => {
-  const originalFetch = globalThis.fetch;
   const calls = [];
-  try {
-    globalThis.fetch = async (url, options) => {
-      const body = JSON.parse(options.body);
-      calls.push({ url, body });
-      const [first, second] = calls.length === 1 ? ['Alice', 'Bob'] : ['cheerful', 'whispering'];
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ answers: { q0: { choice: first }, q1: { choice: second } } })
-      };
-    };
+  await withCors(async (url, options) => {
+    const body = JSON.parse(options.body);
+    calls.push({ url, body });
+    const [first, second] = calls.length === 1 ? ['Alice', 'Bob'] : ['cheerful', 'whispering'];
+    return { body: { answers: { q0: { choice: first }, q1: { choice: second } } } };
+  }, async () => {
 
     const jevConfig = {
       voices: [{ id: 'Charon' }, { id: 'Kore' }],
@@ -602,19 +593,15 @@ test('planWithJev classifies dialogue speakers and emotion tags into valid speec
     assert.ok(narrSeg, 'Narrator segment found');
     assert.equal(narrSeg.speaker, 'Narrator');
     assert.equal(narrSeg.voice, 'Charon');
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  });
 });
 
 test('planWithJev handles pure narration without making classification calls', async () => {
-  const originalFetch = globalThis.fetch;
   let fetchCalled = false;
-  try {
-    globalThis.fetch = async () => {
-      fetchCalled = true;
-      throw new Error('Should not be called');
-    };
+  await withCors(async () => {
+    fetchCalled = true;
+    throw new Error('Should not be called');
+  }, async () => {
     const transcript = 'The sun set over the distant mountains. All was calm and peaceful.';
     const plan = await planWithJev({
       transcript,
@@ -625,9 +612,7 @@ test('planWithJev handles pure narration without making classification calls', a
     assert.equal(plan.segments.length, 1);
     assert.equal(plan.segments[0].speaker, 'Narrator');
     assert.equal(plan.segments[0].text, transcript);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  });
 });
 
 test('backend RPC handler supports action planJev and planWithJev', async () => {

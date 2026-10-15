@@ -1300,48 +1300,22 @@ function applySoundCues(segments, {cues=[], ambience=[], music=[]}={}) {
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
-  if (typeof spindle !== 'undefined' && typeof spindle?.cors === 'function') {
-    const res = await spindle.cors(url, {
-      method: 'POST',
-      headers,
-      // Spindle forwards options through worker postMessage. AbortSignal is not
-      // structured-cloneable there. Cancel locally and discard late results.
-      body: JSON.stringify(payload)
-    });
-    signal?.throwIfAborted();
-    if (!res) throw new Error('Jev request returned no response.');
-    let data;
-    try {
-      data = typeof res.body === 'string' ? JSON.parse(res.body) : res.body;
-    } catch {
-      data = res.body;
-    }
-    if (res.status < 200 || res.status >= 300) {
-      const msg = data?.error?.message || data?.message || (typeof res.body === 'string' ? res.body : '') || `HTTP ${res.status}`;
-      throw new Error(`Jev classification HTTP ${res.status}${msg ? `: ${msg}` : ''}`);
-    }
-    return data;
+  // Spindle forwards options through worker postMessage. AbortSignal is not
+  // structured-cloneable there. Cancel locally and discard late results.
+  const res = await spindle.cors(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+  signal?.throwIfAborted();
+  if (!res) throw new Error('Jev request returned no response.');
+  let data;
+  try {
+    data = typeof res.body === 'string' ? JSON.parse(res.body) : res.body;
+  } catch {
+    data = res.body;
   }
-  if (typeof fetch === 'function') {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-      signal
-    });
-    if (!res.ok) {
-      let msg = '';
-      try {
-        const errObj = await res.json();
-        msg = errObj?.error?.message || errObj?.message || '';
-      } catch {
-        msg = await res.text().catch(() => '');
-      }
-      throw new Error(`Jev classification HTTP ${res.status}${msg ? `: ${msg}` : ''}`);
-    }
-    return await res.json();
+  if (res.status < 200 || res.status >= 300) {
+    const msg = data?.error?.message || data?.message || (typeof res.body === 'string' ? res.body : '') || `HTTP ${res.status}`;
+    throw new Error(`Jev classification HTTP ${res.status}${msg ? `: ${msg}` : ''}`);
   }
-  throw new Error('No HTTP transport available (spindle.cors or fetch).');
+  return data;
 }
 
 // TypeSafe's Decision API, the contract behind Lumiverse Decision connections, called with a Jev key.
@@ -1685,19 +1659,11 @@ async function chooseSound(choices, input, userId, signal, state, instructions) 
 }
 
 async function getJson(url, headers, signal, service) {
-  if (typeof spindle !== 'undefined' && typeof spindle?.cors === 'function') {
-    signal.throwIfAborted();
-    const resp = await spindle.cors(url, { method: 'GET', headers });
-    signal.throwIfAborted();
-    if (resp.status < 200 || resp.status >= 300) throw new Error(`${service} HTTP ${resp.status}`);
-    return typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body;
-  }
-  if (typeof fetch === 'function') {
-    const resp = await fetch(url, { headers, signal });
-    if (!resp.ok) throw new Error(`${service} HTTP ${resp.status}`);
-    return await resp.json();
-  }
-  throw new Error('No HTTP transport available.');
+  signal.throwIfAborted();
+  const resp = await spindle.cors(url, { method: 'GET', headers });
+  signal.throwIfAborted();
+  if (resp.status < 200 || resp.status >= 300) throw new Error(`${service} HTTP ${resp.status}`);
+  return typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body;
 }
 
 const MUSIC_BASE = 'https://incompetech.com/music/royalty-free/';
@@ -1800,7 +1766,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.6-staging.25',ready:true}});return;
+      send({result:{version:'1.1.6-staging.26',ready:true}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;
@@ -2058,6 +2024,15 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         throw new Error(`Fish Audio HTTP ${response.status}${detail ? `: ${detail}` : ''}. Check API key and quota.`);
       }
       send({result:{base64:response.body,mimeType:'audio/mpeg'}}); return;
+    }
+    if (message.action === 'freesoundPreview') {
+      const url = new URL(String(input.url || ''));
+      if (url.protocol !== 'https:' || !/(^|\.)freesound\.org$/.test(url.hostname)) throw new Error('Freesound preview URL is not from freesound.org.');
+      // The host checks that the bytes are audio and returns them as base64.
+      const response = await spindle.cors(url.href, { responseType: 'arraybuffer', mediaType: 'audio' });
+      if (controller.signal.aborted) return;
+      if (response.status < 200 || response.status >= 300) throw new Error(`Freesound preview HTTP ${response.status}`);
+      send({result:{base64:response.body,mimeType:(response.headers?.['content-type'] || 'audio/mpeg').split(';')[0]}}); return;
     }
     if (message.action === 'freesound') {
       const apiKey = typeof input.apiKey === 'string' && input.apiKey.trim() ? input.apiKey.trim() : '';
