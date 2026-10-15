@@ -1632,7 +1632,8 @@ export async function setup(ctx) {
       <label class="et-check" hidden><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
-    <label hidden>Ignored tags<textarea data-et="ignoredTags" rows="2" placeholder="summary, .panel-class, #panel-id"></textarea></label>
+    <label>Ignored tags<textarea data-et="ignoredTags" rows="2" placeholder="private-note, summary, .panel-class, #panel-id" aria-describedby="choir-ignored-tags-hint"></textarea></label>
+    <p id="choir-ignored-tags-hint" style="font-size:.85em;opacity:.75;margin:6px 0 12px">Skip these tags and all text inside them. Separate names with commas or new lines, for example <code>private-note, summary</code>. You can also use <code>.class</code> or <code>#id</code>. Changes save automatically and apply to every chat.</p>
 
     <details>
       <summary>Advanced Settings</summary>
