@@ -100,6 +100,11 @@ export function createSetupWizard(ctx, adapter) {
     .choir-setup .cs-progress [aria-current="step"] span{background:var(--lumiverse-primary-010,#8882);border-color:currentColor}
     .choir-setup .cs-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
     .choir-setup .cs-card{background:var(--lumiverse-fill-subtle,#8881);border:1px solid var(--lumiverse-border,#8884);border-radius:12px;padding:16px;margin:0 0 14px;min-width:0}
+    .choir-setup .cs-guide{margin:12px 0 18px;font-size:.92em}
+    .choir-setup .cs-guide summary{cursor:pointer;font-weight:600}
+    .choir-setup .cs-guide ol{padding-left:22px;margin:12px 0;list-style:decimal}
+    .choir-setup .cs-guide li{display:list-item;list-style:decimal;margin:8px 0;overflow-wrap:anywhere}
+    .choir-setup .cs-guide a{color:var(--lumiverse-primary,inherit);text-decoration:underline;text-underline-offset:3px}
     .choir-setup label{display:flex;flex-direction:column;gap:6px;margin:8px 0;font-size:.92em;min-width:0}
     .choir-setup input,.choir-setup select{font:inherit;width:100%;min-width:0;min-height:42px;padding:8px 10px;border:1px solid var(--lumiverse-border,#8886);border-radius:8px;background:var(--lumiverse-bg-elevated,transparent);color:inherit}
     .choir-setup option{background:var(--lumiverse-bg,Canvas);color:var(--lumiverse-text,CanvasText)}
@@ -338,6 +343,15 @@ export function createSetupWizard(ctx, adapter) {
         element('p','Start with speech, then add the extras you want. Unconfigured features should stay off.',body);
         const sound=element('div','',body);sound.className='cs-card';element('h3','A soundscape for your story',sound);
         input('Freesound API key',draft.freesoundApiKey,sound,value=>{draft.freesoundApiKey=value;},{password:true,hint:'Saved in Choir’s existing preferences. Sound effects and ambience need this key plus an LLM for cue selection.'});
+        const guide=element('details','',sound);guide.className='cs-guide';element('summary','How to get a Freesound API key',guide);
+        const link=(parent,title,url)=>{const node=element('a',title,parent);node.href=url;node.target='_blank';node.rel='noopener noreferrer';return node;};
+        const steps=element('ol','',guide);
+        const account=element('li','',steps);link(account,'Sign in to Freesound','https://freesound.org/');account.append(' or create an account. Verify your email if Freesound asks.');
+        const apply=element('li','',steps);link(apply,'Open the API key page','https://freesound.org/apiv2/apply/');apply.append(' and request an API credential for your Choir setup. Suggested application name: Choir. Describe your use, such as sound effects and ambience for personal story playback.');
+        element('li','Copy the value labelled “Client secret/Api key” from your credentials. The Client ID is a different value; Choir needs the API key.',steps);
+        element('li','Return here, paste the key above, enable Sound effects and/or Ambient sound, and choose a Sound cue LLM connection. Select Finish setup on Review to save.',steps);
+        element('p','You can leave these features off and finish without a key. Choir uses the key to search sounds and play previews; no OAuth setup is needed.',guide).className='cs-hint';
+        link(guide,'Official Freesound key instructions','https://freesound.org/docs/api/authentication.html#token-authentication');
         check('Sound effects',draft.enableSfx,sound,value=>{draft.enableSfx=value;});
         check('Ambient sound',draft.enableAmbience,sound,value=>{draft.enableAmbience=value;});
         check('Background music',draft.enableMusic,sound,value=>{draft.enableMusic=value;},'Music uses Choir’s existing library and attribution. Sound cue planning uses your LLM and may incur charges.');

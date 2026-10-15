@@ -80,6 +80,15 @@ LLM but no Freesound key. Automatic NPC casting requires Jev or LLM. Automatic
 voice design requires direct Gemini, its session key, and automatic NPC casting.
 Automation only takes effect for subsequent replies, and can incur charges.
 
+**How to get a Freesound API key** under Optional Features provides a compact,
+expandable walkthrough: sign in/create an account, request a credential for
+your Choir setup, copy **Client secret/Api key**, then paste it and choose sound
+features and a cue LLM before finishing. Links open Freesound's official site,
+application page, and [token authentication instructions](https://freesound.org/docs/api/authentication.html#token-authentication)
+in a separate tab so the wizard draft remains open. Choir searches sounds and
+uses previews with token authentication; no OAuth setup is needed. The guide
+does not send a request, change settings, or enable features when expanded.
+
 ## Verification
 
 Run `npm run build`, `npm test`, and `npm run test:ui`. The normal test commands
