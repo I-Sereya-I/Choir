@@ -1975,6 +1975,66 @@ test('drawer Stop during automatic NPC voice design preserves Stopped status and
   }finally{await h.close();}
 });
 
+test('manual passage speakers persist across reloads and navigation, and Replay and Cue use the correction',async()=>{
+ const h=await harness();try{
+  assert.equal(h.$('ignoredTagsDetails').open,false);assert.equal(h.root.querySelector('#choir-ignored-tags-hint'),null);assert.equal(h.$('ignoredTags').getAttribute('aria-label'),'Ignored tags');
+  assert.equal(h.$('planDetails').open,false);assert.equal(h.$('assignmentEmpty').hidden,false);
+  await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+  const key=[...h.store.keys()].find(key=>key.startsWith('plan:')),original=structuredClone(h.store.get(key)),planned=h.requests.filter(request=>request.action==='plan').length;
+  const dropdown=()=>h.$('preview').querySelector('[data-choir-speaker="1"]');
+  dropdown().value='Guard';dropdown().dispatchEvent(new h.dom.window.Event('change'));
+  await until(()=>h.$('status').textContent==='Passage 2 assigned to Guard. Saved.');
+  const saved=h.store.get(key);assert.equal(saved.attribution.segments[1].speaker,'Guard');assert.equal(saved.attribution.segments[1].manualSpeaker,true);
+  assert.equal(saved.attribution.segments[1].text,original.attribution.segments[1].text);assert.deepEqual(saved.attribution.segments.filter((_,index)=>index!==1),original.attribution.segments.filter((_,index)=>index!==1));
+  assert.equal(h.synthesis.length,4);assert.equal(h.requests.filter(request=>request.action==='plan').length,planned);
+  assert.equal(globalThis.__CHOIR_API__.planParagraph('"Hello."').segments[0].speaker,'Guard');
+  [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();
+  await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.equal(h.synthesis.length,5);assert.equal(h.synthesis.at(-1).voice,'g');assert.equal(h.synthesis.at(-1).connectionId,'a');assert.equal(h.synthesis.at(-1).text,'"Hello."');
+  await h.reload();assert.equal(dropdown().value,'Guard');await h.play();assert.equal(h.synthesis.length,5);
+  h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent==='Ready.');
+  h.state.active='chat-a';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent.includes('restored'));
+  assert.equal(dropdown().value,'Guard');assert.equal(h.requests.filter(request=>request.action==='plan').length,planned);
+  h.state.messages=[h.message,{id:'newer-message',name:'Mira',is_user:false,content:'Evening came. "Welcome back."'}];await h.plan();assert.equal(h.store.get('activeplan:chat-a'),'newer-message');
+  [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Speakers').click();await until(()=>h.$('status').textContent==='Speaker assignments loaded.');assert.equal(h.$('planDetails').open,true);
+  assert.equal(dropdown().value,'Guard');assert.equal(h.store.get('activeplan:chat-a'),h.message.id);assert.equal(h.requests.filter(request=>request.action==='plan').length,planned+1);
+ }finally{await h.close();}
+});
+
+test('failed speaker saves retain the original passage and allow retry without planning or synthesis',async()=>{
+ const h=await harness();try{
+  await h.plan();const key=[...h.store.keys()].find(key=>key.startsWith('plan:')),original=structuredClone(h.store.get(key)),requests=h.requests.length;
+  const change=speaker=>{const dropdown=h.$('preview').querySelector('[data-choir-speaker="1"]');dropdown.value=speaker;dropdown.dispatchEvent(new h.dom.window.Event('change'));};
+  h.state.failPlanSave=true;change('Narrator');await until(()=>h.$('status').textContent.includes('Settings storage failed'));
+  assert.equal(h.$('preview').querySelector('[data-choir-speaker="1"]').value,'Mira');assert.deepEqual(h.store.get(key),original);assert.equal(h.$('latest').disabled,false);
+  h.state.failPlanSave=false;change('Narrator');await until(()=>h.$('status').textContent==='Passage 2 assigned to Narrator. Saved.');
+  const raw=JSON.parse(h.$('planJson').value).segments[1];assert.equal(raw.speaker,'Narrator');assert.equal(raw.voice,'n');assert.equal(raw.style,'Warm');
+  assert.equal(h.synthesis.length,0);assert.equal(h.requests.length,requests);await h.reload();assert.equal(h.$('preview').querySelector('[data-choir-speaker="1"]').value,'Narrator');
+ }finally{await h.close();}
+});
+
+test('manual speakers require their own assigned voice instead of borrowing the previous speaker voice',async()=>{
+ const h=await harness();try{
+  await h.plan();const key=[...h.store.keys()].find(key=>key.startsWith('plan:')),original=structuredClone(h.store.get(key));
+  h.$('fixed').querySelectorAll('[data-choir-voice]')[1].value='';
+  const dropdown=h.$('preview').querySelector('[data-choir-speaker="1"]');dropdown.value='You';dropdown.dispatchEvent(new h.dom.window.Event('change'));
+  await until(()=>h.$('status').textContent.includes('Choose a voice for You'));
+  assert.deepEqual(h.store.get(key),original);assert.equal(h.$('preview').querySelector('[data-choir-speaker="1"]').value,'Mira');assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+ }finally{await h.close();}
+});
+
+test('a delayed manual speaker save cannot replace another chat preview or status',async()=>{
+ const h=await harness();let release;try{
+  await h.plan();const originalSet=h.ctx.settings.set;
+  h.ctx.settings.set=async(key,value)=>{if(key.startsWith('plan:'))await new Promise(resolve=>release=resolve);return originalSet(key,value);};
+  const dropdown=h.$('preview').querySelector('[data-choir-speaker="1"]');dropdown.value='Guard';dropdown.dispatchEvent(new h.dom.window.Event('change'));await until(()=>Boolean(release));
+  assert.ok([...h.$('preview').querySelectorAll('[data-choir-speaker]')].every(node=>node.disabled));
+  h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent==='Ready.');release();await tick();
+  assert.equal(h.$('preview').children.length,0);assert.equal(h.$('status').textContent,'Ready.');assert.equal(h.$('assignmentEmpty').hidden,false);assert.equal(h.$('latest').disabled,false);
+  h.state.active='chat-a';h.subscriptions.get('chat.active')();await until(()=>h.$('status').textContent.includes('restored'));assert.equal(h.$('preview').querySelector('[data-choir-speaker="1"]').value,'Guard');
+ }finally{release?.();await h.close();}
+});
+
 test('reload and chat navigation restore plans; recasting and edited text regenerate only affected passages',async()=>{
   const h=await harness();try{
     assert.equal(h.footer.querySelector('button').title,'Play Choir · click again to stop'); // New ctx.ui decorator API.

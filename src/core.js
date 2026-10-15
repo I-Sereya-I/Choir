@@ -550,7 +550,7 @@ export function validatePlan(raw, transcript, config) {
       if (!matchOk) throw new Error(`Segment ${index+1} changes or skips the original text. Copy exact consecutive substrings.`);
       cursor = tIdx;
     }
-    const detected=/^["“][\s\S]*["”]$/.test(text)?unisonSpeakers(transcript,{kind:'dialogue',start:sourceStart,end:cursor},config):null;
+    const detected=segment.manualSpeaker!==true && /^["“][\s\S]*["”]$/.test(text)?unisonSpeakers(transcript,{kind:'dialogue',start:sourceStart,end:cursor},config):null;
     const supplied=segment.unison;
     if(supplied!==undefined && (!Array.isArray(supplied) || supplied.length<2 || supplied.length>5 || !/^["“][\s\S]*["”]$/.test(text)))throw new Error('Unison needs 2–5 speakers and one quoted dialogue turn.');
     const names=supplied?.map(member=>member?.speaker) || detected;
@@ -570,7 +570,7 @@ export function validatePlan(raw, transcript, config) {
     if(inputs.some(input=>typeof input.style!=='string' && input.style!=null || (input.style || '').length>600))throw new Error('Turn styles must be at most 600 characters.');
     const unison=names?actors.map((member,index)=>({speaker:member.speaker,voice:member.voice,route:member.route || config.defaultRoute || '',gender:member.gender || 'auto',style:config.useStyle===false?'':[member.style,inputs[index].style].filter(Boolean).join('. ')})):undefined;
     return {speaker:unison?unison.map(member=>member.speaker).join(' & '):actor.speaker, voice:actor.voice,...(unison?{unison}:{}),...((actor.route || config.defaultRoute)?{route:actor.route || config.defaultRoute}:{}), gender:actor.gender || 'auto', text,
-      style: unison || config.useStyle === false ? '' : [actor.style, delivery].filter(Boolean).join('. '),
+      style: unison || config.useStyle === false ? '' : [actor.style, delivery].filter(Boolean).join('. '),...(segment.manualSpeaker===true?{manualSpeaker:true}:{}),
       ...(sfx ? {sfx} : {}), ...(ambience ? {ambience} : {}), ...(music ? {music} : {})};
   });
   if (transcript.slice(cursor).trim()) throw new Error('The plan omits the end of the original message.');
@@ -583,7 +583,7 @@ export function attributionPlan(plan, config) {
   return {segments:plan.segments.map(segment=>{
     const actor=[...config.fixed,...config.npcs].find(a=>normalizeName(a.speaker)===normalizeName(segment.speaker));
     const prefix=actor?.style?`${actor.style}. `:'';
-    return {speaker:segment.speaker,text:segment.text,...(segment.unison?{unison:segment.unison.map(member=>{const actor=[...config.fixed,...config.npcs].find(actor=>normalizeName(actor.speaker)===normalizeName(member.speaker));const prefix=actor?.style?`${actor.style}. `:'';return {speaker:member.speaker,style:prefix && member.style.startsWith(prefix)?member.style.slice(prefix.length):member.style===actor?.style?'':member.style};})}:{}),style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style,...(segment.sfx?{sfx:segment.sfx}:{}),...(segment.ambience?{ambience:segment.ambience}:{}),...(segment.music?{music:segment.music}:{})};
+    return {speaker:segment.speaker,text:segment.text,...(segment.manualSpeaker===true?{manualSpeaker:true}:{}),...(segment.unison?{unison:segment.unison.map(member=>{const actor=[...config.fixed,...config.npcs].find(actor=>normalizeName(actor.speaker)===normalizeName(member.speaker));const prefix=actor?.style?`${actor.style}. `:'';return {speaker:member.speaker,style:prefix && member.style.startsWith(prefix)?member.style.slice(prefix.length):member.style===actor?.style?'':member.style};})}:{}),style:prefix && segment.style.startsWith(prefix)?segment.style.slice(prefix.length):segment.style===actor?.style?'':segment.style,...(segment.sfx?{sfx:segment.sfx}:{}),...(segment.ambience?{ambience:segment.ambience}:{}),...(segment.music?{music:segment.music}:{})};
   })};
 }
 

@@ -99,10 +99,13 @@ export async function setup(ctx) {
     .ensemble-tts .et-plan-block{padding:7px 0;margin:0;border:0;border-bottom:1px solid #8883;border-radius:0;background:none}
     .ensemble-tts .et-plan-heading{display:flex;gap:8px;justify-content:space-between;align-items:baseline;font-size:0.85em}
     .ensemble-tts .et-plan-heading small{font-size:0.85em;opacity:0.75;text-align:right}
+    .ensemble-tts .et-passage-speaker{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:0.88em}
+    .ensemble-tts .et-passage-speaker select{flex:1;min-width:0;width:auto}
     .ensemble-tts details{margin:10px 0;border:1px solid rgba(128,128,128,0.2);border-radius:6px;padding:8px 12px}
     .ensemble-tts details summary{cursor:pointer;font-size:0.88em;font-weight:500;opacity:0.8;user-select:none}
     .ensemble-tts details[open] summary{margin-bottom:10px}
-    .ensemble-tts .et-message{display:flex;gap:10px;align-items:center;justify-content:space-between}
+    .ensemble-tts .et-message{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
+    .ensemble-tts .et-message .et-btn-group{flex-wrap:wrap}
     .ensemble-tts .et-btn-group{display:flex;gap:6px;align-items:center}
     .choir-mixer[hidden],.choir-mixer.cm-hidden{display:none !important}
     ::highlight(choir-speaking){background-color:var(--lumiverse-primary-020,rgba(147,112,219,.25))}
@@ -293,8 +296,9 @@ export async function setup(ctx) {
       <label class="et-check" hidden><input data-et="useStyle" type="checkbox" checked> Delivery styles</label>
       <label class="et-check" hidden><input data-et="useFastClassifier" type="checkbox"> Fast Attribution (0ms instant for narration & 1-on-1 dialogue)</label>
     </div>
-    <label>Ignored tags<textarea data-et="ignoredTags" rows="2" placeholder="private-note, summary, .panel-class, #panel-id" aria-describedby="choir-ignored-tags-hint"></textarea></label>
-    <p id="choir-ignored-tags-hint" style="font-size:.85em;opacity:.75;margin:6px 0 12px">Skip these tags and all text inside them. Separate names with commas or new lines, for example <code>private-note, summary</code>. You can also use <code>.class</code> or <code>#id</code>. Changes save automatically and apply to every chat.</p>
+    <details data-et="ignoredTagsDetails"><summary>Ignored tags</summary>
+      <textarea data-et="ignoredTags" aria-label="Ignored tags" rows="2" placeholder="private-note, summary, .panel-class, #panel-id"></textarea>
+    </details>
 
     <details>
       <summary>Advanced Settings</summary>
@@ -329,9 +333,10 @@ export async function setup(ctx) {
       </div>
     </details>
 
-    <details data-et="planDetails" hidden><summary data-et="planSummary">Speech plan</summary>
+    <details data-et="planDetails"><summary data-et="planSummary">Speaker assignments</summary>
+    <p data-et="assignmentEmpty">Plan a message to assign its speakers.</p>
     <div data-et="preview"></div>
-    <details>
+    <details data-et="planJsonDetails" hidden>
       <summary>Edit attribution JSON</summary>
       <textarea data-et="planJson" rows="6" spellcheck="false" style="margin-top:8px"></textarea>
       <button data-et="apply" style="margin-top:8px">Apply JSON</button>
@@ -1785,10 +1790,11 @@ export async function setup(ctx) {
     updateTransport();
     $('batchSpeech').disabled=value;if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button'),...$('npcPolicyRoot').querySelectorAll('input,select')])node.disabled=value;
+    for(const node of $('preview').querySelectorAll('[data-choir-speaker]'))node.disabled=value;
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
     refreshDefaultControls();
   }
-  function clearPlan() {plan=null;planSource=null;planAttribution=null;mixerPlaybackSegments=null;$('preview').replaceChildren();$('planJson').value='';$('planSummary').textContent='Speech plan';$('latestNotice').hidden=true;renderMixer();refreshSectionControls();}
+  function clearPlan() {plan=null;planSource=null;planAttribution=null;mixerPlaybackSegments=null;$('preview').replaceChildren();$('planJson').value='';$('planSummary').textContent='Speaker assignments';$('assignmentEmpty').hidden=false;$('planJsonDetails').hidden=true;$('latestNotice').hidden=true;renderMixer();refreshSectionControls();}
   // Cue keeps the current ambience bed running into its next paragraph.
   function stop(show=true,keepBed=false,keepMusic=false) {
     if(show)cancelAutoReplies();
@@ -1961,24 +1967,74 @@ export async function setup(ctx) {
   function renderPreview() {
     refreshLatestNotice();
     $('preview').replaceChildren();
-    $('planSummary').textContent=`Speech plan · ${plan.segments.length} spoken blocks`;
+    $('planSummary').textContent=`Speaker assignments · ${plan.segments.length} passages`;
+    $('assignmentEmpty').hidden=true;$('planJsonDetails').hidden=false;
+    const cast=casting(config),actors=[...new Map([...cast.fixed,...cast.npcs].map(actor=>[normalizeName(actor.speaker),actor])).values()];
     if(plan.warning){const warning=document.createElement('p');warning.setAttribute('role','note');warning.textContent=`Jev failed: ${plan.warning}. Explicit LLM fallback supplied this attribution.`;$('preview').append(warning);}
     for(const [index,segment] of plan.segments.entries()) {
       const card=document.createElement('div');card.className='et-card et-plan-block';
       const isMutedNarrator=normalizeName(segment.speaker)==='narrator' && Boolean(config.muteNarrator);
       if(isMutedNarrator)card.style.opacity='0.55';
       const label=document.createElement('strong');
-      const connectionLabel=segment.route==='gemini'?'Gemini':nativeConnections.find(c=>`native:${c.id}`===segment.route)?.name;
-      label.textContent=`${index+1}. ${segment.speaker}${segment.unison?' · in unison':''} · ${segment.unison?segment.unison.map(member=>member.voice).join(' + '):segment.voice}${connectionLabel?` · ${connectionLabel}`:''}${isMutedNarrator?' · Muted':''}`;
+      label.textContent=`${index+1}. ${segment.speaker}${segment.unison?' · in unison':''}${isMutedNarrator?' · Muted':''}`;
       label.title=segment.style || 'Default delivery';
       const text=document.createElement('div');text.className='et-transcript';text.textContent=segment.text;
       const cacheStatus=document.createElement('small');cacheStatus.dataset.cacheIndex=index;cacheStatus.textContent='Checking cache…';
       const heading=document.createElement('div');heading.className='et-plan-heading';heading.append(label,cacheStatus);
-      card.append(heading,text);$('preview').append(card);
+      const speakerLabel=document.createElement('label');speakerLabel.className='et-passage-speaker';speakerLabel.append('Speaker');
+      const select=document.createElement('select');select.dataset.choirSpeaker=index;select.setAttribute('aria-label',`Speaker for passage ${index+1}`);select.disabled=busy;
+      if(segment.unison || !actors.some(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker))){
+        const current=document.createElement('option');current.value='';current.textContent=segment.speaker+(segment.unison?' (in unison)':'');select.append(current);
+      }
+      for(const actor of actors){const option=document.createElement('option');option.value=actor.speaker;option.textContent=actor.speaker;select.append(option);}
+      select.value=segment.unison?'':actors.find(actor=>normalizeName(actor.speaker)===normalizeName(segment.speaker))?.speaker || '';
+      select.onchange=()=>run(()=>reassignSpeaker(index,select.value));speakerLabel.append(select);
+      card.append(heading,speakerLabel,text);$('preview').append(card);
     }
     // Editing uses delivery-only styles, so re-validation does not double the base style.
     $('planJson').value=JSON.stringify({segments:plan.segments.map(segment=>withoutBase(segment,casting(config)))},null,2);
     renderMixer();void refreshCacheStatus();refreshSectionControls();
+  }
+  async function reassignSpeaker(index,speaker){
+    if(busy || !plan || !planSource)return;
+    const source=planSource,original=plan,version=loadVersion;
+    stop(false);const token=revision;setBusy(true);
+    const current=()=>!disposed && version===loadVersion && token===revision && source===planSource && source.chatId===chatId;
+    try{
+      await flushSettings();if(!current() || plan!==original)return;
+      if(!sameSpeech(source.content,ctx.messages.getContent(source.messageId)) || !await recordingMatchesTranscript(source,source.content))throw new Error('The message or reading filters changed. Plan this message again before correcting its speakers.');
+      if(!current() || plan!==original)return;
+      const cast=casting(capture()),actor=[...cast.fixed,...cast.npcs].find(actor=>actor.speaker===speaker);
+      if(!actor)throw new Error('Choose a character from the cast.');
+      if(!actor.voice)throw new Error(`Choose a voice for ${actor.speaker} in Lead Cast or NPC Cast first.`);
+      const segments=original.segments.map(segment=>withoutBase(segment,cast));
+      if(!segments[index])throw new Error('This passage is no longer available.');
+      segments[index]={...segments[index],speaker:actor.speaker,voice:actor.voice,route:actor.route || cast.defaultRoute,manualSpeaker:true};
+      delete segments[index].unison;
+      const edited={...validatePlan({segments},source.transcript,cast),warning:original.warning || ''};
+      const attribution=attributionPlan(edited,cast),key=await planKey(source.chatId,source.messageId);
+      if(!current() || plan!==original)return;
+      status('Saving speaker assignment…');
+      // Only this message's attribution changes; its audio cache remains reusable.
+      await ctx.settings.set(key,{...source,attribution,warning:edited.warning});
+      if(!current() || plan!==original)return;
+      plan=edited;planAttribution=attribution;paragraphCues.clear();
+      status(`Passage ${index+1} assigned to ${actor.speaker}. Saved.`);
+    }catch(error){if(current())throw error;}finally{if(current()){renderPreview();setBusy(false);}}
+  }
+  async function openSpeakerAssignments(messageId){
+    if(busy)return;
+    stop(false);const token=revision,targetChat=chatId,version=loadVersion;setBusy(true);
+    const current=()=>!disposed && token===revision && version===loadVersion && targetChat===chatId;
+    try{
+      if(!await restoreSavedPlan(messageId)){
+        if(current())throw new Error('Plan this message first, then open its speaker assignments.');
+        return;
+      }
+      await ctx.settings.set(`activeplan:${targetChat}`,messageId);
+      if(!current())return;
+      tab.activate();$('planDetails').open=true;status('Speaker assignments loaded.');
+    }catch(error){if(current())throw error;}finally{if(current())setBusy(false);}
   }
   async function refreshCacheStatus(){
     if(!planSource)return;
@@ -2578,7 +2634,7 @@ export async function setup(ctx) {
   }
   function updateGroupingStatus(){
     const node=$('groupingStatus');if(!node)return;
-    if(plan)$('planSummary').textContent=`Speech plan · ${plan.segments.length} spoken blocks`;
+    if(plan)$('planSummary').textContent=`Speaker assignments · ${plan.segments.length} passages`;
     node.hidden=true;if(!config?.batchSpeech)return;
     const route=scope(config),connection=nativeConnections.find(item=>`native:${item.id}`===route);
     const maxSpeakers=route==='gemini'?2:nativeSpeakerLimit(connection);
@@ -2587,7 +2643,7 @@ export async function setup(ctx) {
     if(plan?.segments?.length){
       try{const batches=playbackBatches(plan.segments.map((segment,passageIndex)=>({...segment,passageIndex})),config);
         const speech=batches.filter(batch=>!batch.kind).length;
-        $('planSummary').textContent=`Speech plan · ${plan.segments.filter(segment=>!segment.kind).length} text turns · ${speech} speech ${speech===1?'clip':'clips'}`;
+        $('planSummary').textContent=`Speaker assignments · ${plan.segments.filter(segment=>!segment.kind).length} text turns · ${speech} speech ${speech===1?'clip':'clips'}`;
         const requests=batches.filter(batch=>!batch.kind).reduce((sum,batch)=>sum+(batch.unison?.length || 1),0);
         node.textContent=`This plan: ${speech} speech ${speech===1?'batch':'batches'}${requests>speech?` (up to ${requests} TTS calls)`:''}`;node.hidden=false;
       }catch{}
@@ -2947,6 +3003,12 @@ export async function setup(ctx) {
       if(mergedCardRecording(recording))throw new Error('This recording combines several card characters into one voice. Plan and play the message again to separate them.');
       if(aliasedLeadRecording(recording))throw new Error('This recording treats a lead character alias as a separate speaker. Plan and play the message again to use the lead voice.');
       if(!await recordingMatchesTranscript(recording,recording.content))throw new Error('This recording uses older speech text. Plan and play the message again to apply the current filters or persona name.');
+      const saved=await ctx.settings.get(await planKey(targetChat,messageId));
+      if(token!==revision || ctrl.signal.aborted)throw abortError();
+      if(saved?.attribution?.segments?.some(segment=>segment.manualSpeaker)){
+        if(await restoreSavedPlan(messageId)){await play();return;}
+        throw new Error('The saved speaker corrections need an updated plan or voice assignment before replay.');
+      }
       if(outdatedSfxRecording(recording)){
         if(await restoreSavedPlan(messageId)){await play();return;}
         throw new Error('Saved sound-effect timing needs updating. Plan and play this reply to place effects between phrases.');
@@ -3099,6 +3161,7 @@ export async function setup(ctx) {
       name.textContent=`${message.name || (message.is_user?'You':'Character')} · ${transcriptFromMessage(message.content,config?.ignoredTags).slice(0,70)}`;
       const actions=document.createElement('div');actions.className='et-btn-group';
       const button=document.createElement('button');button.type='button';button.className='et-btn-subtle';button.textContent='Plan';button.onclick=()=>run(()=>prepare(message.id,false,undefined,true));actions.append(button);
+      const speakers=document.createElement('button');speakers.type='button';speakers.className='et-btn-subtle';speakers.textContent='Speakers';speakers.onclick=()=>run(()=>openSpeakerAssignments(message.id));actions.append(speakers);
       const replay=document.createElement('button');replay.type='button';replay.className='et-btn-subtle';replay.textContent='Replay';replay.onclick=()=>run(()=>replayRecording(message.id));actions.append(replay);
       const removeAudio=document.createElement('button');removeAudio.type='button';removeAudio.className='et-btn-danger';removeAudio.textContent='Delete audio';removeAudio.onclick=()=>run(async()=>{
         const targetChat=chatId,key=recordingKey(targetChat,message.id);

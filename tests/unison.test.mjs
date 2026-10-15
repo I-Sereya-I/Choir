@@ -6,6 +6,15 @@ import {characterCardRoles,fastClassifyPlan,validatePlan,speechSourceUnits,resol
 const cast=()=>({fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Levi',voice:'l',style:'Gentle',aliases:['Levi Cline']},{speaker:'Cole',voice:'c',style:'Low',aliases:['Cole Lane']}],npcs:[],voices:['n','l','c','x'].map(id=>({id})),useStyle:true});
 const passage='They stop at the reception desk. Levi’s hand finds the edge of the counter. Cole’s hand finds his pocket. "User," they say in unison.';
 
+test('a manual single-speaker correction overrides detected unison and survives saved attribution',()=>{
+ const config=cast(),original=fastClassifyPlan(passage,config,{}),saved=attributionPlan(original,config);
+ const quote=saved.segments.find(segment=>segment.unison);delete quote.unison;quote.speaker='Cole';quote.manualSpeaker=true;quote.style='Quiet';
+ const restored=restoreAttribution(saved,passage,config),corrected=restored.segments.find(segment=>segment.text==='"User,"');
+ assert.equal(corrected.speaker,'Cole');assert.equal(corrected.voice,'c');assert.equal(corrected.unison,undefined);assert.equal(corrected.style,'Low. Quiet');
+ const reloaded=restoreAttribution(attributionPlan(restored,config),passage,config);
+ assert.deepEqual(reloaded.segments,restored.segments);assert.equal(reloaded.segments.map(segment=>segment.text).join(' '),original.segments.map(segment=>segment.text).join(' '));
+});
+
 test('collective attribution excludes listeners and observers and supports common speech verbs',()=>{
  const config=cast();config.fixed.push({speaker:'Judy',voice:'x',style:''});
  for(const text of ['"Hello," Levi and Cole said to Judy in unison.','Judy watched Levi and Cole enter. "Hello," they said in unison.','"Hello," Levi and Cole yelled in unison.','Levi and Cole scream together, "Hello."','Together, Levi and Cole chanted, "Hello."']){
