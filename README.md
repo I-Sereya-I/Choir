@@ -4,7 +4,7 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.24-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.6--staging.24-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/abyssal-const)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
 [![Tests](https://img.shields.io/badge/tests-367%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -13,7 +13,9 @@ An installable Lumiverse Spindle extension for multi-voice narration, dialogue a
 
 </div>
 
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.6-staging.24** declutters the settings drawer: **Speech & Planner** is grouped into Voices, Planner, Sound and Reading, set-and-forget interface toggles move to **Advanced Settings**, and long help texts become short tooltips. Settings, planning and playback are unchanged. Choir preserves connection-specific voice selections when cards split into individual leads, bounds card profiles independently, and checks unstructured card content with a cached Planner LLM analysis. Unison excludes listeners, handles common speech verbs, and mixes all participants in main and Cue playback. Cached unison respects changed NPC policies and mixer levels. Connection-list failures retain the selected adapter, and saved clip controls wait for their voice catalogues. Native Fish/Google/OpenRouter grouping retains the supplied Lumiverse relay patch.
+The personal appearance matches **Abyssal Constellation — Clean**: deep navy surfaces, pale blue controls, warm starlight headings and static constellation details across the drawer, cast defaults dialog, floating mixer and Choir toolbar controls. It changes only Choir appearance, requires no downloaded assets, and uses the host's Abyssal fonts when available with local fallbacks. Install from `abyssal-const` to use it; installing another Choir branch replaces this appearance rather than creating a second extension. This branch starts directly from staging and does not include the separate `Setup-test` wizard.
+
+This is the **personal `abyssal-const` branch**, based on staging **1.1.6-staging.24**, using the original `choir` identifier and settings. Version **1.1.6-staging.24** declutters the settings drawer: **Speech & Planner** is grouped into Voices, Planner, Sound and Reading, set-and-forget interface toggles move to **Advanced Settings**, and long help texts become short tooltips. Settings, planning and playback are unchanged. Choir preserves connection-specific voice selections when cards split into individual leads, bounds card profiles independently, and checks unstructured card content with a cached Planner LLM analysis. Unison excludes listeners, handles common speech verbs, and mixes all participants in main and Cue playback. Cached unison respects changed NPC policies and mixer levels. Connection-list failures retain the selected adapter, and saved clip controls wait for their voice catalogues. Native Fish/Google/OpenRouter grouping retains the supplied Lumiverse relay patch.
 
 
 Version **1.1.6-staging.23** identifies individual leads across formatted headings, named XML profiles and JSON casts. Freeform cards, scenario titles and content outside recognized profiles use a bounded Planner LLM card analysis in Standard LLM and Jev modes, cached until the card changes. Each lead keeps its own profile, aliases, voice and connection. Card titles are not treated as an individual speaker when they describe several people. Local heuristic mode stays local and needs recognizable profiles or manually configured speakers.
