@@ -1,6 +1,6 @@
 {
   "name": "choir",
-  "version": "1.1.6-staging.24",
+  "version": "1.1.6-staging.25",
   "private": true,
   "type": "module",
   "scripts": {

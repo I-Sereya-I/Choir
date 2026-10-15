@@ -1388,6 +1388,28 @@ async function classifyWithJev({ items = [], candidates = [], apiKey, endpoint, 
 }
 
 const UNLISTED_SPEAKER = 'Someone not listed';
+// Quoted terms, written text and merely reported words go to the narrator; quoted thoughts stay with the thinker.
+const NOT_SPOKEN = 'Nobody (not spoken aloud)';
+const NOT_SPOKEN_CHOICE = { name: NOT_SPOKEN, description: "Not dialogue: these quoted words are not said aloud by anyone at this moment. Examples: a quoted word, name, nickname or term being talked about; written, typed or displayed text; words someone said earlier that the narration is only quoting; out-of-character notes; or a noise. A character's own quoted thoughts are not Nobody: they belong to that character." };
+const UNNAMED_SPEAKER = 'Unnamed (the story never gives this speaker a name)';
+
+// Jev can only choose, so a new speaker's name must be offered: capitalised word runs that appear mid-sentence,
+// or that never appear in lowercase and occur in the narration. Uncased scripts yield none and keep the fallback.
+function speakerNameCandidates(text, narration, knownNames = []) {
+  const source = text.replace(/\b(\p{Lu}\p{Ll}{0,2})\.[ \t]+(?=\p{Lu})/gu, '$1\u00a0');
+  const lower = new Set(source.match(/\p{Ll}[\p{L}\p{M}'’-]*/gu) || []);
+  const known = new Set(knownNames.flatMap(name => [name, ...String(name || '').split(/\s+/)]).map(normalizeName).filter(Boolean));
+  const counts = new Map();
+  for (const match of source.matchAll(/(?<![\p{L}\p{M}'’])\p{Lu}[\p{L}\p{M}\p{N}'’\u00a0-]*(?:[ \t]+\p{Lu}[\p{L}\p{M}\p{N}'’\u00a0-]*)*/gu)) {
+    const name = match[0].replace(/\u00a0/g, '. ').replace(/['’]s$/u, '');
+    const before = source.slice(0, match.index).replace(/[ \t]+$/, '').at(-1);
+    const first = name.split(/[ .]/)[0];
+    if ((!before || /[.!?…"“”\n:*—–\-(«[]/.test(before)) && (lower.has(first.toLowerCase()) || !narration.includes(first))) continue;
+    if (name.split(/\s+/).every(word => known.has(normalizeName(word))) || known.has(normalizeName(name))) continue;
+    counts.set(name, (counts.get(name) || 0) + 1);
+  }
+  return [...counts].sort((a, b) => b[1] - a[1]).slice(0, 120).map(([name]) => name);
+}
 
 // Jev sees only the passage, the state and these choices. Cast labels can be placeholders ("Persona") or a
 // scenario card's title, so each choice names who the speaker is and the state carries their profile.
@@ -1429,7 +1451,7 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   // The persona speaks in replies too, so every named cast member is a choice. A line from someone outside the
   // cast gets its own answer instead of borrowing a listed character's voice.
   const cast = jevSpeakerCast(config);
-  const choices = cast.length ? [...cast, { name: UNLISTED_SPEAKER, description: 'A speaker who matches none of the other choices, their names or descriptions.' }] : [];
+  const choices = cast.length ? [...cast, { name: UNLISTED_SPEAKER, description: 'A speaker who matches none of the other choices, their names or descriptions.' }, NOT_SPOKEN_CHOICE] : [];
 
   const chosen = new Map(), used = new Set(allCast.map(actor => actor.voice).filter(Boolean));
   const decisionInput = { decisionConnection: decisionConnection || config.decisionConnection, jevApiKey: key, jevEndpoint: ep };
@@ -1455,11 +1477,11 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   let speakerChoices = [];
   let emotionChoices = [];
 
+  // Each question carries its line in place: a bare quote such as "Robots?" cannot be attributed on its own.
+  const passage = u => `${transcript.slice(Math.max(0, u.start - 300), u.start)}[[${u.text}]]${transcript.slice(u.end, u.end + 300)}`;
+  const state = { transcript, ...(context ? { context } : {}), characters: cast };
   if (dialogueUnits.length > 0) {
     if (hasSpindleDecisions) {
-      // Each question carries its line in place: a bare quote such as "Robots?" cannot be attributed on its own.
-      const passage = u => `${transcript.slice(Math.max(0, u.start - 300), u.start)}[[${u.text}]]${transcript.slice(u.end, u.end + 300)}`;
-      const state = { transcript, ...(context ? { context } : {}), characters: cast };
       // Lumiverse accepts at most 256 questions per evaluation.
       const ask = async (name, question) => {
         const answers = {};
@@ -1476,7 +1498,7 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
       };
       const criteria = Object.fromEntries(choices.map(c => [c.name, c.description]));
       speakerChoices = choices.length
-        ? (await ask('speaker', u => ({ type: 'choice', instructions: `Which character speaks the line marked [[ ]] in this passage: "${passage(u)}"?`, criteria }))).map(choice => choice || UNLISTED_SPEAKER)
+        ? (await ask('speaker', u => ({ type: 'choice', instructions: `Who says the words marked [[ ]] out loud, or thinks them, at this moment in the scene? Use speech tags, nearby actions and turn-taking. If nobody says or thinks them (a quoted term, written text, or words only reported), choose Nobody. Passage: "${passage(u)}"`, criteria }))).map(choice => choice || UNLISTED_SPEAKER)
         : dialogueUnits.map(() => UNLISTED_SPEAKER);
       if (config.useStyle !== false) {
         // Delivery styles are optional: a rejected emotion answer must not discard the speakers.
@@ -1532,6 +1554,22 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
       }
     }
   }
+  // Name speakers outside the cast from the story's own names; lines whose speaker stays unnamed keep the fallback below.
+  const unlisted = dialogueUnits.flatMap((u, i) => speakerChoices[i] === UNLISTED_SPEAKER && !unisonSpeakers(transcript, u, config)?.length ? [i] : []);
+  const names = unlisted.length ? speakerNameCandidates(`${context}\n${transcript}`, `${units.filter(u => u.kind === 'narration').map(u => u.text).join('\n')}\n${context}`,
+    [...allCast.flatMap(actor => [actor.speaker, ...(actor.aliases || [])]), ...(config.characterProfiles || []).map(profile => profile.name)]) : [];
+  if (names.length) {
+    const criteria = { ...Object.fromEntries(names.map(name => [name, `A person called ${name}`])), [UNNAMED_SPEAKER]: "The text never names whoever says this line; it is only described (e.g. 'the guard').", 'None of these': 'None of these names is the speaker.' };
+    const questions = Object.fromEntries(unlisted.slice(0, 256).map(i => [`name_${i}`, { type: 'choice', instructions: `Who says the line marked [[ ]] in this passage? Pick the name the story uses for that speaker: "${passage(dialogueUnits[i])}"`, criteria }]));
+    try {
+      const answers = hasSpindleDecisions
+        ? (await spindle.decisions.evaluate({ userId: userId || undefined, connection_id: decisionConnection || config.decisionConnection || undefined, state, questions }, { signal })).answers
+        : await jevDecision({ apiKey: key, endpoint: ep, state, questions, signal });
+      for (const i of unlisted) if (names.includes(answers?.[`name_${i}`]?.choice)) speakerChoices[i] = answers[`name_${i}`].choice;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+    }
+  }
   // The LLM planner can name and cast a new speaker; without it the line keeps a separate NPC voice.
   if (config.allowLlmFallback === true && speakerChoices.some((choice,index)=>choice===UNLISTED_SPEAKER && !unisonSpeakers(transcript,dialogueUnits[index],config)?.length)) throw new Error('Jev found dialogue from someone who is not in the cast.');
 
@@ -1539,9 +1577,10 @@ async function planWithJev({ transcript, config, apiKey, endpoint, context = '',
   const dialogueEmotionMap = new Map();
   for (let i = 0; i < dialogueUnits.length; i++) {
     const u = dialogueUnits[i];
-    dialogueSpeakerMap.set(u.id, speakerChoices[i] === UNLISTED_SPEAKER ? 'Unknown speaker' : speakerChoices[i]);
+    const notSpoken = speakerChoices[i] === NOT_SPOKEN;
+    dialogueSpeakerMap.set(u.id, notSpoken ? narrator?.speaker || 'Narrator' : speakerChoices[i] === UNLISTED_SPEAKER ? 'Unknown speaker' : speakerChoices[i]);
     const emotion = emotionChoices[i];
-    if (emotion && emotion.toLowerCase() !== 'neutral') {
+    if (!notSpoken && emotion && emotion.toLowerCase() !== 'neutral') {
       dialogueEmotionMap.set(u.id, emotion);
     }
   }
@@ -1761,7 +1800,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.6-staging.24',ready:true}});return;
+      send({result:{version:'1.1.6-staging.25',ready:true}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;

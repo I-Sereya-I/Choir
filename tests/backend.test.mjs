@@ -450,7 +450,7 @@ test('searchVoices handles empty query or network failure', async () => {
 });
 
 
-import { classifyWithJev, planWithJev } from '../src/backend.js';
+import { classifyWithJev, planWithJev, speakerNameCandidates } from '../src/backend.js';
 
 test('classifyWithJev asks the TypeSafe Decision API one choice question per item and returns candidate strings', async () => {
   const originalFetch = globalThis.fetch;
@@ -580,7 +580,7 @@ test('planWithJev classifies dialogue speakers and emotion tags into valid speec
     assert.equal(calls.length, 2);
     assert.ok(calls.every(call => call.url === 'https://api.typesafe.ai/v1/systemone' && call.body.model === 'jev-latest'));
     // The persona speaks in replies too, and a speaker outside the cast has its own choice.
-    assert.deepEqual(Object.keys(calls[0].body.questions.q0.criteria), ['Persona', 'Alice', 'Bob', 'Someone not listed']);
+    assert.deepEqual(Object.keys(calls[0].body.questions.q0.criteria), ['Persona', 'Alice', 'Bob', 'Someone not listed', 'Nobody (not spoken aloud)']);
     assert.equal(calls[0].body.questions.q0.instructions, 'Which character speaks this dialogue: ""Good morning!""?');
     assert.deepEqual(Object.keys(calls[1].body.questions.q1.criteria), ['neutral', 'cheerful', 'whispering', 'angry', 'sad', 'sigh']);
 
@@ -807,7 +807,8 @@ test('Jev offers the persona and a scenario card by who they are, with profiles 
     'Metamorphosis: Just the Way You Are!': "Metamorphosis: Just the Way You Are!: a lead character defined by the character card; use this person's own profile, and distinguish other people in the same card.",
     'Student 1': 'Student 1: a supporting character.',
     'Student 2': 'Student 2 (also called Kenta): a supporting character.',
-    'Someone not listed': 'A speaker who matches none of the other choices, their names or descriptions.'
+    'Someone not listed': 'A speaker who matches none of the other choices, their names or descriptions.',
+    'Nobody (not spoken aloud)': "Not dialogue: these quoted words are not said aloud by anyone at this moment. Examples: a quoted word, name, nickname or term being talked about; written, typed or displayed text; words someone said earlier that the narration is only quoting; out-of-character notes; or a noise. A character's own quoted thoughts are not Nobody: they belong to that character."
   };
   const checkState = characters => {
     assert.deepEqual([...characters.map(c => c.name)], ['Persona', 'Metamorphosis: Just the Way You Are!', 'Student 1', 'Student 2']);
@@ -859,10 +860,39 @@ test('a card voicing several characters keeps its lead and its named NPCs apart'
   const h = await harness(null, null, null, null, null, decisions);
   h.send('planJev', { transcript: '"Um, hi," Saki said. "Speak up!" Kanade laughed.', config: cast });
   const plan = (await h.result()).message.result;
-  assert.deepEqual(Object.keys(evalInput.questions.speaker_0.criteria), ['Saki & Kanade', 'Kanade', 'Someone not listed']);
+  assert.deepEqual(Object.keys(evalInput.questions.speaker_0.criteria), ['Saki & Kanade', 'Kanade', 'Someone not listed', 'Nobody (not spoken aloud)']);
   assert.match(evalInput.questions.speaker_0.criteria['Saki & Kanade'], /also called Saki/);
   assert.match(evalInput.questions.speaker_0.criteria.Kanade, /also called Kana/);
   assert.deepEqual([...plan.segments.filter(s => s.speaker !== 'Narrator').map(s => s.voice)], ['saki', 'kanade']);
+});
+
+test('Jev reads unspoken quotes as narration and names new speakers from the story', async () => {
+  const cast = { voices: [{ id: 'n' }, { id: 'jay' }, { id: 'alice' }, { id: 'npc' }], useStyle: false, npcs: [],
+    fixed: [{ speaker: 'Narrator', voice: 'n', style: '' }, { speaker: 'Jay', voice: 'jay', style: '' }, { speaker: 'Alice', voice: 'alice', style: '' }] };
+  const inputs = [];
+  const decisions = { evaluate: async input => {
+    inputs.push(input);
+    return { answers: inputs.length === 1
+      ? { speaker_0: { choice: 'Someone not listed' }, speaker_1: { choice: 'Someone not listed' }, speaker_2: { choice: 'Nobody (not spoken aloud)' } }
+      : { name_0: { choice: 'Miller' }, name_1: { choice: 'Unnamed (the story never gives this speaker a name)' } } };
+  } };
+  const h = await harness(null, null, null, null, null, decisions);
+  h.send('planJev', { transcript: 'Alice waved at Miller. "Move," he said. "Hey," the clerk said. The sign read "Closed".', config: cast });
+  const plan = (await h.result()).message.result;
+  assert.match(inputs[0].questions.speaker_0.instructions, /out loud, or thinks them/);
+  assert.deepEqual(Object.keys(inputs[1].questions), ['name_0', 'name_1']);
+  assert.ok(Object.hasOwn(inputs[1].questions.name_0.criteria, 'Miller'));
+  assert.ok(!Object.hasOwn(inputs[1].questions.name_0.criteria, 'Alice'));
+  const speakerOf = text => plan.segments.find(s => s.text.includes(text)).speaker;
+  assert.equal(speakerOf('"Move,"'), 'Miller');
+  assert.equal(speakerOf('"Hey,"'), 'Unknown speaker');
+  assert.equal(speakerOf('"Closed"'), 'Narrator');
+});
+
+test('speaker name candidates come from names the story uses, not from cast names or sentence starts', () => {
+  const text = 'Evelyn walked in. "Hi," said Dr. Choi to Miller. The farmer waved. Miller nodded at Jay\'s cat.';
+  assert.deepEqual(speakerNameCandidates(text, 'Evelyn walked in. Miller nodded.', ['Jay']), ['Miller', 'Evelyn', 'Dr. Choi']);
+  assert.deepEqual(speakerNameCandidates('「こんにちは」と農夫が言った。', '農夫が言った。', []), []);
 });
 
 test('dialogue from someone not in the cast goes to the enabled LLM fallback, otherwise to a separate NPC', async () => {
