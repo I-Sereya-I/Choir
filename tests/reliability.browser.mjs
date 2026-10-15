@@ -5,6 +5,8 @@ import {JSDOM} from 'jsdom';
 import {IDBFactory} from 'fake-indexeddb';
 import {setup} from '../dist/frontend.js';
 import {validatePlan,speechSourceUnits,planningSections,transcriptFromMessage} from '../src/core.js';
+import {speechPanel} from './fixtures/speech-panel.mjs';
+import {phoneWidget} from './fixtures/phone-widget.mjs';
 
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 const until=async(predicate)=>{for(let i=0;i<250;i++){if(predicate())return;await tick();}throw Error('Timed out waiting for regression state');};
@@ -41,12 +43,6 @@ async function harness(mixerPreferences,mobile=false){
       state.branchLookups=(state.branchLookups || 0)+1;if(state.branchLookupFails)throw Error('Branch information unavailable');
       return Response.json({extensions:[{identifier:'other-extension',metadata:{branch:'staging'}},{identifier:'choir',metadata:{branch:state.extensionBranch===undefined?'staging':state.extensionBranch}}]});
     }
-    if(url.startsWith('https://freesound.test/ambience.mp3?')){state.bedFetches.push(url);if(state.holdBeds)await new Promise(resolve=>state.releaseBed=resolve);return new Response(`AMBIENCE:${new URL(url).searchParams.get('q')}`,{headers:{'Content-Type':'audio/mpeg'}});}
-    if(url==='https://freesound.test/preview.mp3'){
-      state.previewFetches.push(url);
-      if(state.holdPreview)await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>{state.previewAborted++;reject(new DOMException('Stopped','AbortError'));},{once:true}));
-      return new Response('FREESOUND_PREVIEW',{status:state.previewStatus || 200,headers:{'Content-Type':state.previewType || 'audio/mpeg'}});
-    }
     if(url.endsWith('/tts/synthesize')){
       const input=JSON.parse(options.body);synthesis.push(input);const requestNumber=synthesis.length;
       if(requestNumber===state.holdSynthesisAt){
@@ -67,7 +63,7 @@ async function harness(mixerPreferences,mobile=false){
       return new Response(new Uint8Array([1,2,3]),{headers:{'Content-Type':'audio/mpeg'}});
     }
     let value;
-    if(url.includes('/providers'))value={providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}},{id:'accent_tts',capabilities:{parameters:{instructions:{type:'string'},accent:{enum:['Irish','French']}}}}]};
+    if(url.includes('/providers'))value={providers:state.providers || [{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}},{id:'accent_tts',capabilities:{parameters:{instructions:{type:'string'},accent:{enum:['Irish','French']}}}}]};
     else if(url.endsWith('/voices')){if(state.failCatalogue)throw Error('Voice catalogue unavailable');value=state.catalogues?.[url.split('/').at(-2)] || {voices:['n','y','m','g','new'].map(id=>({id,name:id,description:id==='m'?'A mature, husky Irish voice.':'A light, youthful voice.'}))};}
     else if(url.includes('/chats/') && url.includes('/messages?')){state.canonicalReads=(state.canonicalReads || 0)+1;value={data:state.savedMessages || []};}
     else if(url.includes('/personas/'))value=state.personas?.[decodeURIComponent(url.split('/personas/')[1])] ?? state.persona;
@@ -77,6 +73,16 @@ async function harness(mixerPreferences,mobile=false){
     else value={data:connections};
     return Response.json(value);
   };
+  // Stands in for the backend's freesoundPreview action, which downloads through Lumiverse's CORS proxy.
+  const previewControllers=new Map();
+  const freesoundPreview=async(url,signal)=>{
+    if(url.startsWith('https://freesound.test/ambience.mp3?')){state.bedFetches.push(url);if(state.holdBeds)await new Promise(resolve=>state.releaseBed=resolve);return {base64:btoa(`AMBIENCE:${new URL(url).searchParams.get('q')}`),mimeType:'audio/mpeg'};}
+    state.previewFetches.push(url);
+    if(state.holdPreview)await new Promise((resolve,reject)=>signal.addEventListener('abort',()=>{state.previewAborted++;reject(new DOMException('Stopped','AbortError'));},{once:true}));
+    if(state.previewStatus && state.previewStatus!==200)throw Error(`Freesound preview HTTP ${state.previewStatus}`);
+    if(state.previewType && !state.previewType.startsWith('audio/'))throw Error(`CORS proxy transparent proxy only serves audio data (received Content-Type: ${state.previewType})`);
+    return {base64:btoa('FREESOUND_PREVIEW'),mimeType:'audio/mpeg'};
+  };
   let backend,decorationCleanup;
   const ctx={settings:{get:async key=>structuredClone(store.get(key) ?? null),set:async(key,value)=>{const snapshot=structuredClone(value);if(state.failPlanSave && /^(plan:|activeplan:)/.test(key) || state.failConfigSave && /^(chat:|settings:)/.test(key) || state.failDefaultsSave && key==='settings:captured-defaults')throw Error('Settings storage failed');if(state.configDelay && /^(chat:|settings:)/.test(key))await new Promise(resolve=>setTimeout(resolve,state.configDelay));store.set(key,snapshot);}},
     messages:{getRecent:()=>state.active==='chat-a'?(state.messages || [message]):[],getContent:id=>state.active==='chat-a'?(state.messages || [message]).find(item=>item.id===id)?.content ?? null:null},
@@ -85,7 +91,12 @@ async function harness(mixerPreferences,mobile=false){
     ui:{mount:point=>point==='chat_actions'?toolbar:undefined,registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),registerInputBarAction:options=>{const action={...options,onClick(handler){this.click=handler;},destroy(){if(toolbarActions.get(options.id)===action)toolbarActions.delete(options.id);}};toolbarActions.set(options.id,action);return action;},
       registerDomDecorator:options=>{decorationCleanup=options.render(footer,{messageId:message.id});return decorationCleanup;}},
     onBackendMessage:fn=>{backend=fn;return()=>backend=null;},sendToBackend:request=>{
-      requests.push(structuredClone(request));if(request.action==='cancel')return;
+      requests.push(structuredClone(request));if(request.action==='cancel'){previewControllers.get(request.id)?.abort();return;}
+      if(request.action==='freesoundPreview'){
+        const ctrl=new AbortController();previewControllers.set(request.id,ctrl);
+        freesoundPreview(request.input.url,ctrl.signal).then(result=>backend?.({namespace:'choir',id:request.id,result}),error=>{if(!ctrl.signal.aborted)backend?.({namespace:'choir',id:request.id,error:error.message});});
+        return;
+      }
       setTimeout(()=>{
         if(!backend)return;
         if(request.action==='plan' && state.held || request.action==='designVoice' && state.holdDesignVoice || request.action==='freesound' && state.holdFoley || request.action==='sfx' && state.holdSfx){heldPlans.push(request);return;}
@@ -100,16 +111,26 @@ async function harness(mixerPreferences,mobile=false){
         else if(request.action==='sfx'){
           if(state.sfxError){backend({namespace:'choir',id:request.id,error:state.sfxError});return;}
           const anchored=entries=>request.input.segments.flatMap((segment,index)=>Object.entries(entries).filter(([trigger])=>segment.text.includes(trigger)).map(([trigger,query])=>({segment:index,trigger,...(query?{query}:{stop:true})})));
-          result={cues:anchored({'page snapped':'page turn','glass shattered':'glass shatter'}),ambience:anchored({'Rain drummed':'rain','The tavern':'tavern crowd','Silence fell':''}),
-            music:request.input.music?anchored({'Night fell':'Dark','The storm broke':'Intense'}).map(({query,...entry})=>({...entry,feels:[query],genres:['Soundtrack'],keywords:['organ']})):[]};
+          result=state.soundCues || {cues:anchored({'page snapped':'page turn','glass shattered':'glass shatter'}),ambience:anchored({'Rain drummed':'rain','The tavern':'tavern crowd','Silence fell':''}),
+            music:request.input.music?anchored({'Night fell':'Dark','The storm broke':'Intense','Dawn broke':'Bright','Music stopped':''}).map(({query,...entry})=>query?({...entry,feels:[query],genres:['Soundtrack'],keywords:['organ']}):entry):[]};
         }
         else if(request.action==='music'){
+          if(state.musicError){backend({namespace:'choir',id:request.id,error:state.musicError});return;}
           const title=state.musicTitle || 'Crypto',reply=()=>backend?.({namespace:'choir',id:request.id,result:{title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`}});
           if(state.holdMusic){state.releaseMusic=reply;return;}result={title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`};
         }
+        else if(request.action==='searchVoices')result={results:state.voiceSearchResults || [{id:'community_fish_voice',name:'Community narrator',description:'A warm, steady storyteller.'}]};
         else if(request.action==='gemini')result={base64:'AAABAA==',mimeType:'audio/L16;rate=24000'};
+        else if(request.action==='cardCast')result={roles:state.cardRoles || []};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
         else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
+        else if(request.action==='plan' && state.cardTitlePlan){
+          result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Hello')?'Kellin Beckett || Toxic Fans':'Mikey Ross',voice:unit.kind==='narration'?'n':'g',style:unit.kind==='dialogue'?'Warm':''}))},request.input.transcript,request.input.config);
+        }
+        else if(request.action==='plan' && state.multiCard){
+          const cast=request.input.config;
+          result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Hello')?'Adrian':'Ethan',voice:unit.kind==='narration'?'n':unit.text.includes('Hello')?'m':'new'}))},request.input.transcript,cast);
+        }
         else if(request.action==='plan' && state.communityVoice && request.input.config.communityRoutes){
           const cast=request.input.config,voice={...state.communityVoice,route:'native:b'};
           result={...validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Wait')?'Guard':'Mira',
@@ -136,7 +157,7 @@ async function harness(mixerPreferences,mobile=false){
   const plan=async()=>{$('latest').click();await tick();await until(()=>!$('latest').disabled && ($('status').textContent.startsWith('Ready:') || $('status').textContent.includes('Saved attribution')));};
   const play=async()=>{footer.querySelector('button').click();await tick();await until(()=>$('status').textContent.includes('Playback finished'));};
   const reload=async()=>{cleanup();cleanup=await setup(ctx);};
-  return {dom,state,store,requests,synthesis,audios,audioBlobs,message,events,subscriptions,toolbarActions,connections,root,footer,toolbar,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
+  return {ctx,dom,state,store,requests,synthesis,audios,audioBlobs,message,events,subscriptions,toolbarActions,connections,root,footer,toolbar,$,click,plan,play,reload,async remount(){cleanup=await setup(ctx);},
     setMobile(matches){channelLayout.matches=matches;for(const listener of layoutListeners)listener();},
     releaseHeld(){for(const request of heldPlans.splice(0))backend?.({namespace:'choir',id:request.id,result:{segments:[{speaker:'Narrator',voice:'n',text:request.input.transcript,style:''}]}});},
     async close(){cleanup();await tick();URL.createObjectURL=createObjectURL;Object.assign(globalThis,original);dom.window.close();}};
@@ -165,6 +186,19 @@ test('HTTP hosts without secure crypto APIs keep the drawer, mixer, RPC, saved p
     const ids=h.requests.filter(request=>request.action!=='cancel').map(request=>request.id);
     assert.ok(ids.length>1);assert.equal(new Set(ids).size,ids.length);for(const id of ids)assert.match(id,uuid);
   }finally{if(h)await h.close();Object.defineProperty(globalThis,'crypto',descriptor);}
+});
+
+test('teardown releases playback after the host invalidates the message bridge',async()=>{
+ const h=await harness();let closed=false;try{
+  const mixer=h.dom.window.document.querySelector('[data-choir-mixer]');
+  await h.plan();h.state.blockAudio=true;h.footer.querySelector('button').click();
+  await until(()=>h.audios.some(audio=>!audio.paused));
+  h.ctx.messages.getRecent=()=>{throw new Error('SPINDLE_FRONTEND_INACTIVE: domain bridge is disposed');};
+  await h.close();closed=true;
+  assert.ok(h.audios.every(audio=>audio.paused));
+  assert.equal(mixer.isConnected,false);
+  assert.equal(h.toolbarActions.size,0);
+ }finally{if(!closed)await h.close();}
 });
 
 test('the staging badge follows the installed Choir branch and unavailable branch information never breaks the drawer',async()=>{
@@ -197,24 +231,74 @@ const playedFoley=async h=>(await Promise.all(h.audioBlobs.map(blob=>blob.text()
 
 const captureDefault=h=>{h.$('captureDefaults').click();const dialog=()=>document.querySelector('[role="dialog"][aria-label="Set default"]');[...dialog().querySelectorAll('button')].find(button=>button.textContent==='Use current chat settings').click();[...dialog().querySelectorAll('button')].find(button=>button.textContent==='Save default').click();};
 
-test('default popup edits all settings and lead roles without changing this chat, and cancel and navigation discard drafts',async()=>{
+test('cast defaults contain only lead and NPC choices; cancel and navigation discard drafts',async()=>{
  const h=await harness();try{
   const current=structuredClone(h.store.get('chat:chat-a')),get=()=>document.querySelector('[role="dialog"][aria-label="Set default"]'),button=name=>[...get().querySelectorAll('button')].find(item=>item.textContent===name);
-  h.$('captureDefaults').click();assert.ok(get());assert.equal(get().getAttribute('aria-modal'),'true');
-  const field=get().querySelector('[data-default-field="chunk"]');field.value='8000';
-  button('Lead cast').click();const connection=get().querySelector('[aria-label="Default {{char}} connection"]');connection.value='native:a';connection.dispatchEvent(new h.dom.window.Event('change'));
-  await until(()=>!get().querySelector('[aria-label="Default {{char}} voice"]').disabled);const voice=get().querySelector('[aria-label="Default {{char}} voice"]');voice.value='';voice.dispatchEvent(new h.dom.window.Event('change'));
-  assert.ok([...voice.options].some(item=>item.value==='' && item.textContent==='Let the LLM decide'));
+  h.$('captureDefaults').click();assert.ok(get());assert.equal(get().querySelectorAll('[role="tab"]').length,2);assert.equal(get().querySelector('[data-default-field]'),null);
+  assert.equal(h.$('captureDefaults').closest('.et-section-header').querySelector('h3').textContent,'Lead Cast');
+  assert.equal(h.$('captureNpcDefaults').closest('.et-section-header').querySelector('h3').textContent,'NPC Cast');
+  const voice=get().querySelector('[aria-label="Default {{char}} voice"]');voice.value='';voice.dispatchEvent(new h.dom.window.Event('change'));
   button('Lead cast').focus();get().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Tab',shiftKey:true,bubbles:true}));assert.equal(document.activeElement,button('Save default'));
   get().dispatchEvent(new h.dom.window.KeyboardEvent('keydown',{key:'Tab',bubbles:true}));assert.equal(document.activeElement,button('Lead cast'));
   button('Cancel').click();assert.equal(get(),null);assert.equal(h.store.has('settings:captured-defaults'),false);assert.deepEqual(h.store.get('chat:chat-a'),current);
-  h.$('captureDefaults').click();get().querySelector('[data-default-field="chunk"]').value='8000';button('Lead cast').click();
-  const automatic=get().querySelector('[aria-label="Default {{char}} voice"]');automatic.value='';automatic.dispatchEvent(new h.dom.window.Event('change'));button('Save default').click();
-  await until(()=>!get());const preset=structuredClone(h.store.get('settings:captured-defaults'));assert.equal(preset.preferences.chunk,8000);assert.equal(preset.leadVoices[2].voice,'');assert.deepEqual(h.store.get('chat:chat-a'),current);assert.equal(h.$('chunk').value,'500');
-  h.$('captureDefaults').click();assert.equal(get().querySelector('[data-default-field="chunk"]').value,'8000');get().querySelector('[data-default-field="chunk"]').value='9000';
-  h.state.active='chat-new';h.state.character={name:'Mira'};h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');assert.equal(get(),null);assert.equal(h.$('chunk').value,'8000');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'');
-  assert.deepEqual(h.store.get('settings:captured-defaults'),preset);assert.equal(h.synthesis.length,0);assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+  h.$('captureDefaults').click();const automatic=get().querySelector('[aria-label="Default {{char}} voice"]');automatic.value='';automatic.dispatchEvent(new h.dom.window.Event('change'));button('Save default').click();
+  await until(()=>!get());const preset=structuredClone(h.store.get('settings:captured-defaults'));assert.equal(preset.version,2);assert.equal(preset.preferences,undefined);assert.equal(preset.leadVoices[2].voice,'');assert.deepEqual(h.store.get('chat:chat-a'),current);
+  h.$('captureNpcDefaults').click();assert.equal(get().querySelector('[aria-selected="true"]').textContent,'NPC cast');
+  h.state.active='chat-new';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');assert.equal(get(),null);
+  assert.deepEqual(h.store.get('settings:captured-defaults'),preset);assert.equal(h.synthesis.length,0);
  }finally{await h.close();}
+});
+
+test('Fish voice IDs in Set default stay in the draft until Save and persist across apply, reload and new chats',async()=>{
+ const h=await fishGroupingHarness();try{
+  const before=structuredClone(h.store.get('chat:chat-a')),dialog=()=>document.querySelector('[aria-label="Set default"]');
+  const button=name=>[...dialog().querySelectorAll('button')].find(button=>button.textContent===name);
+  const choose=id=>{dialog().querySelector('[aria-label="Paste Fish voice ID for Default {{char}} voice"]').click();dialog().querySelector('[aria-label="Fish voice ID for Default {{char}} voice"]').value=id;dialog().querySelector('[aria-label="Fish voice description for Default {{char}} voice"]').value='A calm, warm voice.';dialog().querySelector('[aria-label="Use Fish voice ID for Default {{char}} voice"]').click();};
+  h.$('captureDefaults').click();choose('discarded_fish_voice');button('Cancel').click();
+  assert.deepEqual(h.store.get('chat:chat-a'),before);assert.equal(h.store.has('settings:captured-defaults'),false);
+  h.$('captureDefaults').click();choose('fish_custom_default');button('Save default').click();await until(()=>!dialog());
+  const preset=h.store.get('settings:captured-defaults');assert.equal(preset.leadVoices[2].voice,'fish_custom_default');assert.equal(preset.voiceCatalogue.find(voice=>voice.id==='fish_custom_default').description,'A calm, warm voice.');
+  assert.deepEqual(h.store.get('chat:chat-a'),before);
+  h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));
+  assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'fish_custom_default');
+  await h.reload();assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'fish_custom_default');
+  h.state.active='chat-new';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');
+  assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'fish_custom_default');assert.equal(h.synthesis.length,0);
+ }finally{await h.close();}
+});
+
+test('Set default browses Fish voices for the selected route, rejects invalid IDs and closes its child browser on navigation',async()=>{
+ const h=await harness();try{
+  h.connections[1].provider='fish_audio';await h.reload();const before=structuredClone(h.store.get('chat:chat-a'));
+  h.$('captureDefaults').click();const dialog=document.querySelector('[aria-label="Set default"]');
+  const narrator=dialog.querySelector('[aria-label="Browse Fish voice catalogue for Default Narrator voice"]');assert.equal(narrator.parentElement.hidden,true);
+  const paste=dialog.querySelector('[aria-label="Paste Fish voice ID for Default {{char}} voice"]');assert.equal(paste.parentElement.hidden,false);paste.click();
+  dialog.querySelector('[aria-label="Fish voice ID for Default {{char}} voice"]').value='invalid/voice';dialog.querySelector('[aria-label="Use Fish voice ID for Default {{char}} voice"]').click();
+  assert.match(dialog.querySelector('[data-default-feedback]').textContent,/letters, numbers/);
+  dialog.querySelector('[aria-label="Browse Fish voice catalogue for Default {{char}} voice"]').click();
+  await until(()=>document.querySelector('[data-et="voiceLibraryModal"] .et-voice-card button.et-btn-primary'));
+  document.querySelector('[data-et="voiceLibraryModal"] .et-voice-card button.et-btn-primary').click();
+  assert.equal(dialog.querySelector('[aria-label="Default {{char}} voice"]').value,'community_fish_voice');assert.deepEqual(h.store.get('chat:chat-a'),before);
+  [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Save default').click();await until(()=>!dialog.isConnected);
+  assert.equal(h.store.get('settings:captured-defaults').voiceCatalogue.find(voice=>voice.id==='community_fish_voice').route,'native:b');
+  h.$('captureDefaults').click();document.querySelector('[aria-label="Browse Fish voice catalogue for Default {{char}} voice"]').click();
+  assert.ok(document.querySelector('[data-et="voiceLibraryModal"]'));h.state.active='chat-new';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');
+  assert.equal(document.querySelector('[data-et="voiceLibraryModal"]'),null);assert.equal(document.querySelector('[aria-label="Set default"]'),null);
+ }finally{await h.close();}
+});
+
+test('Fish NPC default IDs support shared and preferred voices without altering the active chat',async()=>{
+ for(const mode of ['single','preferred']){
+  const h=await fishGroupingHarness();try{
+   const before=structuredClone(h.store.get('chat:chat-a'));h.$('captureNpcDefaults').click();const dialog=document.querySelector('[aria-label="Set default"]'),selection=dialog.querySelector('[aria-label="Default NPC casting"]');
+   selection.value=mode;selection.dispatchEvent(new h.dom.window.Event('change'));const name=mode==='single'?'Default Shared NPC voice':'Default Preferred NPC voices';
+   dialog.querySelector(`[aria-label="Paste Fish voice ID for ${name}"]`).click();dialog.querySelector(`[aria-label="Fish voice ID for ${name}"]`).value='fish_npc_default';dialog.querySelector(`[aria-label="Use Fish voice ID for ${name}"]`).click();
+   [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Save default').click();await until(()=>!dialog.isConnected);
+   const preset=h.store.get('settings:captured-defaults');assert.equal(mode==='single'?preset.npcPolicy.voice:preset.npcPolicy.voices[0],'fish_npc_default');assert.deepEqual(h.store.get('chat:chat-a'),before);
+   h.$('applyNpcDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));await h.reload();
+   const picker=h.$('npcPolicyRoot').querySelector(`[aria-label="${name.replace('Default ','')}"]`);assert.ok([...picker.selectedOptions].some(option=>option.value==='fish_npc_default'));
+  }finally{await h.close();}
+ }
 });
 
 test('NPC default modes can be applied per chat, skip synthesis or enforce shared and preferred voices, and persist independently',async()=>{
@@ -222,13 +306,13 @@ test('NPC default modes can be applied per chat, skip synthesis or enforce share
   const h=await harness();try{
    if(routing==='one'){h.$('connectionMode').value='one';h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Settings saved');}
    const before=structuredClone(h.store.get('chat:chat-a'));
-   h.$('captureDefaults').click();const dialog=document.querySelector('[role="dialog"][aria-label="Set default"]'),change=(name,value)=>{const input=dialog.querySelector(`[aria-label="${name}"]`);input.value=value;input.dispatchEvent(new h.dom.window.Event('change'));return input;};
+   h.$('captureNpcDefaults').click();const dialog=document.querySelector('[role="dialog"][aria-label="Set default"]'),change=(name,value)=>{const input=dialog.querySelector(`[aria-label="${name}"]`);input.value=value;input.dispatchEvent(new h.dom.window.Event('change'));return input;};
    [...dialog.querySelectorAll('button')].find(button=>button.textContent==='NPC cast').click();change('Default NPC casting',mode);
    if(mode==='single')change('Default Shared NPC voice','m');
    if(mode==='preferred'){const pool=dialog.querySelector('[aria-label="Default Preferred NPC voices"]');[...pool.options].forEach(option=>option.selected=['m','new'].includes(option.value));pool.dispatchEvent(new h.dom.window.Event('change'));}
    [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Save default').click();await until(()=>!dialog.isConnected);
-   const preset=structuredClone(h.store.get('settings:captured-defaults'));assert.equal(preset.preferences.npcPolicy.mode,mode);assert.deepEqual(h.store.get('chat:chat-a'),before);
-   h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));
+   const preset=structuredClone(h.store.get('settings:captured-defaults'));assert.equal(preset.npcPolicy.mode,mode);assert.deepEqual(h.store.get('chat:chat-a'),before);
+   h.$('applyNpcDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));
    if(routing==='one'){const stored=structuredClone(h.store.get('chat:chat-a'));stored.npcPolicy.route='native:b';h.store.set('chat:chat-a',stored);await h.reload();}
    h.state.planForCatalogue=mode==='preferred';h.message.content='At dawn. "Hello." "Wait."';await h.plan();await h.play();
    if(mode==='skip')assert.ok(!h.synthesis.some(request=>request.text.includes('Wait')));
@@ -253,20 +337,21 @@ test('captured defaults stay stable across chats and carry lead voices by role w
    h.$('connectionMode').value=mode;h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Settings saved');
    h.$('planner').value='planner';h.$('chunk').value='8000';h.$('enableSfx').checked=false;h.$('normalizeLoudness').checked=false;h.$('auto-plan').click();
    captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));
+   await until(()=>h.store.get('settings:global').chunk===8000);
    const preset=structuredClone(h.store.get('settings:captured-defaults'));
-   assert.equal(preset.preferences.chunk,8000);assert.equal(preset.preferences.planner,'planner');assert.equal(preset.preferences.autoPlan,true);assert.equal(preset.preferences.enableSfx,false);
+   assert.equal(preset.preferences,undefined);assert.equal(h.store.get('settings:global').chunk,8000);assert.equal(h.store.get('settings:global').planner,'planner');assert.equal(h.store.get('settings:global').autoPlan,true);assert.equal(h.store.get('settings:global').enableSfx,false);
    assert.deepEqual(preset.leadVoices.map(actor=>actor.voice),['n','y','m']);assert.ok(!JSON.stringify(preset).includes('Mira'));assert.ok(!JSON.stringify(preset).includes('Guard'));
    const existing=structuredClone(h.store.get('chat:chat-a'));existing.chunk=9999;existing.fixed[2].speaker='Existing character';h.store.set('chat:existing',existing);
    h.$('chunk').value='1200';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
    assert.deepEqual(h.store.get('settings:captured-defaults'),preset);
    h.state.persona={id:'persona-new',name:'Lunch'};h.state.character={name:'Laiyah'};h.state.active='chat-new';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');
-   assert.equal(h.$('chunk').value,'8000');assert.equal(h.$('planner').value,'planner');assert.equal(h.$('enableSfx').checked,false);assert.equal(h.$('normalizeLoudness').checked,false);
+   assert.equal(h.$('chunk').value,'1200');assert.equal(h.$('planner').value,'planner');assert.equal(h.$('enableSfx').checked,false);assert.equal(h.$('normalizeLoudness').checked,false);
    assert.deepEqual([...h.$('fixed').children].map(row=>row.querySelector('input').value),['Narrator','Lunch','Laiyah']);
    assert.deepEqual([...h.$('fixed').querySelectorAll('[data-choir-voice]')].map(node=>node.value),['n','y','m']);assert.equal(h.$('npcs').querySelectorAll('.et-card').length,0);
    const characterVoice=h.$('fixed').children[2].querySelector('[data-choir-voice]');characterVoice.value='new';characterVoice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
    assert.equal(mode==='one'?h.store.get('chat:chat-new').singleVoices['native:a'].Laiyah:h.store.get('chat:chat-new').fixed[2].voice,'new');
    await h.reload();assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'new');assert.deepEqual(h.store.get('settings:captured-defaults'),preset);
-   h.state.active='existing';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Saved settings restored' && h.$('fixed').children[2]?.querySelector('input').value==='Existing character');assert.equal(h.$('chunk').value,'9999');
+   h.state.active='existing';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Saved settings restored' && h.$('fixed').children[2]?.querySelector('input').value==='Existing character');assert.equal(h.$('chunk').value,'1200');
    h.state.character={name:'Jev'};h.state.active='chat-next';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');assert.equal(h.$('fixed').children[2].querySelector('input').value,'Jev');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');
    h.$('fixed').children[2].querySelector('[data-choir-voice]').value='';captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));assert.equal(h.store.get('settings:captured-defaults').leadVoices[2].voice,'');
    h.state.character={name:'Sable'};h.state.active='chat-automatic';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded' && h.$('fixed').children[2]?.querySelector('input').value==='Sable');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'');
@@ -275,7 +360,7 @@ test('captured defaults stay stable across chats and carry lead voices by role w
  }
 });
 
-test('applying a captured default restores preferences and lead voices while retaining this chat cast and independent edits',async()=>{
+test('applying a captured default restores lead voices without overwriting global preferences while retaining this chat cast and independent edits',async()=>{
  for(const mode of ['one','several']){
   const h=await harness();try{
    h.$('connectionMode').value=mode;h.$('connectionMode').dispatchEvent(new h.dom.window.Event('change'));await until(()=>h.$('saveState').textContent==='Settings saved');
@@ -284,9 +369,9 @@ test('applying a captured default restores preferences and lead voices while ret
    const voice=h.$('fixed').children[2].querySelector('[data-choir-voice]');voice.value='new';voice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
    h.$('chunk').value='10000';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
    h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.startsWith('Default applied'));
-   assert.equal(h.$('chunk').value,'500');assert.equal(h.$('fixed').children[2].querySelector('input').value,'Captain Mira');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');
+   assert.equal(h.$('chunk').value,'10000');assert.equal(h.$('fixed').children[2].querySelector('input').value,'Captain Mira');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');
    const saved=h.store.get('chat:chat-a');assert.equal(saved.fixed[2].pronunciation,'Mira: mee-rah');assert.deepEqual(saved.fixed[2].aliases,['Captain']);assert.equal(saved.casts['native:a'][0].speaker,'Guard');assert.equal(saved.casts['native:a'][0].voice,'g');assert.deepEqual(h.store.get('settings:captured-defaults'),preset);
-   await h.reload();assert.equal(h.$('fixed').children[2].querySelector('input').value,'Captain Mira');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');assert.equal(h.$('chunk').value,'500');assert.equal(h.synthesis.length,0);
+   await h.reload();assert.equal(h.$('fixed').children[2].querySelector('input').value,'Captain Mira');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');assert.equal(h.$('chunk').value,'10000');assert.equal(h.synthesis.length,0);
    assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
   }finally{await h.close();}
  }
@@ -298,7 +383,7 @@ test('default capture rejects invalid settings and retains the previous snapshot
   const preset=structuredClone(h.store.get('settings:captured-defaults'));assert.ok(!JSON.stringify(preset).includes('session-'));
   h.$('chunk').value='10001';captureDefault(h);await until(()=>document.querySelector('[data-default-feedback]')?.textContent.includes('whole number from'));assert.deepEqual(h.store.get('settings:captured-defaults'),preset);
   h.$('chunk').value='8000';h.state.failDefaultsSave=true;captureDefault(h);await until(()=>h.$('defaultStatus').textContent.includes('save failed'));assert.deepEqual(h.store.get('settings:captured-defaults'),preset);assert.equal(h.$('captureDefaults').disabled,false);
-  h.state.failDefaultsSave=false;captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));assert.equal(h.store.get('settings:captured-defaults').preferences.chunk,8000);
+  h.state.failDefaultsSave=false;captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));assert.equal(h.store.get('settings:captured-defaults').preferences,undefined);
  }finally{await h.close();}
 });
 
@@ -307,10 +392,285 @@ test('applying defaults reports save failure and never changes another chat duri
   captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));
   h.$('chunk').value='8000';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
   h.state.failConfigSave=true;h.$('applyDefaults').click();await until(()=>h.$('defaultStatus').textContent.includes('could not be applied'));assert.match(h.$('saveState').textContent,/Save failed/);assert.equal(h.store.get('chat:chat-a').chunk,8000);
-  h.state.failConfigSave=false;await h.click('save',text=>text.includes('retention saved'));assert.equal(h.store.get('chat:chat-a').chunk,500);
+  h.state.failConfigSave=false;await h.click('save',text=>text.includes('retention saved'));assert.equal(h.store.get('chat:chat-a').chunk,8000);
   h.state.configDelay=200;h.$('chunk').value='1200';h.$('chunk').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));h.$('applyDefaults').click();
   h.state.active='chat-b';h.state.character={name:'Different character'};h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');
-  assert.equal(h.store.get('chat:chat-a').chunk,1200);assert.equal(h.store.has('chat:chat-b'),false);assert.equal(h.$('fixed').children[2].querySelector('input').value,'Different character');assert.equal(h.$('chunk').value,'500');assert.equal(h.synthesis.length,0);
+  assert.equal(h.store.get('chat:chat-a').chunk,1200);assert.equal(h.store.has('chat:chat-b'),false);assert.equal(h.$('fixed').children[2].querySelector('input').value,'Different character');assert.equal(h.$('chunk').value,'1200');assert.equal(h.synthesis.length,0);
+ }finally{await h.close();}
+});
+
+test('global Speech and Planner edits override historical chat preferences while cast choices remain independent',async()=>{
+ const h=await harness();try{
+  const original=structuredClone(h.store.get('chat:chat-a'));
+  h.store.set('chat:chat-b',{...original,plannerMode:'heuristic',chunk:9999,enableMusic:false,fixed:original.fixed.map(actor=>({...actor,speaker:actor.speaker==='Mira'?'Other lead':actor.speaker}))});
+  const edit=(name,value)=>{const node=h.$(name);if(typeof value==='boolean')node.checked=value;else node.value=value;node.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));};
+  edit('chunk','8000');edit('planner','planner');edit('decisionConnection','decision-b');edit('plannerMode','jev');edit('auto',true);edit('enableSfx',false);edit('enableAmbience',false);edit('enableMusic',true);edit('sectionButtons',true);edit('enableMixer',true);edit('normalizeLoudness',false);edit('ignoredTags','summary, private-note');
+  h.$('key').value='session-secret';h.$('jevKey').value='jev-session-secret';await until(()=>h.$('saveState').textContent==='Saved automatically');
+  const global=structuredClone(h.store.get('settings:global'));assert.equal(global.npcPolicy,undefined);assert.ok(!JSON.stringify(global).includes('session-secret'));
+  h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Saved settings restored' && h.$('fixed').children[2]?.querySelector('input').value==='Other lead');
+  for(const [name,value] of Object.entries(global))if(h.$(name) && h.$(name).type==='checkbox')assert.equal(h.$(name).checked,value,name);
+  assert.equal(h.$('chunk').value,'8000');assert.equal(h.$('plannerMode').value,'jev');assert.equal(h.$('decisionConnection').value,'decision-b');assert.equal(h.$('ignoredTags').value,'summary, private-note');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');
+  edit('enableMusic',false);edit('plannerMode','llm');await until(()=>h.$('saveState').textContent==='Saved automatically');
+  h.state.active='chat-a';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Saved settings restored' && h.$('fixed').children[2]?.querySelector('input').value==='Mira');
+  assert.equal(h.$('enableMusic').checked,false);assert.equal(h.$('plannerMode').value,'llm');assert.equal(h.$('chunk').value,'8000');await h.reload();assert.equal(h.$('ignoredTags').value,'summary, private-note');assert.equal(h.synthesis.length,0);
+ }finally{await h.close();}
+});
+
+test('legacy defaults migrate cast choices and cannot replace newer global preferences',async()=>{
+ const h=await harness();try{
+  const saved=h.store.get('chat:chat-a');h.store.set('settings:captured-defaults',{version:1,preferences:{chunk:500,enableMusic:false,npcPolicy:{mode:'skip',route:'',voice:'',voices:[]}},leadVoices:saved.fixed.map(actor=>({voice:actor.voice,route:actor.route || ''}))});
+  h.store.set('settings:global',{chunk:8000,enableMusic:true});h.state.active='chat-new';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Default setup loaded');
+  assert.equal(h.$('chunk').value,'8000');assert.equal(h.$('enableMusic').checked,true);assert.equal(h.$('npcPolicyRoot').querySelector('[aria-label="NPC casting"]').value,'skip');assert.equal(h.$('fixed').children[2].querySelector('[data-choir-voice]').value,'m');
+  captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));assert.equal(h.store.get('settings:captured-defaults').version,2);assert.equal(h.store.get('settings:captured-defaults').preferences,undefined);
+ }finally{await h.close();}
+});
+
+test('automatic HTML panel and phone filtering reaches LLM and Jev input, context, TTS and Cue without ignoring story divs',async()=>{
+ for(const widget of [speechPanel,phoneWidget]){
+ const h=await harness();try{
+  h.message.content=`<div><p>At dawn.</p>${widget}<p>"Hello." "Wait."</p></div>`;
+  h.state.messages=[{id:'previous',name:'Mira',content:`Earlier. ${widget}`,is_user:false},h.message];
+  assert.equal(h.$('ignoredTags').value,'');await h.plan();
+  const input=h.requests.find(request=>request.action==='plan').input;
+  assert.equal(input.transcript.replace(/\s+/g,' '),'At dawn. "Hello." "Wait."');assert.ok(!/UI message|First panel|Synthetic|DND ACTIVE/.test(input.context));
+  await h.play();assert.ok(h.synthesis.length>0);assert.ok(h.synthesis.every(request=>!/UI message|panel content|notification|Battery|84%|Synthetic|DND ACTIVE/.test(request.text)));
+  const bridge=globalThis.__CHOIR_API__,generated=h.synthesis.length;
+  assert.deepEqual(bridge.planParagraph(widget).segments,[]);await bridge.playParagraph({text:widget});assert.equal(h.synthesis.length,generated);
+  await bridge.playParagraph({text:'<div class="kb-content-wrap">Ordinary narration.</div>'});assert.ok(h.synthesis.at(-1).text.includes('Ordinary narration'));
+  h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+  await h.click('latest',text=>text.includes('The object cannot be cloned'));
+  const jev=h.requests.find(request=>request.action==='planJev').input;assert.ok(!/panel content|Synthetic|DND ACTIVE/.test(jev.transcript));assert.ok(!/UI message|Synthetic|DND ACTIVE/.test(jev.context));assert.ok(jev.transcript.includes('Hello'));
+ }finally{await h.close();}
+ }
+});
+
+test('phone widget filtering invalidates an older saved plan and recording before replay',async()=>{
+ const h=await harness();try{
+  h.message.content=`At dawn. ${phoneWidget.replace(':checked',':disabled')} "Hello." "Wait."`;
+  await h.plan();await h.play();assert.ok(h.synthesis.some(request=>request.text.includes('Synthetic')));
+  const generated=h.synthesis.length,planned=h.requests.filter(request=>request.action==='plan').length;
+  h.message.content=`At dawn. ${phoneWidget} "Hello." "Wait."`;
+  // Simulate a plan saved by a version that unwrapped the original widget.
+  for(const [key,saved] of h.store)if(key.startsWith('plan:'))saved.content=h.message.content;
+  await new Promise((resolve,reject)=>{
+    const open=indexedDB.open('choir-recordings',1);open.onerror=()=>reject(open.error);
+    open.onsuccess=()=>{
+      const db=open.result,transaction=db.transaction('recordings','readwrite'),request=transaction.objectStore('recordings').openCursor();
+      request.onsuccess=()=>{const cursor=request.result;if(cursor){cursor.update({...cursor.value,content:h.message.content});cursor.continue();}};
+      transaction.oncomplete=()=>{db.close();resolve();};transaction.onerror=()=>{db.close();reject(transaction.error);};
+    };
+  });
+  await h.reload();await h.play();
+  assert.equal(h.requests.filter(request=>request.action==='plan').length,planned+1);
+  assert.ok(h.synthesis.slice(generated).every(request=>!/Synthetic|DND ACTIVE|IMESSAGE/.test(request.text)));
+  assert.equal(h.requests.filter(request=>request.action==='plan').at(-1).input.transcript.replace(/\s+/g,' '),'At dawn. "Hello." "Wait."');
+  const rebuilt=h.synthesis.length;await h.reload();await h.play();assert.equal(h.synthesis.length,rebuilt);
+ }finally{await h.close();}
+});
+
+test('precise class and ID exclusions replace old panel attribution and audio while keeping reusable story passages',async()=>{
+ const h=await harness();try{
+  h.message.content='At dawn. UI message that must not be spoken. "Hello." "Wait."';await h.plan();await h.play();
+  const old=h.synthesis.length,plans=h.requests.filter(request=>request.action==='plan').length;
+  h.message.content='At dawn. <aside class="bespoke-note">UI message that must not be spoken.</aside> "Hello." "Wait."';
+  for(const [key,saved] of h.store)if(key.startsWith('plan:'))saved.content=h.message.content;
+  h.$('ignoredTags').value='.bespoke-note, #phone-status';h.$('ignoredTags').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  h.state.messages=[{id:'previous',name:'Mira',is_user:false,content:'Earlier. <div id="phone-status">UI context.</div>'},h.message];
+  await h.play();assert.equal(h.requests.filter(request=>request.action==='plan').length,plans+1);
+  assert.ok(h.synthesis.slice(old).every(request=>!request.text.includes('UI message')));assert.ok(!h.requests.filter(request=>request.action==='plan').at(-1).input.context.includes('UI context'));
+  assert.equal(h.synthesis.filter(request=>request.text.includes('Hello')).length,1);assert.equal(h.synthesis.filter(request=>request.text.includes('Wait')).length,1);
+  const generated=h.synthesis.length;await h.reload();await h.play();assert.equal(h.synthesis.length,generated);assert.equal(h.$('ignoredTags').value,'.bespoke-note, #phone-status');
+  const bridge=globalThis.__CHOIR_API__;await bridge.playParagraph({text:'<aside class="bespoke-note">Ignore this paragraph.</aside>'});assert.equal(h.synthesis.length,generated);
+ }finally{await h.close();}
+});
+
+test('ignored tags invalidate cached speech and cannot reappear in Cue paragraphs or planner context',async()=>{
+ const h=await harness();try{
+  h.message.content='At dawn. <private-note>Secret narration.</private-note> "Hello." "Wait."';await h.plan();await h.play();assert.ok(h.synthesis.some(input=>input.text.includes('Secret narration')));
+  h.$('ignoredTags').value='private-note';h.$('ignoredTags').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  h.state.messages=[{id:'previous',name:'Mira',content:'Earlier. <private-note>Secret context.</private-note>',is_user:false},h.message];
+  const before=h.synthesis.length,planned=h.requests.filter(request=>request.action==='plan').length;await h.play();assert.equal(h.requests.filter(request=>request.action==='plan').length,planned+1);
+  const input=h.requests.filter(request=>request.action==='plan').at(-1).input;assert.ok(!input.transcript.includes('Secret narration'));assert.ok(!input.context.includes('Secret context'));assert.ok(!h.synthesis.slice(before).some(input=>input.text.includes('Secret')));
+  const bridge=globalThis.__CHOIR_API__;assert.deepEqual(bridge.planParagraph('<private-note>Do not speak.</private-note>').segments,[]);const generated=h.synthesis.length;await bridge.playParagraph({text:'<private-note>Do not speak.</private-note>'});assert.equal(h.synthesis.length,generated);
+  await h.reload();await h.play();assert.equal(h.synthesis.length,generated);assert.equal(h.requests.filter(request=>request.action==='plan').length,planned+1);
+ }finally{await h.close();}
+});
+
+const kellinCard='Kellin Beckett || Toxic Fans';
+function kellinCast(h,duplicate=true){
+  const value=structuredClone(h.store.get('chat:chat-a'));value.fixed[1].speaker='Laiyah';value.fixed[2].speaker='Kellin Beckett';value.fixed[2].aliases=[];
+  value.casts={'native:a':[{speaker:'Mikey Ross',voice:'g',style:''},...(duplicate?[{speaker:kellinCard,voice:'g',style:''}]:[])],'native:b':duplicate?[{speaker:kellinCard,voice:'g',style:''}]:[]};return value;
+}
+
+test('decorated card titles migrate duplicate NPCs and restore old title attribution to the lead voice without replanning',async()=>{
+ const h=await harness();try{
+  h.state.character={name:kellinCard,description:'# Kellin Beckett\nThe singer.'};h.store.set('chat:chat-a',kellinCast(h));
+  const key='plan:'+createHash('sha256').update(JSON.stringify(['chat-a',h.message.id])).digest('hex');
+  h.store.set(key,{chatId:'chat-a',messageId:h.message.id,content:h.message.content,transcript:h.message.content,attribution:{segments:speechSourceUnits(h.message.content).map(unit=>({speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Hello')?kellinCard:'Mikey Ross',text:unit.text,style:''}))}});h.store.set('activeplan:chat-a',h.message.id);
+  await h.reload();await until(()=>h.store.get('chat:chat-a').fixed[2].aliases.includes(kellinCard));
+  const saved=h.store.get('chat:chat-a');assert.equal(saved.fixed[2].voice,'m');assert.deepEqual(saved.casts['native:a'].map(actor=>actor.speaker),['Mikey Ross']);assert.deepEqual(saved.casts['native:b'],[]);
+  assert.deepEqual([...h.$('fixed').children].map(row=>row.querySelector('input').value),['Narrator','Laiyah','Kellin Beckett']);
+  await h.play();assert.equal(h.requests.filter(request=>request.action==='plan').length,0);assert.equal(h.synthesis.find(input=>input.text.includes('Hello')).voice,'m');assert.equal(h.synthesis.find(input=>input.text.includes('Hello')).connectionId,'b');
+  const paragraph=globalThis.__CHOIR_API__.planParagraph('"Hello again."',kellinCard);assert.equal(paragraph.segments[0].speaker,'Kellin Beckett');assert.equal(paragraph.segments[0].voice,'m');
+  await h.reload();assert.deepEqual(h.store.get('chat:chat-a').casts['native:a'].map(actor=>actor.speaker),['Mikey Ross']);
+  const editName=async speaker=>{const input=h.$('fixed').children[2].querySelector('input');input.value=speaker;input.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.store.get('chat:chat-a').fixed[2].speaker===speaker);};
+  await editName(kellinCard);assert.deepEqual(h.store.get('chat:chat-a').fixed[2].aliases,['Kellin Beckett']);
+  await editName('Kellin Beckett');assert.deepEqual(h.store.get('chat:chat-a').fixed[2].aliases,[kellinCard]);
+  await h.play();assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+ }finally{await h.close();}
+});
+
+test('a new LLM plan using a decorated card title keeps one lead identity and preserves a different NPC voice',async()=>{
+ const h=await harness();try{
+  h.state.character={name:kellinCard};h.state.cardTitlePlan=true;h.store.set('chat:chat-a',kellinCast(h,false));await h.reload();await h.plan();await h.play();
+  const input=h.requests.find(request=>request.action==='plan').input;assert.ok(input.config.fixed[2].aliases.includes(kellinCard));
+  const segments=JSON.parse(h.$('planJson').value).segments;assert.equal(segments.find(segment=>segment.text.includes('Hello')).speaker,'Kellin Beckett');assert.equal(segments.find(segment=>segment.text.includes('Hello')).voice,'m');
+  assert.equal(h.synthesis.find(input=>input.text.includes('Wait')).voice,'g');assert.deepEqual(h.store.get('chat:chat-a').casts['native:a'].map(actor=>actor.speaker),['Mikey Ross']);
+ }finally{await h.close();}
+});
+
+test('old recordings with a duplicate card-title voice are corrected instead of replaying the NPC voice',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'An unrelated scenario title'};h.state.cardTitlePlan=true;h.store.set('chat:chat-a',kellinCast(h));await h.reload();await h.plan();await h.play();
+  assert.equal(h.synthesis.find(input=>input.text.includes('Hello')).voice,'g');const generated=h.synthesis.length,planned=h.requests.filter(request=>request.action==='plan').length;
+  for(const key of [...h.store.keys()])if(/^(plan:|activeplan:|progress:)/.test(key))h.store.delete(key);
+  h.state.character={name:kellinCard};await h.reload();await h.play();
+  assert.equal(h.requests.filter(request=>request.action==='plan').length,planned+1);assert.equal(h.synthesis.length,generated+1);assert.equal(h.synthesis.at(-1).voice,'m');assert.equal(h.synthesis.at(-1).connectionId,'b');
+  assert.deepEqual(h.store.get('chat:chat-a').casts['native:a'].map(actor=>actor.speaker),['Mikey Ross']);
+ }finally{await h.close();}
+});
+
+test('Levi and Cole profile headings migrate the cast and unison creates one overlapping cached clip',async()=>{
+ const originalContext=globalThis.AudioContext;let decoded=0;
+ globalThis.AudioContext=class{
+   sampleRate=24000;async resume(){}async close(){}
+   async decodeAudioData(){const channel=decoded++%2?Float32Array.of(0,0.2,0.3,0.4):Float32Array.of(0,0,0.4,0.2);return {numberOfChannels:1,getChannelData:()=>channel};}
+   createMediaElementSource(){return {connect(){},disconnect(){}};}
+   createGain(){return {gain:{value:1},connect(){},disconnect(){}};}
+ };
+ const h=await harness({enabled:true});try{
+  h.state.character={name:'Levi & Cole',description:'<{{char}}>\n<levi_cline>\n# _Levi\'s Data_\n- Name: Levi Cline\n# Speech\nGentle.\n</levi_cline>\n<cole_lane>\n# _Cole\'s Data_\n- Name: Cole Lane\n# Speech\nLow and raspy.\n</cole_lane>\n</{{char}}>'};
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed[2].speaker='Levi & Cole';saved.fixed[2].aliases=[];saved.fixed[2].pronunciation='';saved.fixed[2].accent='';saved.batchSpeech=true;saved.sectionButtons=true;saved.plannerMode='heuristic';saved.normalizeLoudness=false;h.store.set('chat:chat-a',saved);
+  h.message.content='Levi’s hand finds the counter. Cole’s hand finds his pocket. "User," they say in unison.';
+  await h.reload();assert.deepEqual([...h.$('fixed').children].map(row=>row.querySelector('input').value),['Narrator','You','Levi','Cole']);
+  const voices=h.$('fixed').querySelectorAll('[data-choir-voice]');voices[3].value='new';voices[3].dispatchEvent(new h.dom.window.Event('change'));
+  await h.plan();assert.match(h.$('preview').textContent,/Levi & Cole · in unison/);
+  await until(()=>[...h.footer.querySelectorAll('[data-choir-clip]')].some(button=>button.title.includes('simultaneous clip')));
+  const control=[...h.footer.querySelectorAll('[data-choir-clip]')].find(button=>button.title.includes('simultaneous clip'));assert.match(control.textContent,/Levi \+ Cole · in unison/);assert.match(control.title,/2 short voice calls/);
+  await h.play();
+  const requests=h.synthesis.filter(input=>input.text==='"User,"');assert.deepEqual(requests.map(input=>input.voice),['m','new']);assert.ok(requests.every(input=>!input.parameters.turns));
+  const wav=h.audioBlobs.find(blob=>blob.type==='audio/wav');assert.ok(wav);const data=new DataView(await wav.arrayBuffer());assert.equal(data.getUint32(40,true),6);assert.equal(data.getInt16(44,true),Math.round(0.6*32767));
+  const generated=h.synthesis.length;await h.play();assert.equal(h.synthesis.length,generated);
+  h.dom.window.document.querySelector('[aria-label="Cole silent"]').click();await h.play();assert.equal(h.synthesis.length,generated);
+  const remix=new DataView(await h.audioBlobs.filter(blob=>blob.type==='audio/wav').at(-1).arrayBuffer());assert.equal(remix.getInt16(44,true),Math.round(0.4*32767));
+  h.dom.window.document.querySelector('[aria-label="Cole no voice"]').click();await h.play();assert.equal(h.synthesis.length,generated);
+  assert.deepEqual(h.store.get('chat:chat-a').fixed[2].aliases,['Levi Cline']);assert.deepEqual(h.store.get('chat:chat-a').fixed[3].aliases,['Cole Lane']);
+ }finally{await h.close();globalThis.AudioContext=originalContext;}
+});
+
+test('card splitting transfers One TTS voice choices on every connection',async()=>{
+ const h=await harness();try{
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.connectionMode='one';saved.fixed[2].speaker='Alice & Bob';saved.fixed[2].aliases=[];
+  saved.singleVoices={'native:a':{'Alice & Bob':'g',Narrator:'n',You:'y'},'native:b':{'Alice & Bob':'new'},gemini:{'Alice & Bob':'Kore'}};h.store.set('chat:chat-a',saved);
+  h.store.set('settings:global',{plannerMode:'heuristic',useFastClassifier:true,enableSfx:false,enableAmbience:false});h.state.character={name:'Alice & Bob'};await h.reload();
+  assert.equal(globalThis.__CHOIR_API__.planParagraph('"Hello," Alice & Bob said.').segments[0].voice,'g');
+  h.state.character.description='# Alice\nName: Alice Ward\nBright.\n# Bob\nName: Bob Gray\nDeep.';await h.reload();
+  const config=globalThis.__CHOIR_API__.getConfig();assert.equal(globalThis.__CHOIR_API__.planParagraph('"Hello," Alice said.').segments[0].voice,'g');
+  assert.equal(config.singleVoices['native:a'].Alice,'g');assert.equal(config.singleVoices['native:b'].Alice,'new');assert.equal(config.singleVoices.gemini.Alice,'Kore');
+  assert.ok(!Object.hasOwn(config.singleVoices['native:a'],'Alice & Bob'));
+  await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'g');
+ }finally{await h.close();}
+});
+
+test('partial card profiles include all leads and analyse unclaimed scenario text once without losing voices',async()=>{
+ const h=await harness();try{
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed[2].speaker='Alice & Bob';saved.fixed[2].aliases=[];h.store.set('chat:chat-a',saved);
+  h.state.character={name:'Alice & Bob',description:'# Alice\nName: Alice Ward\nBright.\n# Bob\nName: Bob Gray\nDeep.\n# Clara\nName: Clara Wood\nAlto.'};h.message.content='The room fell quiet.';await h.reload();await h.plan();
+  assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>actor.speaker),['Alice','Bob','Clara']);
+  const profiles=h.requests.filter(request=>request.action==='plan').at(-1).input.config.characterProfiles;assert.equal(profiles.length,3);assert.ok(!profiles[1].description.includes('Alto.'));
+  h.state.character.scenario='Diego is another playable lead, with a gravelly voice.';h.state.cardRoles=[{name:'Alice Ward',aliases:['Alice'],description:'Bright.'},{name:'Bob Gray',aliases:['Bob'],description:'Deep.'},{name:'Clara Wood',aliases:['Clara'],description:'Alto.'},{name:'Diego',description:'Gravelly.'}];
+  await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>actor.speaker),['Alice','Bob','Clara','Diego']);assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'m');
+  await h.reload();await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);
+ }finally{await h.close();}
+});
+
+test('Cue mixes both unison voices and reuses cached members after failures, levels and exclusions change',async()=>{
+ const original=globalThis.AudioContext;let decoded=0;
+ globalThis.AudioContext=class{
+  sampleRate=24000;async resume(){}async close(){}
+  async decodeAudioData(){const channel=decoded++%2?Float32Array.of(0.2,0.3):Float32Array.of(0.4,0.2);return {numberOfChannels:1,getChannelData:()=>channel};}
+  createMediaElementSource(){return {connect(){},disconnect(){}};}createGain(){return {gain:{value:1},connect(){},disconnect(){}};}
+ };
+ const h=await harness({enabled:true});try{
+  h.store.set('settings:global',{plannerMode:'heuristic',useFastClassifier:true,enableSfx:false,enableAmbience:false,enableMusic:false,prefetch:0,normalizeLoudness:false});await h.reload();
+  const text='"Hello," You and Mira said in unison.';await globalThis.__CHOIR_API__.playParagraph({text});
+  assert.deepEqual(h.synthesis.filter(input=>input.text==='"Hello,"').map(input=>input.voice),['y','m']);
+  const wav=h.audioBlobs.find(blob=>blob.type==='audio/wav');assert.ok(wav);assert.equal(new DataView(await wav.arrayBuffer()).getInt16(44,true),Math.round(0.6*32767));
+  const generated=h.synthesis.length;await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(h.synthesis.length,generated);
+  h.dom.window.document.querySelector('[aria-label="Mira silent"]').click();await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(h.synthesis.length,generated);
+  const remix=h.audioBlobs.filter(blob=>blob.type==='audio/wav').at(-1);assert.equal(new DataView(await remix.arrayBuffer()).getInt16(44,true),Math.round(0.4*32767));
+  h.dom.window.document.querySelector('[aria-label="Mira no voice"]').click();await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(h.synthesis.length,generated);
+  h.dom.window.document.querySelector('[aria-label="Mira no voice"]').click();h.state.failVoice='m';const next='"Ready," You and Mira said in unison.';
+  await assert.rejects(globalThis.__CHOIR_API__.playParagraph({text:next}),/429/);h.state.failVoice=null;await globalThis.__CHOIR_API__.playParagraph({text:next});
+  assert.deepEqual(h.synthesis.filter(input=>input.text==='"Ready,"').map(input=>input.voice),['y','m','m']);
+ }finally{await h.close();globalThis.AudioContext=original;}
+});
+
+test('connection-list outages retain the selected native adapter and voices and can be reloaded',async()=>{
+ const h=await harness();try{
+  const originalFetch=globalThis.fetch;globalThis.fetch=async(url,options)=>String(url).endsWith('/tts-connections?limit=200')?new Response('Temporary outage',{status:502}):originalFetch(url,options);
+  await h.reload();const config=globalThis.__CHOIR_API__.getConfig();assert.equal(config.mode,'native');assert.equal(config.connection,'a');assert.equal(config.fixed[2].voice,'m');
+  assert.equal(h.$('mode').value,'native');assert.equal(h.$('connection').value,'a');assert.match(h.$('status').textContent,/Could not load TTS connections/);
+  globalThis.fetch=originalFetch;await h.reload();assert.equal(h.$('connection').value,'a');await h.plan();await h.play();assert.ok(h.synthesis.some(input=>input.voice==='m'));
+ }finally{await h.close();}
+});
+
+test('late message decorators wait for catalogues before restoring saved grouped clip controls',async()=>{
+ const h=await harness();let release,cleanupExtra;try{
+  await h.plan();const saved=structuredClone(h.store.get('chat:chat-a'));saved.batchSpeech=true;saved.sectionButtons=true;h.store.set('chat:chat-a',saved);
+  const originalFetch=globalThis.fetch;globalThis.fetch=async(url,options)=>{if(String(url).endsWith('/voices') && !release)await new Promise(resolve=>release=resolve);return originalFetch(url,options);};
+  const originalDecorator=h.ctx.ui.registerDomDecorator;let decorator;h.ctx.ui.registerDomDecorator=options=>{decorator=options;return originalDecorator(options);};
+  const reloading=h.reload();await until(()=>release && decorator);cleanupExtra=decorator.render(h.footer,{messageId:h.message.id});
+  assert.match(h.footer.textContent,/Loading voice catalogues/);assert.ok(!h.$('status').textContent.includes('Load an available voice list'));
+  release();await reloading;await until(()=>h.footer.querySelector('[data-choir-clip]'));assert.ok(!h.$('status').textContent.includes('Section controls unavailable'));
+ }finally{release?.();cleanupExtra?.();await h.close();}
+});
+
+test('cast capture retains voices when the host returns different parent wrappers and repairs a missing narrator',async()=>{
+ const h=await harness();try{
+  for(const row of h.$('fixed').children)Object.defineProperty(row,'parentElement',{configurable:true,get:()=>Object.create(h.$('fixed'))});
+  await h.plan();assert.deepEqual(h.store.get('chat:chat-a').fixed.map(actor=>actor.speaker),['Narrator','You','Mira']);assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'m');
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed=[{speaker:'Levi',voice:'m',style:'',route:'native:b'},{speaker:'Cole',voice:'new',style:'',route:'native:b'}];h.store.set('chat:chat-a',saved);h.state.character={name:'Levi & Cole'};await h.reload();
+  const repaired=h.store.get('chat:chat-a').fixed;assert.deepEqual(repaired.map(actor=>actor.speaker),['Narrator','Persona','Levi','Cole']);assert.deepEqual(repaired.slice(2).map(actor=>actor.voice),['m','new']);
+ }finally{await h.close();}
+});
+
+test('freeform scenario titles use cached generic card analysis and preserve separately assigned voices',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'Closing Time',description:'Adrian is the captain. Ethan is his teammate. No special headings or tags.'};h.state.cardRoles=[{name:'Adrian',aliases:['Captain Adrian'],description:'Low-voiced captain.'},{name:'Ethan',description:'Brighter teammate.'}];h.state.multiCard=true;
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed[2].speaker='Closing Time';saved.fixed[2].aliases=[];h.store.set('chat:chat-a',saved);h.message.content='Adrian said, "Hello." Ethan replied, "Wait."';
+  await h.reload();await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>[actor.speaker,actor.voice]),[['Adrian','m'],['Ethan','new']]);
+  const profiles=h.requests.find(request=>request.action==='plan').input.config.characterProfiles;assert.deepEqual(profiles.map(profile=>profile.speaker),['Adrian','Ethan']);assert.match(profiles[1].description,/Brighter/);
+  await h.reload();await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,1);
+  h.state.character.description+=' Both lead the evening shift.';await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,2);assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>actor.voice),['m','new']);
+  h.state.character.name='After Hours';await h.plan();assert.equal(h.requests.filter(request=>request.action==='cardCast').length,3);assert.deepEqual(h.store.get('chat:chat-a').fixed.slice(2).map(actor=>actor.voice),['m','new']);
+ }finally{await h.close();}
+});
+
+test('a card with two men creates independent leads and passes each profile to Jev and LLM',async()=>{
+ const h=await harness();try{
+  h.state.character={name:'Adrian and Ethan | Show and Tell',description:'<adrian>\n# Adrian\nA male captain with a low voice. '+ 'Captain. '.repeat(1000)+'\n</adrian>\n<ethan>\n# Ethan\nA male teammate with a brighter voice.\n</ethan>'};
+  const saved=structuredClone(h.store.get('chat:chat-a'));saved.fixed[2].speaker=h.state.character.name;saved.fixed[2].aliases=[];saved.npcPolicy={mode:'skip',route:'',voice:'',voices:[]};h.store.set('chat:chat-a',saved);
+  h.message.content='Adrian said, "Hello." Ethan replied, "Wait."';
+  const key='plan:'+createHash('sha256').update(JSON.stringify(['chat-a',h.message.id])).digest('hex');
+  h.store.set(key,{chatId:'chat-a',messageId:h.message.id,content:h.message.content,transcript:transcriptFromMessage(h.message.content),attribution:{segments:[{speaker:'Narrator',text:'Adrian said,'},{speaker:h.state.character.name,text:'Hello.'},{speaker:'Narrator',text:'Ethan replied,'},{speaker:h.state.character.name,text:'Wait.'}]}});h.store.set('activeplan:chat-a',h.message.id);
+  await h.reload();
+  assert.deepEqual([...h.$('fixed').children].map(row=>row.querySelector('input').value),['Narrator','You','Adrian','Ethan']);h.state.multiCard=true;h.message.content='Adrian said, "Hello." Ethan replied, "Wait."';await h.plan();await h.play();
+  assert.equal(h.synthesis.find(input=>input.text.includes('Hello')).voice,'m');assert.equal(h.synthesis.find(input=>input.text.includes('Wait')).voice,'new');assert.equal(h.store.get('chat:chat-a').fixed[3].voice,'new');
+  const profiles=h.requests.find(request=>request.action==='plan').input.config.characterProfiles;assert.deepEqual(profiles.map(profile=>profile.speaker),['Adrian','Ethan']);assert.match(profiles[1].description,/brighter voice/);assert.ok(!profiles[1].description.includes('Captain.'));
+  await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[3].value,'new');
+  const paragraph=globalThis.__CHOIR_API__.planParagraph('Ethan said, "Another line."');assert.equal(paragraph.segments.at(-1).speaker,'Ethan');assert.equal(paragraph.segments.at(-1).voice,'new');assert.throws(()=>globalThis.__CHOIR_API__.planParagraph('"An ambiguous line."'),/Plan this message with Jev or LLM/);
+  h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));await h.click('latest',text=>text.includes('The object cannot be cloned'));assert.deepEqual(h.requests.find(request=>request.action==='planJev').input.config.characterProfiles.map(profile=>profile.speaker),['Adrian','Ethan']);
  }finally{await h.close();}
 });
 
@@ -380,7 +740,7 @@ test('Freesound failures stay visible, continue speech, and retry without regene
    assert.match(['key','choice'].includes(failure)?h.$('sfxStatus').textContent:h.$('status').textContent,failure==='key'?/Freesound API key/:/SFX skipped/);assert.equal(h.$('sfxStatus').hidden,false);assert.match(h.$('sfxStatus').textContent,/Speech continues/);
    const generated=h.synthesis.length;h.state.sfxError=null;h.state.foleyError=null;h.state.noFoleyResults=false;h.state.previewStatus=200;h.state.previewType='audio/mpeg';if(failure==='key')await configureFoley(h);
    if(['key','choice'].includes(failure))await h.plan();
-   await h.play();assert.equal(await playedFoley(h),1);assert.equal(h.synthesis.length,['key','choice'].includes(failure)?generated+2:generated);assert.equal(h.$('sfxStatus').hidden,true);
+   await h.play();assert.equal(await playedFoley(h),1);assert.equal(h.synthesis.length,generated);assert.equal(h.$('sfxStatus').hidden,true);
   }finally{await h.close();}
  }
 });
@@ -404,7 +764,7 @@ test('SFX mixer switch retains its level when off, stops live effects, applies t
   const level=(actual,expected)=>assert.ok(Math.abs(actual-expected)<0.000001,`Expected volume ${expected}, got ${actual}`);
   h.$('showMixer').click();const mixer=document.querySelector('[data-choir-mixer]'),sfx=()=>document.querySelector('[data-choir-mixer] [data-choir-action="sfx"]');
   assert.equal(mixer.querySelector('[aria-label="SFX volume"]').value,'1');assert.equal(sfx().parentElement.className,'cm-auto-plan');assert.equal(sfx().textContent,'SFX');
-  await configureFoley(h);h.message.content='The page snapped under her thumb.';await h.plan();h.state.blockAudio=true;h.$('play').click();
+  await configureFoley(h);h.message.content='She listened; the page snapped under her thumb.';await h.plan();h.state.blockAudio=true;h.$('play').click();
   await until(()=>h.audios.length===1 && !h.audios[0].paused);const narrator=h.audios[0];assert.equal(narrator.volume,0.5);narrator.onended();
   await until(()=>h.audios.length===2 && !h.audios[1].paused);const effect=h.audios[1];level(effect.volume,0.225);
   const sfxVolume=mixer.querySelector('[aria-label="SFX volume"]');sfxVolume.value='0.4';sfxVolume.dispatchEvent(new h.dom.window.Event('input'));sfxVolume.dispatchEvent(new h.dom.window.Event('change'));level(effect.volume,0.09);assert.equal(narrator.volume,0.5);
@@ -438,7 +798,7 @@ test('mixer plans silently, plays the latest reply, filters voices by plan and r
 
 test('SFX can be reenabled before its cue after prefetch skipped it, and disabling cached effects preserves pause',async()=>{
  const h=await harness();try{
-  await configureFoley(h);h.message.content='The page snapped under her thumb.';h.$('prefetch').value='1';await h.plan();h.state.delay=50;h.state.blockAudio=true;h.$('play').click();
+  await configureFoley(h);h.message.content='She listened; the page snapped under her thumb.';h.$('prefetch').value='1';await h.plan();h.state.delay=50;h.state.blockAudio=true;h.$('play').click();
   await until(()=>h.synthesis.length===1);h.$('sfx').click();await until(()=>h.audios[0]?.paused===false);assert.equal(h.requests.filter(request=>request.action==='freesound').length,0);h.$('sfx').click();
   h.state.blockAudio=false;h.audios[0].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(await playedFoley(h),1);
   const start=h.audios.length;h.state.blockAudio=true;const replay=[...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay');replay.click();await until(()=>h.audios.length===start+1 && !h.audios.at(-1).paused);h.audios.at(-1).onended();
@@ -468,10 +828,10 @@ test('Stop cancels Freesound search and preview downloads and late results canno
  }
 });
 
-test('automatic streamed Choir playback and Cue share SFX while muted narration stays silent',async()=>{
+test('automatic Choir playback and Cue share SFX while muted narration stays silent',async()=>{
  const h=await harness();try{
   await configureFoley(h);h.message.content='The page snapped under her thumb. "Hello." A quiet room. '.repeat(4);
-  globalThis.__CHOIR_API__.setNarratorMuted(true);h.$('auto').checked=true;h.$('auto').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+  globalThis.__CHOIR_API__.setNarratorMuted(true);h.$('auto-plan').click();h.$('auto').checked=true;h.$('auto').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
   h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content});await until(()=>h.$('status').textContent.includes('Playback finished') && !h.$('latest').disabled);
   assert.equal(await playedFoley(h),4);assert.equal(h.requests.filter(request=>request.action==='freesound').length,1);assert.ok(h.synthesis.every(request=>request.text.includes('Hello')));
   const bridge=globalThis.__CHOIR_API__,before=h.requests.filter(request=>request.action==='freesound').length,played=await playedFoley(h);
@@ -489,8 +849,8 @@ test('Cue fetches real preview blobs, retries failed SFX and honors companion ca
  const h=await harness();try{
   await configureFoley(h);const bridge=globalThis.__CHOIR_API__,text='The page snapped under her thumb.';
   h.state.foleyError='Freesound HTTP 401';const statuses=[];
-  const failed=await bridge.playParagraph({text,onStatus:status=>statuses.push(status)});assert.equal(failed.played,2);assert.match(failed.warnings[0],/401/);assert.equal(await playedFoley(h),0);assert.match(statuses.at(-1).message,/SFX skipped/);
-  h.state.foleyError=null;const result=await bridge.playParagraph({text});assert.equal(result.played,3);assert.equal(await playedFoley(h),1);assert.equal(h.state.previewFetches.length,1);assert.equal(h.synthesis.length,2);
+  const failed=await bridge.playParagraph({text,onStatus:status=>statuses.push(status)});assert.equal(failed.played,1);assert.match(failed.warnings[0],/401/);assert.equal(await playedFoley(h),0);assert.match(statuses.at(-1).message,/SFX skipped/);
+  h.state.foleyError=null;const result=await bridge.playParagraph({text});assert.equal(result.played,2);assert.equal(await playedFoley(h),1);assert.equal(h.state.previewFetches.length,1);assert.equal(h.synthesis.length,1);
   await bridge.playParagraph({text});assert.equal(await playedFoley(h),2);assert.equal(h.requests.filter(request=>request.action==='freesound').length,2);
   const ctrl=new AbortController();ctrl.abort();const searches=h.requests.length;await assert.rejects(bridge.playParagraph({text,signal:ctrl.signal}),{name:'AbortError'});assert.equal(h.requests.length,searches);
   h.state.holdPreview=true;const pendingCtrl=new AbortController();const pending=bridge.playParagraph({text:'The glass shattered.',signal:pendingCtrl.signal});const stopped=assert.rejects(pending,{name:'AbortError'});
@@ -759,6 +1119,96 @@ test('a music marker streams the chosen incompetech track under speech with its 
  }finally{await h.close();}
 });
 
+test('continuous music is opt-in, global, survives reply completion and cue-free replies, and stops explicitly',async()=>{
+ const h=await harness();try{
+  assert.equal(h.$('loopMusic').checked,false);
+  await toggle(h,'enableMusic',true);await toggle(h,'loopMusic',true);
+  assert.equal(h.store.get('settings:global').loopMusic,true);
+  h.message.content='Night fell over the road.';await h.plan();await h.play();
+  await until(()=>beds(h).length===1 && !beds(h)[0].paused);const music=beds(h)[0];
+  await new Promise(resolve=>setTimeout(resolve,1600));assert.equal(music.paused,false);assert.equal(music.loop,true);
+  h.message.content='The travellers kept walking.';await h.plan();
+  assert.deepEqual(h.requests.filter(request=>request.action==='sfx').at(-1).input.currentMusic,{title:'Crypto',feels:['Dark']});
+  assert.equal(music.paused,false);await h.play();assert.equal(music.paused,false);assert.equal(beds(h).length,1);
+  assert.equal(h.$('stop').disabled,false);h.$('stop').click();assert.equal(music.paused,true);assert.equal(music.src,undefined);
+  await h.play();assert.equal(beds(h).length,1);
+  h.store.set('chat:chat-b',{loopMusic:false,enableMusic:false});h.state.active='chat-b';h.subscriptions.get('chat.active')();
+  await until(()=>h.$('loopMusic').checked && h.$('enableMusic').checked);await h.reload();assert.equal(h.$('loopMusic').checked,true);
+ }finally{await h.close();}
+});
+
+test('continuous music waits for its replacement, crossfades when ready, and keeps the current track if selection fails',async()=>{
+ const h=await harness();try{
+  await toggle(h,'enableMusic',true);await toggle(h,'loopMusic',true);const bridge=globalThis.__CHOIR_API__;
+  await bridge.playParagraph({text:'Night fell over the road.'});await until(()=>beds(h).length===1 && !beds(h)[0].paused);
+  const original=beds(h)[0];await until(()=>original.volume===0.2);
+  h.state.holdMusic=true;h.state.musicTitle='Storm';await bridge.playParagraph({text:'The storm broke at once.'});
+  await until(()=>h.state.releaseMusic);await new Promise(resolve=>setTimeout(resolve,1600));
+  assert.equal(original.paused,false);assert.equal(original.volume,0.2);assert.equal(bridge.getMusic().title,'Crypto');
+  h.state.releaseMusic();await until(()=>beds(h).length===2 && !beds(h)[1].paused);const replacement=beds(h)[1];
+  await until(()=>original.paused && replacement.volume===0.2);assert.equal(bridge.getMusic().title,'Storm');
+  h.state.holdMusic=false;h.state.musicError='No music available';await bridge.playParagraph({text:'Dawn broke in a new place.'});
+  assert.equal(replacement.paused,false);assert.equal(bridge.getMusic().title,'Storm');
+  bridge.stop();assert.ok(beds(h).every(audio=>audio.paused));
+ }finally{await h.close();}
+});
+
+test('continuous music can finish loading after speech ends and is stopped by the loop toggle, music toggle, chat change and cleanup',async()=>{
+ const h=await harness();try{
+  await toggle(h,'enableMusic',true);await toggle(h,'loopMusic',true);
+  h.state.holdMusic=true;h.message.content='Night fell over the road.';await h.plan();await h.play();
+  await until(()=>h.state.releaseMusic);assert.equal(beds(h).length,0);
+  h.state.holdMusic=false;h.state.releaseMusic();await until(()=>beds(h).length===1 && !beds(h)[0].paused);
+  await toggle(h,'loopMusic',false);assert.equal(beds(h)[0].paused,true);
+  await toggle(h,'loopMusic',true);await h.play();await until(()=>beds(h).length===2 && !beds(h)[1].paused);
+  await toggle(h,'enableMusic',false);assert.equal(beds(h)[1].paused,true);
+  await toggle(h,'enableMusic',true);await h.play();await until(()=>beds(h).length===3 && !beds(h)[2].paused);
+  h.store.set('chat:chat-b',h.store.get('chat:chat-a'));h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>beds(h)[2].paused && /restored/i.test(h.$('saveState').textContent));
+  assert.equal(h.$('loopMusic').checked,true);assert.equal(globalThis.__CHOIR_API__.getMusic(),null);
+  await globalThis.__CHOIR_API__.playParagraph({text:'Night fell in another chat.'});await until(()=>beds(h).length===4 && !beds(h)[3].paused);
+  await h.reload();assert.equal(beds(h)[3].paused,true);
+ }finally{h.state.releaseMusic?.();await h.close();}
+});
+
+test('default music playback fades at the end, while continuous cached replay carries a track across messages',async()=>{
+ const h=await harness();try{
+  await toggle(h,'enableMusic',true);h.message.content='Night fell over the road.';await h.plan();
+  h.state.blockAudio=true;h.$('play').click();await until(()=>beds(h).length===1 && !beds(h)[0].paused && voices(h).length===1 && !voices(h)[0].paused);
+  h.state.blockAudio=false;voices(h)[0].onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  await until(()=>beds(h).length===1 && beds(h)[0].paused);
+  h.message.content='The travellers kept walking.';await h.plan();await h.play();
+  await toggle(h,'loopMusic',true);
+  for(const key of [...h.store.keys()])if(/^(plan:|activeplan:)/.test(key))h.store.delete(key);
+  await h.reload();const bridge=globalThis.__CHOIR_API__;
+  await bridge.playParagraph({text:'Night fell over the road.'});await until(()=>beds(h).length===2 && !beds(h)[1].paused);const music=beds(h)[1];
+  const synthesis=h.synthesis.length;h.footer.querySelector('button').click();await until(()=>h.$('status').textContent==='Replay finished.');
+  assert.equal(music.paused,false);assert.equal(h.synthesis.length,synthesis);assert.equal(beds(h).length,2);
+ }finally{await h.close();}
+});
+
+test('continuous music honors stop cues and cancels a loading replacement when music is turned off',async()=>{
+ const h=await harness();try{
+  await toggle(h,'enableMusic',true);await toggle(h,'loopMusic',true);const bridge=globalThis.__CHOIR_API__;
+  await bridge.playParagraph({text:'Night fell over the road.'});await until(()=>beds(h).length===1 && !beds(h)[0].paused);
+  await bridge.playParagraph({text:'Music stopped in the quiet room.'});await until(()=>beds(h)[0].paused);assert.equal(bridge.getMusic(),null);
+  await bridge.playParagraph({text:'The travellers kept walking.'});assert.equal(beds(h).length,1);
+  await bridge.playParagraph({text:'Night fell in another place.'});await until(()=>beds(h).length===2 && !beds(h)[1].paused);
+  h.state.holdMusic=true;await bridge.playParagraph({text:'The storm broke at once.'});await until(()=>h.state.releaseMusic);
+  await toggle(h,'enableMusic',false);h.state.releaseMusic();await tick();assert.equal(beds(h).length,2);assert.ok(beds(h).every(audio=>audio.paused));assert.equal(bridge.getMusic(),null);
+ }finally{h.state.releaseMusic?.();await h.close();}
+});
+
+test('continuous music carries through streamed planning sections without a new music marker',async()=>{
+ const h=await harness();try{
+  await toggle(h,'enableMusic',true);await toggle(h,'loopMusic',true);const bridge=globalThis.__CHOIR_API__;
+  await bridge.playParagraph({text:'Night fell over the road.'});await until(()=>beds(h).length===1 && !beds(h)[0].paused);const music=beds(h)[0];
+  h.message.content='The hall was quiet '.repeat(70)+'. "Hello." '+'The road was dark '.repeat(80)+'.';
+  await h.play();assert.ok(h.requests.filter(request=>request.action==='plan').length>1);
+  assert.ok(h.requests.filter(request=>request.action==='sfx').slice(1).every(request=>request.input.currentMusic.title==='Crypto'));
+  assert.equal(beds(h).length,1);assert.equal(music.paused,false);
+ }finally{await h.close();}
+});
+
 test('Cue carries the playing music into later paragraphs, announces it and one bridge toggle turns all Choir sound off',async()=>{
  const h=await harness();try{
   const events=[],target=new EventTarget();target.addEventListener('choir-music-v1',event=>events.push(event.detail));globalThis.dispatchEvent=event=>target.dispatchEvent(event);
@@ -802,7 +1252,7 @@ test('the chat player starts loading every bed when it is planned, before its ma
 
 test('Cue loads the next paragraph bed early and the hand-off reuses that load',async()=>{
  const h=await harness();let first;try{
-  await configureFoley(h);h.store.set('chat:chat-a',{...h.store.get('chat:chat-a'),prefetch:1});await h.reload();
+  await configureFoley(h);h.$('prefetch').value='1';h.$('prefetch').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();
   const bridge=globalThis.__CHOIR_API__;h.state.blockAudio=true;
   first=bridge.playParagraph({text:'Night fell.',nextText:'Rain drummed on the roof.'}).catch(error=>error);
   await until(()=>h.state.bedFetches.length===1 && voices(h).length===1);assert.equal(beds(h).length,0);
@@ -814,7 +1264,7 @@ test('Cue loads the next paragraph bed early and the hand-off reuses that load',
 
 test('Cue prefetch names the music chosen for the current paragraph before it starts',async()=>{
  const h=await harness();try{
-  await toggle(h,'enableMusic',true);h.store.set('chat:chat-a',{...h.store.get('chat:chat-a'),prefetch:1});await h.reload();
+  await toggle(h,'enableMusic',true);h.$('prefetch').value='1';h.$('prefetch').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();
   await globalThis.__CHOIR_API__.playParagraph({text:'Night fell over the road.',nextText:'The road was quiet.'});
   await until(()=>h.requests.filter(request=>request.action==='sfx').length===2);
   assert.deepEqual(h.requests.filter(request=>request.action==='sfx').map(request=>request.input.currentMusic),[undefined,{title:'',feels:['Dark']}]);
@@ -882,6 +1332,9 @@ test('each Freesound search carries the story moment at its anchor, its sound ki
   assert.deepEqual(searches.sort((a,b)=>a.query.localeCompare(b.query)),[
    {query:'page turn',kind:'sfx',moment:'k ticked, the candles burned low and she listened until the page snapped under her thumb.',decisionConnection:'decision-b'},
    {query:'rain',kind:'ambience',moment:h.message.content,decisionConnection:'decision-b'}]);
+  h.message.content='She watched the shelf '.repeat(60)+'until the page snapped under her thumb.';await h.plan();await h.play();
+  const moved=h.requests.filter(request=>request.action==='freesound').at(-1).input;
+  assert.ok(moved.moment.includes('page snapped under her thumb.'));assert.ok(moved.moment.length<300);assert.equal(moved.decisionConnection,'decision-b');
  }finally{await h.close();}
 });
 
@@ -919,7 +1372,7 @@ test('Auto-plan toolbar visibility and mixer state stay synchronized through rel
     assert.equal(h.toolbar.childElementCount,1);assert.equal(h.toolbar.querySelector('button').getAttribute('aria-pressed'),'true');
     h.toolbar.querySelector('button').click();await until(()=>h.$('saveState').textContent==='Saved automatically');assert.equal(h.store.get('chat:chat-b').autoPlan,false);
     h.state.active='chat-a';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Saved settings restored');
-    assert.equal(h.toolbar.querySelector('button').getAttribute('aria-pressed'),'true');assert.equal(h.synthesis.length,0);
+    assert.equal(h.toolbar.querySelector('button').getAttribute('aria-pressed'),'false');assert.equal(h.synthesis.length,0);
     h.$('showAutoPlanAction').checked=false;h.$('showAutoPlanAction').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.toolbarActions.has('choir_auto_plan'),false);
     assert.equal(h.toolbar.childElementCount,0);assert.equal(h.dom.window.document.querySelector('nav > button').textContent,'Another extension');
     await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(h.toolbarActions.has('choir_auto_plan'),false);
@@ -930,7 +1383,7 @@ test('Auto-plan toolbar visibility and mixer state stay synchronized through rel
 test('WebSocket completion metadata cannot make Auto-plan or Auto-play wait for an already published reply',async()=>{
  for(const mode of ['auto-plan','auto-play']){
   const h=await harness();try{
-   h.$(mode).click();
+   h.$('auto-plan').click();if(mode==='auto-play')h.$('auto-play').click();
    const event={generationId:`websocket-${mode}`,chatId:'chat-a',messageId:h.message.id,content:h.message.content};
    const metadata={stateRevision:{epoch:'server-session',sequence:42},runtimeMutationId:'saved-reply'};
    // Lumiverse forwards the WebSocket callback's second argument to extensions.
@@ -947,7 +1400,7 @@ test('WebSocket completion metadata cannot make Auto-plan or Auto-play wait for 
 test('automatic planning recovers missed completion events and waits for the saved swipe before planning',async()=>{
  for(const playing of [false,true]){
   const h=await harness();try{
-   h.$(playing?'auto-play':'auto-plan').click();
+   h.$('auto-plan').click();if(playing)h.$('auto-play').click();
    const original=h.message.content,completed='The saved reply arrived. "Hello."';
    h.state.savedMessages=[{...h.message,content:completed,swipes:[original,completed],swipe_id:1}];
    const event={generationId:'metrics-fallback',chatId:'chat-a',messageId:h.message.id,swipeId:1};
@@ -1013,7 +1466,7 @@ test('automatic planning ignores unsuitable events and duplicate events during a
   }finally{await h.close();}
 });
 
-test('mixer Auto-play toggle syncs with settings, persists, and plays even when Auto-plan is off',async()=>{
+test('mixer Auto-play persists independently and only plays available plans with Auto-plan off',async()=>{
   const h=await harness();try{
     assert.equal(h.$('auto-play').textContent,'Auto-play');assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');
     h.$('auto-play').click();assert.equal(h.$('auto').checked,true);assert.equal(h.$('auto-play').textContent,'Auto-play');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'false');
@@ -1022,16 +1475,122 @@ test('mixer Auto-play toggle syncs with settings, persists, and plays even when 
     h.$('auto').checked=false;h.$('auto').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');
     h.$('auto').checked=true;h.$('auto').dispatchEvent(new h.dom.window.Event('change'));assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'true');
     h.events.get('GENERATION_ENDED')({chatId:'chat-a',messageId:h.message.id,content:h.message.content});
-    await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'false');assert.ok(h.synthesis.length>0);
+    await until(()=>h.$('status').textContent.includes('Auto-play skipped'));assert.equal(h.requests.length,0);assert.equal(h.synthesis.length,0);
+    await h.plan();const plans=h.requests.filter(request=>request.action==='plan').length;
+    h.events.get('GENERATION_ENDED')({generationId:'already-planned',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+    await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'false');assert.ok(h.synthesis.length>0);assert.equal(h.requests.filter(request=>request.action==='plan').length,plans);
+    h.message.content='An unplanned regenerated reply.';const synthesis=h.synthesis.length;
+    h.events.get('GENERATION_ENDED')({generationId:'unplanned-swipe',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+    await until(()=>h.$('status').textContent.includes('Auto-play skipped'));assert.equal(h.requests.filter(request=>request.action==='plan').length,plans);assert.equal(h.synthesis.length,synthesis);
     h.$('auto-plan').click();h.$('auto-play').click();assert.equal(h.$('auto').checked,false);assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'false');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');
     await until(()=>h.$('saveState').textContent==='Saved automatically');await h.reload();assert.equal(h.$('auto-play').textContent,'Auto-play');assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');
   }finally{await h.close();}
 });
 
+test('Auto-play alone skips saved attribution that still needs an LLM voice choice',async()=>{
+ const h=await harness();try{
+  await h.plan();const plans=h.requests.filter(request=>request.action==='plan').length;
+  h.store.get('chat:chat-a').fixed[2].voice='';await h.reload();h.$('auto-play').click();
+  h.events.get('GENERATION_ENDED')({generationId:'needs-new-voice',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+  await until(()=>h.$('status').textContent.includes('Auto-play skipped'));
+  assert.equal(h.requests.filter(request=>request.action==='plan').length,plans);assert.equal(h.synthesis.length,0);
+ }finally{await h.close();}
+});
+
+test('turning Auto-plan off cancels its pending planner even with Auto-play left on',async()=>{
+ for(const playing of [false,true]){
+  const h=await harness();try{
+   h.$('auto-plan').click();if(playing)h.$('auto-play').click();h.state.held=true;
+   h.events.get('GENERATION_ENDED')({generationId:'held-automatic-plan',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   await until(()=>h.requests.some(request=>request.action==='plan'));const pending=h.requests.find(request=>request.action==='plan');
+   h.$('auto-plan').click();await until(()=>!h.$('latest').disabled);
+   assert.equal(h.$('auto-play').getAttribute('aria-pressed'),String(playing));assert.ok(h.requests.some(request=>request.action==='cancel' && request.id===pending.id));
+   h.state.held=false;h.releaseHeld();await tick();assert.equal(h.synthesis.length,0);assert.equal(h.$('preview').childElementCount,0);
+   h.message.content='A later unplanned reply.';h.events.get('GENERATION_ENDED')({generationId:'after-plan-off',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   if(playing)await until(()=>h.$('status').textContent.includes('Auto-play skipped'));else await new Promise(resolve=>setTimeout(resolve,150));
+   assert.equal(h.requests.filter(request=>request.action==='plan').length,1);assert.equal(h.synthesis.length,0);
+  }finally{await h.close();}
+ }
+});
+
+test('turning Auto-play off during planning leaves Auto-plan running and prevents subsequent speech',async()=>{
+ for(const control of ['mixer','drawer']){
+  const h=await harness();try{
+   h.$('auto-plan').click();h.$('auto-play').click();h.state.held=true;
+   h.events.get('GENERATION_ENDED')({generationId:'planning-before-play-off',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   await until(()=>h.requests.some(request=>request.action==='plan'));const pending=h.requests.find(request=>request.action==='plan');
+   assert.equal(h.$('auto').disabled,false);
+   if(control==='mixer')h.$('auto-play').click();else{h.$('auto').checked=false;h.$('auto').dispatchEvent(new h.dom.window.Event('change'));}
+   assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');assert.ok(!h.requests.some(request=>request.action==='cancel' && request.id===pending.id));
+   h.state.held=false;h.releaseHeld();await until(()=>h.$('status').textContent.startsWith('Ready:') && !h.$('latest').disabled);
+   assert.ok([...h.store.keys()].some(key=>key.startsWith('plan:')));assert.equal(h.synthesis.length,0);
+   h.message.content='The next reply is planned silently.';h.events.get('GENERATION_ENDED')({generationId:'silent-after-play-off',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   await until(()=>h.requests.filter(request=>request.action==='plan').length===2 && !h.$('latest').disabled);assert.equal(h.synthesis.length,0);
+  }finally{await h.close();}
+ }
+});
+
+test('turning Auto-play off cancels automatic speech generation and active audio without disabling Auto-plan',async()=>{
+ for(const stage of ['synthesis','audio']){
+  const h=await harness();try{
+   h.message.content='An automatically spoken reply.';h.$('auto-plan').click();h.$('auto-play').click();
+   if(stage==='synthesis')h.state.holdSynthesisAt=1;else h.state.blockAudio=true;
+   h.events.get('GENERATION_ENDED')({generationId:`stop-auto-${stage}`,chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   await until(()=>stage==='synthesis'?h.state.releaseSynthesis:h.audios.some(audio=>!audio.paused));
+   h.$('auto-play').click();await until(()=>!h.$('latest').disabled);
+   assert.equal(h.$('auto-plan').getAttribute('aria-pressed'),'true');assert.ok(h.audios.every(audio=>audio.paused));
+   if(stage==='synthesis'){assert.equal(h.state.aborted,1);h.state.releaseSynthesis();h.state.holdSynthesisAt=null;}
+   const synthesis=h.synthesis.length;h.state.blockAudio=false;await tick();assert.equal(h.synthesis.length,synthesis);
+   h.message.content='A following reply is planned silently.';h.events.get('GENERATION_ENDED')({generationId:`after-auto-${stage}`,chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   await until(()=>h.requests.filter(request=>request.action==='plan').length===2 && !h.$('latest').disabled);assert.equal(h.synthesis.length,synthesis);
+  }finally{await h.close();}
+ }
+});
+
+test('turning Auto-plan off during automatic playback keeps that available plan playing',async()=>{
+ const h=await harness();try{
+  h.message.content='An already planned reply.';h.$('auto-plan').click();h.$('auto-play').click();h.state.blockAudio=true;
+  h.events.get('GENERATION_ENDED')({generationId:'playing-available-plan',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+  await until(()=>h.audios.some(audio=>!audio.paused));const audio=h.audios.find(audio=>!audio.paused);
+  h.$('auto-plan').click();assert.equal(audio.paused,false);assert.equal(h.$('auto-play').getAttribute('aria-pressed'),'true');
+  h.state.blockAudio=false;audio.onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  const synthesis=h.synthesis.length;h.message.content='A new unplanned reply.';h.events.get('GENERATION_ENDED')({generationId:'unplanned-after-speech',chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+  await until(()=>h.$('status').textContent.includes('Auto-play skipped'));assert.equal(h.requests.filter(request=>request.action==='plan').length,1);assert.equal(h.synthesis.length,synthesis);
+ }finally{await h.close();}
+});
+
+test('automation switches do not cancel manually requested planning or playback',async()=>{
+ const h=await harness();try{
+  h.$('auto-plan').click();h.$('auto-play').click();h.state.held=true;h.$('latest').click();
+  await until(()=>h.requests.some(request=>request.action==='plan'));const pending=h.requests.find(request=>request.action==='plan');
+  h.$('auto-plan').click();h.$('auto-play').click();assert.ok(!h.requests.some(request=>request.action==='cancel' && request.id===pending.id));
+  h.state.held=false;h.releaseHeld();await until(()=>h.$('status').textContent.startsWith('Ready:') && !h.$('latest').disabled);
+  h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.some(audio=>!audio.paused));const audio=h.audios.find(audio=>!audio.paused);
+  h.$('auto-play').click();h.$('auto-play').click();assert.equal(audio.paused,false);h.$('stop').click();assert.equal(audio.paused,true);
+ }finally{await h.close();}
+});
+
+test('automation disabled during saved-plan lookup cannot start late local planning or playback',async()=>{
+ for(const stage of ['planning','restore']){
+  const h=await harness();let holding=true;const held=[];
+  try{
+   h.message.content='A simple narrated reply.';
+   if(stage==='restore')await h.plan();else{h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));h.$('auto-plan').click();}
+   h.$('auto-play').click();const plans=h.requests.filter(request=>request.action==='plan').length,get=h.ctx.settings.get;
+   h.ctx.settings.get=async key=>{if(holding && key.startsWith('plan:'))await new Promise(resolve=>held.push(resolve));return get(key);};
+   h.events.get('GENERATION_ENDED')({generationId:`delayed-lookup-${stage}`,chatId:'chat-a',messageId:h.message.id,content:h.message.content});
+   await until(()=>held.length>0 && h.$('latest').disabled);h.$(stage==='planning'?'auto-plan':'auto-play').click();
+   assert.equal(h.$('latest').disabled,false);holding=false;for(const release of held.splice(0))release();await new Promise(resolve=>setTimeout(resolve,150));
+   assert.equal(h.requests.filter(request=>request.action==='plan').length,plans);assert.equal(h.synthesis.length,0);
+   if(stage==='planning'){assert.equal(h.$('preview').childElementCount,0);assert.ok(![...h.store.keys()].some(key=>key.startsWith('plan:')));}
+  }finally{holding=false;for(const release of held)release();await h.close();}
+ }
+});
+
 test('Auto-plan and Auto-play wait for message publication after the host completion event, including same-ID regeneration',async()=>{
  for(const mode of ['auto-plan','auto-play'])for(const existing of [false,true]){
   const h=await harness();try{
-   h.$(mode).click();const finalContent='A completed assistant reply.';h.state.messages=existing?[{...h.message,content:'Previous swipe.'}]:[];
+   h.$('auto-plan').click();if(mode==='auto-play')h.$('auto-play').click();const finalContent='A completed assistant reply.';h.state.messages=existing?[{...h.message,content:'Previous swipe.'}]:[];
    const event={generationId:`generated-${mode}-${existing}`,chatId:'chat-a',messageId:h.message.id,content:finalContent};h.events.get('GENERATION_ENDED')(event,{stateRevision:{epoch:'server-session',sequence:42}});
    await new Promise(resolve=>setTimeout(resolve,150));assert.equal(h.requests.length,0,'Do not plan an unpublished reply');assert.equal(h.audios.length,0);
    h.message.content=finalContent;h.state.messages=[h.message];h.subscriptions.get('chat.messageCount')();
@@ -1046,7 +1605,7 @@ test('new reply automation queues behind active planning, playback or Cue instea
  for(const activity of ['planning','playback','Cue']){
   const h=await harness();try{
    const playing=activity!=='planning';let companion;
-   h.message.content='First reply.';h.$(playing?'auto-play':'auto-plan').click();
+   h.message.content='First reply.';h.$('auto-plan').click();if(playing)h.$('auto-play').click();
    if(playing){h.state.blockAudio=true;if(activity==='Cue')companion=globalThis.__CHOIR_API__.playParagraph({text:h.message.content});else{await h.plan();h.$('play').click();}await until(()=>h.audios.length===1 && !h.audios[0].paused);}
    else{h.state.held=true;h.$('latest').click();await until(()=>h.requests.some(request=>request.action==='plan'));}
    const initialPlans=activity==='Cue'?0:1,next={id:'message-next',name:'Mira',is_user:false,content:'Second reply.'};h.state.messages=[h.message,next];h.events.get('GENERATION_ENDED')({generationId:'next-generation',chatId:'chat-a',messageId:next.id,content:next.content});await new Promise(resolve=>setTimeout(resolve,150));assert.equal(h.requests.filter(request=>request.action==='plan').length,initialPlans);
@@ -1063,7 +1622,7 @@ test('removed drawer narrator mute remains visible and reversible through mixer 
   await h.plan();
   assert.equal(h.$('muteNarrator'),null);assert.ok(!h.root.textContent.includes('Mute narrator (dialogue only)'));
   const button=()=>h.dom.window.document.querySelector('[aria-label="Narrator no voice"]');assert.equal(button().getAttribute('aria-pressed'),'true');assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(),true);
-  button().click();await until(()=>h.store.get('chat:chat-a').muteNarrator===false);assert.equal(button().getAttribute('aria-pressed'),'false');assert.equal(h.store.get('settings:global').muteNarrator,false);
+  button().click();await until(()=>h.store.get('chat:chat-a').muteNarrator===false);assert.equal(button().getAttribute('aria-pressed'),'false');assert.equal(h.store.get('settings:global').muteNarrator,undefined);
   await h.reload();assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(),false);button().click();await until(()=>h.store.get('chat:chat-a').fixed[0].excluded===true);assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(),true);
   globalThis.__CHOIR_API__.setNarratorMuted(false);await until(()=>h.store.get('chat:chat-a').fixed[0].excluded===false);assert.equal(button().getAttribute('aria-pressed'),'false');
   const result=await globalThis.__CHOIR_API__.playParagraph({text:'Narration is audible again.'});assert.equal(result.played,1);assert.ok(h.synthesis.some(request=>request.voice==='n'));
@@ -1116,6 +1675,189 @@ test('companion paragraph playback also applies native provider limits and Fish 
   }
 });
 
+async function fishGroupingHarness(mixer){
+  const h=await harness(mixer);h.connections[0].provider='fish_audio';h.connections[0].model='s2.1-pro';
+  h.state.providers=[{id:'fish_audio',capabilities:{parameters:{},multiSpeaker:{maxSpeakers:5,models:['s2.1-pro']}}}];
+  const saved=h.store.get('chat:chat-a');saved.connectionMode='one';saved.batchSpeech=true;saved.chunk=1800;saved.enableSfx=false;saved.enableAmbience=false;
+  for(const actor of saved.fixed){delete actor.route;delete actor.accent;delete actor.pronunciation;}
+  h.store.set('chat:chat-a',saved);await h.reload();return h;
+}
+async function openRouterGroupingHarness(family='fish_audio',patched=true){
+ const h=await harness(),fishModel='fish-audio/s2.1-pro-free:free',googleModel='google/gemini-3.8-flash-lite-tts';
+ const fishIds=['1','2','3','4'].map(char=>char.repeat(32)),ids=family==='fish_audio'?fishIds:['Charon','Kore','Puck','Zephyr'];
+ h.connections[0].provider='openrouter_tts';h.connections[0].model=family==='fish_audio'?fishModel:googleModel;
+ const mixed=[{id:'alloy',name:'Alloy (OpenAI)'},...['Puck','Kore','Charon','Zephyr'].map(id=>({id,name:`${id} (Gemini)`}))];
+ h.state.providers=[{id:'openrouter_tts',capabilities:{parameters:{instructions:{type:'string'},speech_style:{type:'string'}},staticVoices:mixed,...(patched?{multiSpeaker:{maxSpeakers:5,models:[fishModel,googleModel],maxSpeakersByModel:{[fishModel]:5,[googleModel]:2}}}:{})}}];
+ h.state.catalogues={a:{voices:mixed}};h.state.planForCatalogue=true;
+ const saved=h.store.get('chat:chat-a');saved.connectionMode='one';saved.batchSpeech=true;saved.enableSfx=false;saved.enableAmbience=false;saved.useStyle=true;
+ saved.fixed.forEach((actor,i)=>{actor.voice=ids[i];delete actor.route;delete actor.accent;delete actor.pronunciation;});saved.casts={'native:a':[{speaker:'Guard',voice:ids[3],style:''}]};
+ if(family==='fish_audio'){saved.extraVoices=fishIds.map(id=>`${id} | A warm storyteller.`).join('\n');saved.extraVoiceRoutes=Object.fromEntries(fishIds.map(id=>[id,['native:a']]));}
+ h.store.set('chat:chat-a',saved);await h.reload();return h;
+}
+
+test('OpenRouter Fish grouping uses Fish voice IDs and exposes Fish catalogue tools without Gemini or GPT voices',async()=>{
+ const h=await openRouterGroupingHarness();try{
+  const options=[...h.$('fixed').querySelector('[data-choir-voice]').options].map(option=>option.value);
+  assert.ok(!options.includes('Puck'));assert.ok(!options.includes('alloy'));assert.ok(options.includes('1'.repeat(32)));
+  h.$('captureDefaults').click();const dialog=document.querySelector('[role="dialog"][aria-label="Set default"]');
+  assert.equal(dialog.querySelector('[aria-label="Browse Fish voice catalogue for Default Narrator voice"]').parentElement.hidden,false);
+  [...dialog.querySelectorAll('button')].find(button=>button.textContent==='Cancel').click();
+  await h.plan();await h.play();assert.equal(h.synthesis.length,1);
+  assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>turn.voice),['1','3','4','1'].map(char=>char.repeat(32)));
+  assert.equal(h.synthesis[0].parameters.turns.map(turn=>turn.text).join(' '),h.message.content);
+  assert.match(h.$('groupingStatus').title,/up to 5 voices per call/);
+  await h.reload();await h.play();assert.equal(h.synthesis.length,1);
+ }finally{await h.close();}
+});
+
+test('OpenRouter Gemini groups only two preset voices per call despite the provider also supporting five Fish voices',async()=>{
+ const h=await openRouterGroupingHarness('gemini');try{
+  const options=[...h.$('fixed').querySelector('[data-choir-voice]').options].map(option=>option.value);
+  assert.ok(options.includes('Puck'));assert.ok(!options.includes('alloy'));
+  assert.match(h.$('groupingStatus').title,/up to 2 preset voices per call/);
+  await h.plan();await h.play();assert.equal(h.synthesis.length,2);
+  assert.deepEqual(h.synthesis.flatMap(request=>request.parameters.turns.map(turn=>turn.voice)),['Charon','Puck','Zephyr','Charon']);
+  assert.ok(h.synthesis.every(request=>new Set(request.parameters.turns.map(turn=>turn.voice)).size<=2));
+ }finally{await h.close();}
+});
+
+test('an unpatched OpenRouter relay keeps Fish voices model-specific and uses separate calls for different speakers',async()=>{
+ const h=await openRouterGroupingHarness('fish_audio',false);try{
+  assert.match(h.$('groupingStatus').title,/relay advertises one voice per call/);
+  await h.plan();await h.play();assert.equal(h.synthesis.length,4);
+  assert.ok(h.synthesis.every(request=>!request.parameters.turns && /^[1-4]{32}$/.test(request.voice)));
+  assert.equal(h.synthesis[0].text,'At dawn.');assert.equal(h.synthesis[0].parameters.instructions,'Calm');
+ }finally{await h.close();}
+});
+
+test('optional Fish grouping sends four turns in one request and cached replay makes no new calls',async()=>{
+  const h=await fishGroupingHarness();try{
+    assert.equal(h.$('batchSpeech').checked,true);await h.plan();await h.play();
+    assert.equal(h.synthesis.length,1);assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>turn.speaker),['Narrator','Mira','Guard','Narrator']);
+    assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>turn.voice),['n','m','g','n']);
+    await h.play();assert.equal(h.synthesis.length,1);
+    await toggle(h,'batchSpeech',false);await h.play();assert.equal(h.synthesis.length,5);
+  }finally{await h.close();}
+});
+
+test('Fish S2 sends a moderate dialogue-narration-dialogue passage as one call with both voice IDs',async()=>{
+ const h=await fishGroupingHarness();try{
+  const passage=['"'+('I want to explain what happened and how I felt. '.repeat(5)).trim()+'"','She rested her hand on the table, watched him quietly and considered everything he had said, drawing a slow breath as the room settled around them.','"'+('We can talk about this honestly and work through it together. '.repeat(5)).trim()+'"'].join(' ');
+  assert.ok(passage.length>600 && passage.length<900);h.message.content=passage;
+  await h.plan();assert.match(h.$('groupingStatus').title,/up to 5 voices per call/);assert.match(h.$('groupingStatus').textContent,/1 speech batch/);
+  await h.play();assert.equal(h.synthesis.length,1);assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>[turn.speaker,turn.voice]),[['Mira','m'],['Narrator','n'],['Mira','m']]);
+  assert.equal(h.synthesis[0].parameters.turns.map(turn=>turn.text).join(' '),passage);
+  await h.reload();await h.play();assert.equal(h.synthesis.length,1);
+ }finally{await h.close();}
+});
+
+test('grouped message controls show one multi-speaker clip and replay every turn from its shared recording',async()=>{
+ const h=await fishGroupingHarness();try{
+  h.message.content='The room fell quiet. "Hello." The door opened.';
+  await toggle(h,'sectionButtons',true);await h.plan();
+  const clips=()=>h.footer.querySelectorAll('[data-choir-clip]');await until(()=>clips().length===1);
+  assert.equal(h.footer.querySelector('summary').textContent,'Audio clips (1)');assert.equal(h.footer.querySelectorAll('[data-choir-section]').length,0);
+  assert.match(h.$('planSummary').textContent,/3 text turns · 1 speech clip/);
+  assert.match(clips()[0].textContent,/Narrator → Mira → Narrator/);assert.match(clips()[0].title,/One multi-speaker TTS call/);
+  clips()[0].click();await tick();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.equal(h.synthesis.length,1);assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>[turn.speaker,turn.voice]),[['Narrator','n'],['Mira','m'],['Narrator','n']]);
+  await until(()=>[...h.$('preview').querySelectorAll('[data-cache-index]')].every(node=>node.textContent==='Shared clip 1 · Cached'));
+  await h.reload();await until(()=>clips().length===1);clips()[0].click();await tick();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.equal(h.synthesis.length,1,'Playing the displayed grouped clip must reuse its complete recording.');
+  await toggle(h,'batchSpeech',false);await until(()=>h.footer.querySelectorAll('[data-choir-section]').length===1);
+  assert.equal(clips().length,0);assert.equal(h.footer.querySelector('summary').textContent,'Sections');
+ }finally{await h.close();}
+});
+
+test('grouped clip playback selects exactly one bounded chunk instead of regenerating its whole original turn',async()=>{
+ const h=await fishGroupingHarness();try{
+  h.message.content=('The room was quiet and the windows were open. '.repeat(25)).trim();
+  const saved=h.store.get('chat:chat-a');saved.chunk=500;h.store.set('chat:chat-a',saved);await h.reload();
+  await toggle(h,'sectionButtons',true);await h.plan();await until(()=>h.footer.querySelectorAll('[data-choir-clip]').length>=3);
+  h.footer.querySelector('[data-choir-clip="1"]').click();await tick();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.equal(h.synthesis.length,1);assert.ok(h.synthesis[0].text.length<=500);assert.ok(h.synthesis[0].text.length<h.message.content.length);
+  h.footer.querySelector('[data-choir-clip="1"]').click();await tick();await until(()=>h.$('status').textContent.includes('Playback finished'));assert.equal(h.synthesis.length,1);
+ }finally{await h.close();}
+});
+
+test('grouped clip controls update to actual separate requests when speaker levels differ',async()=>{
+ const h=await fishGroupingHarness();try{
+  h.message.content='The room fell quiet. "Hello." The door opened.';
+  await toggle(h,'sectionButtons',true);await h.plan();await until(()=>h.footer.querySelectorAll('[data-choir-clip]').length===1);
+  const level=document.querySelector('[aria-label="Mira volume percent"]');level.value='50';level.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+  await until(()=>h.footer.querySelectorAll('[data-choir-clip]').length===3);assert.equal(h.footer.querySelector('summary').textContent,'Audio clips (3)');
+  assert.match(h.$('planSummary').textContent,/3 text turns · 3 speech clips/);
+  h.footer.querySelector('[data-choir-clip="1"]').click();await tick();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.equal(h.synthesis.length,1);assert.equal(h.synthesis[0].voice,'m');assert.equal(h.synthesis[0].parameters.turns,undefined);
+ }finally{await h.close();}
+});
+
+test('grouping status explains a single-voice provider and updates its batch count with speaker levels',async()=>{
+ const h=await harness();try{
+  await toggle(h,'batchSpeech',true);await h.plan();assert.equal(h.$('groupingStatus').hidden,false);assert.match(h.$('groupingStatus').title,/one voice per call; different assigned voices need separate calls/);assert.match(h.$('groupingStatus').textContent,/4 speech batches/);
+  await toggle(h,'batchSpeech',false);assert.equal(h.$('groupingStatus').hidden,true);
+ }finally{await h.close();}
+ const fish=await fishGroupingHarness();try{
+  await fish.plan();assert.match(fish.$('groupingStatus').textContent,/1 speech batch/);
+  const level=document.querySelector('[aria-label="Mira volume percent"]');level.value='50';level.dispatchEvent(new fish.dom.window.Event('input',{bubbles:true}));
+  assert.match(fish.$('groupingStatus').textContent,/3 speech batches/);
+ }finally{await fish.close();}
+});
+test('grouping falls back to separate calls for unequal speaker levels and old relays',async()=>{
+  for(const oldRelay of [false,true]){
+    const h=await fishGroupingHarness(oldRelay?undefined:{channels:{Mira:{volume:0.5}}});try{
+      if(oldRelay){h.state.providers[0].capabilities.multiSpeaker=undefined;await h.reload();}
+      await h.plan();await h.play();assert.equal(h.synthesis.length,oldRelay?4:3);
+      assert.ok(oldRelay?h.synthesis.every(request=>!request.parameters.turns):h.synthesis.filter(request=>request.parameters.turns).every(request=>!request.parameters.turns.some(turn=>turn.speaker==='Mira')));
+    }finally{await h.close();}
+  }
+});
+test('No voice during a grouped clip stops it and next Play omits only that speaker',async()=>{
+  const h=await fishGroupingHarness({enabled:true});try{
+    await h.plan();h.state.blockAudio=true;h.footer.querySelector('button').click();await until(()=>h.audios.some(audio=>!audio.paused));
+    h.root.ownerDocument.querySelector('[data-speaker="Mira"] [data-kind="no-voice"]').click();
+    await until(()=>h.$('status').textContent.includes('rebuild grouped speech'));
+    assert.ok(h.audios.every(audio=>audio.paused));h.state.blockAudio=false;
+    await until(()=>!h.$('play').disabled);h.$('play').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
+    assert.deepEqual(h.synthesis.at(-1).parameters.turns.map(turn=>turn.speaker),['Narrator','Guard','Narrator']);
+  }finally{await h.close();}
+});
+test('grouped clips keep their shared level until next Play while Master remains immediate',async()=>{
+  const h=await fishGroupingHarness({master:0.5});try{
+    await h.plan();h.state.blockAudio=true;h.$('play').click();await until(()=>h.audios.some(audio=>!audio.paused));
+    const audio=h.audios.at(-1);assert.equal(audio.volume,0.5);
+    h.root.ownerDocument.querySelector('[data-speaker="Mira"] [data-kind="silent"]').click();assert.equal(audio.volume,0.5);
+    const master=h.root.ownerDocument.querySelector('input[type="range"][aria-label="Master volume"]');master.value='0.7';master.dispatchEvent(new h.dom.window.Event('input'));assert.equal(audio.volume,0.7);
+    h.state.blockAudio=false;audio.onended();await until(()=>h.$('status').textContent.includes('Playback finished'));
+    await h.play();assert.equal(h.synthesis.length,4);assert.ok(h.synthesis.slice(1).filter(request=>request.parameters.turns).every(request=>!request.parameters.turns.some(turn=>turn.speaker==='Mira')));
+  }finally{await h.close();}
+});
+test('grouped playback keeps an SFX cue between the spoken text it interrupts',async()=>{
+  const h=await fishGroupingHarness();try{
+    await toggle(h,'enableSfx',true);h.$('freesoundApiKey').value='test-key';h.$('freesoundApiKey').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+    h.message.content='At dawn. "Hello." The page snapped shut. "Wait." The gate closed.';
+    await h.plan();await h.play();assert.equal(h.synthesis.length,2);
+    assert.match(h.synthesis[0].text,/Hello/);assert.doesNotMatch(h.synthesis[0].text,/page snapped/);
+    assert.match(h.synthesis[1].text,/page snapped/);assert.equal(h.state.previewFetches.length,1);
+  }finally{await h.close();}
+});
+test('Google relay and Gemini adapter group prebuilt voices using their existing connections',async()=>{
+  for(const adapter of [false,true]){
+    const h=await harness();try{
+      const voices=['Charon','Kore','Puck'].map(id=>({id,name:id}));
+      h.connections[0].provider='google_tts';h.connections[0].model='gemini-3.8-flash-tts';
+      h.state.providers=[{id:'google_tts',capabilities:{parameters:{},staticVoices:voices,multiSpeaker:{maxSpeakers:2,models:['gemini-3.8-flash-tts']}}}];
+      h.state.catalogues={a:{voices}};h.state.planForCatalogue=true;
+      const saved=h.store.get('chat:chat-a');saved.mode=adapter?'gemini':'native';saved.model='gemini-3.8-flash-tts';saved.connectionMode='one';saved.casts={};saved.batchSpeech=true;saved.enableSfx=false;saved.enableAmbience=false;
+      saved.fixed.forEach((actor,i)=>{actor.voice=voices[i].id;delete actor.route;delete actor.accent;delete actor.pronunciation;});
+      h.store.set('chat:chat-a',saved);await h.reload();h.$('key').value='test-key';
+      h.message.content='At dawn. "Hello." The gate closed.';await h.plan();await h.play();
+      const calls=adapter?h.requests.filter(request=>request.action==='gemini'):h.synthesis;assert.equal(calls.length,1);
+      const turns=adapter?calls[0].input.segment.turns:calls[0].parameters.turns;
+      assert.deepEqual(turns.map(turn=>turn.voice),['Charon','Puck','Charon']);
+    }finally{await h.close();}
+  }
+});
 test('heuristic planning and its test stay local without any backend request',async()=>{
   const h=await harness();try{
     h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
@@ -1130,8 +1872,40 @@ test('ambiguous heuristic dialogue stops without an LLM fallback or audio synthe
   const h=await harness();try{
     h.$('allowLlmFallback').checked=true;h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
     await h.click('latest',text=>text.includes('No LLM request was made'));
+    assert.match(h.$('status').textContent,/could not identify the speaker.*Dialogue 1: "Hello\."/);
+    assert.doesNotMatch(h.$('status').textContent,/unassigned|no assigned voice/);
     assert.equal(h.requests.length,0);assert.equal(h.synthesis.length,0);assert.equal(h.$('preview').children.length,0);
-    assert.equal(h.$('llmPlannerBox').hidden,true);assert.equal(h.$('stop').disabled,true);
+    assert.equal(h.$('llmPlannerBox').hidden,false);assert.equal(h.$('stop').disabled,true);
+  }finally{await h.close();}
+});
+
+test('heuristic planning names the missing narrator voice instead of blaming dialogue ambiguity',async()=>{
+  const h=await harness();try{
+    const saved=h.store.get('chat:chat-a');saved.fixed[0].voice='';h.store.set('chat:chat-a',saved);await h.reload();
+    h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+    await h.click('latest',text=>text.includes('No LLM request was made'));
+    assert.match(h.$('status').textContent,/needs a voice for Narrator/);
+    assert.equal(h.requests.length,0);assert.equal(h.synthesis.length,0);
+  }finally{await h.close();}
+});
+
+test('heuristic planning preserves the persona role after Lumiverse replaces its placeholder name',async()=>{
+  const h=await harness();try{
+    const saved=h.store.get('chat:chat-a');saved.fixed[1].speaker='Persona';saved.casts={};
+    h.store.set('chat:chat-a',saved);h.state.persona={id:'persona-jay',name:'Jay'};
+    await h.reload();await until(()=>h.$('fixed').children[1].querySelector('input').value==='Jay');
+    h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+    h.message.content='The door opened. "Hello." Jay said, "Welcome."';await h.plan();
+    const plan=[...h.store].find(([key])=>key.startsWith('plan:'))[1];
+    assert.deepEqual(plan.attribution.segments.filter(segment=>segment.text.startsWith('"')).map(segment=>segment.speaker),['Mira','Jay']);
+    assert.equal(h.requests.length,0);assert.equal(h.synthesis.length,0);
+    // Removing the persona must not turn the next lead into the persona role.
+    const withoutPersona=h.store.get('chat:chat-a');withoutPersona.fixed=withoutPersona.fixed.filter(actor=>actor.speaker!=='Jay');
+    withoutPersona.fixed.push({speaker:'Bob',voice:'g',style:''});h.store.set('chat:chat-a',withoutPersona);
+    for(const key of [...h.store.keys()])if(/^(plan:|activeplan:)/.test(key))h.store.delete(key);
+    h.message.content='The door opened. "Hello."';await h.reload();
+    await h.click('latest',text=>text.includes('No LLM request was made'));
+    assert.equal(h.requests.length,0);assert.equal(h.synthesis.length,0);assert.equal(h.$('preview').children.length,0);
   }finally{await h.close();}
 });
 
@@ -1394,7 +2168,7 @@ test('host remount replaces the previous mixer and cancels its playback',async()
 test('latest planned notice invites an explicit redo without discarding cached audio',async()=>{
   const h=await harness();try{
     assert.equal(h.$('latestNotice').hidden,true);await h.plan();await h.play();
-    assert.equal(h.$('latestNotice').hidden,false);assert.equal(h.$('latestNotice').textContent,'latest already planned, click on plan latest to redo it');
+    assert.equal(h.$('latestNotice').hidden,false);assert.equal(h.$('latestNotice').textContent,'Already planned. Plan latest again to redo it.');
     const before=h.synthesis.length;await h.plan();assert.equal(h.requests.filter(r=>r.action==='plan').length,2);await h.play();assert.equal(h.synthesis.length,before);
     await h.reload();assert.equal(h.$('latestNotice').hidden,false);await h.plan();assert.equal(h.requests.filter(r=>r.action==='plan').length,3);
     h.store.set('activeplan:chat-a','another-message');await h.reload();await until(()=>!h.$('latestNotice').hidden);
@@ -1911,20 +2685,53 @@ test('invalid TTS chunk edits never overwrite saved settings and valid boundarie
  }finally{await h.close();}
 });
 
-test('several LLM sound effects in one passage play in story order before their anchor words',async()=>{
+test('several LLM sound effects in one passage play in story order between complete clauses',async()=>{
  const h=await harness();try{
-  await configureFoley(h);h.message.content='The page snapped as the glass shattered on the floor.';
+  await configureFoley(h);h.message.content='The page snapped; the glass shattered on the floor.';
   await h.plan();await h.play();
   assert.deepEqual(h.requests.filter(request=>request.action==='freesound').map(request=>request.input.query),['page turn','glass shatter']);
   const order=(await Promise.all(h.audioBlobs.map(blob=>blob.text()))).map(text=>text==='FREESOUND_PREVIEW'?'sfx':'speech');
-  assert.deepEqual(order,['speech','sfx','speech','sfx','speech']);
-  assert.deepEqual(h.synthesis.map(request=>request.text),['The','page snapped as the','glass shattered on the floor.']);
+  assert.deepEqual(order,['sfx','speech','sfx','speech']);
+  assert.deepEqual(h.synthesis.map(request=>request.text),['The page snapped;','the glass shattered on the floor.']);
+ }finally{await h.close();}
+});
+
+const sfxSentence='Once she took the bite, Kellin set the plate back on the walnut edge and slid his hand across the table.';
+test('SFX preserves action groups in normal, grouped and Cue playback with no extra speech or planning on replay',async()=>{
+ for(const grouped of [false,true])for(const trigger of ['set the plate','and slid his hand']){
+  const h=await harness();try{
+   await configureFoley(h);await toggle(h,'batchSpeech',grouped);h.message.content=sfxSentence;
+   h.state.soundCues={cues:[{segment:0,trigger,query:'plate clink'}],ambience:[],music:[]};
+   const expected=trigger.startsWith('and')?['Once she took the bite, Kellin set the plate back on the walnut edge','and slid his hand across the table.']:['Once she took the bite,','Kellin set the plate back on the walnut edge and slid his hand across the table.'];
+   await h.plan();await h.play();assert.deepEqual(h.synthesis.map(request=>request.text),expected);
+   assert.deepEqual((await Promise.all(h.audioBlobs.map(blob=>blob.text()))).map(text=>text==='FREESOUND_PREVIEW'?'sfx':'speech'),['speech','sfx','speech']);
+   const generated=h.synthesis.length,planned=h.requests.length;await h.reload();await h.play();assert.equal(h.synthesis.length,generated);assert.equal(h.requests.length,planned);
+   await globalThis.__CHOIR_API__.playParagraph({text:sfxSentence});assert.deepEqual(h.synthesis.slice(generated).map(request=>request.text),expected);
+  }finally{await h.close();}
+ }
+});
+
+test('Replay rebuilds legacy SFX cuts from saved attribution and retains the effect without another planner call',async()=>{
+ const h=await harness();try{
+  await configureFoley(h);h.message.content=sfxSentence;h.state.soundCues={cues:[{segment:0,trigger:'set the plate',query:'plate clink'}],ambience:[],music:[]};
+  await h.plan();await h.play();const generated=h.synthesis.length,planned=h.requests.filter(request=>request.action==='plan' || request.action==='sfx').length;
+  const database=await new Promise((resolve,reject)=>{const request=indexedDB.open('choir-recordings',1);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+  await new Promise((resolve,reject)=>{
+   const transaction=database.transaction('recordings','readwrite'),request=transaction.objectStore('recordings').openCursor();
+   request.onsuccess=()=>{const cursor=request.result;if(!cursor)return;const saved=cursor.value,cut=sfxSentence.indexOf('set the plate');
+    const {sfxPlacement,passages,...legacy}=saved;cursor.update({...legacy,segments:[{...saved.segments[0],text:sfxSentence.slice(0,cut).trim()},saved.segments[1],{...saved.segments[2],text:sfxSentence.slice(cut)}]});cursor.continue();};
+   transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);
+  });database.close();await h.reload();
+  [...h.$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
+  assert.deepEqual(h.synthesis.slice(generated).map(request=>request.text),['Once she took the bite,','Kellin set the plate back on the walnut edge and slid his hand across the table.']);
+  assert.equal(h.requests.filter(request=>request.action==='plan' || request.action==='sfx').length,planned);assert.equal(h.state.previewFetches.length,1);
+  const rebuilt=h.synthesis.length;await h.reload();await h.play();assert.equal(h.synthesis.length,rebuilt);
  }finally{await h.close();}
 });
 
 test('a cached or fresh SFX cannot hide the speech request waiting after it under parallel prefetch',async()=>{
  const h=await harness();try{
-  await configureFoley(h);h.message.content='The page snapped under her thumb. "Hello." The light faded.';
+  await configureFoley(h);h.message.content='She listened; the page snapped under her thumb. "Hello." The light faded.';
   h.$('concurrency').value='3';h.$('prefetch').value='3';h.$('chunk').value='6000';await h.plan();
   for(const cached of [false,true]){
    if(cached){h.connections[0].default_parameters={speed:1.2};await h.reload();}
@@ -1943,7 +2750,7 @@ test('native speech times out during headers or audio download, reports the spea
  const actualSetTimeout=globalThis.setTimeout;
  for(const body of [false,true]){
   const h=await harness();try{
-   await configureFoley(h);h.message.content='The page snapped under her thumb. "Hello." The light faded.';
+   await configureFoley(h);h.message.content='She listened; the page snapped under her thumb. "Hello." The light faded.';
    h.$('concurrency').value='3';h.$('prefetch').value='3';await h.plan();
    h.state.holdSynthesisAt=2;h.state.holdSynthesisBody=body;
    globalThis.setTimeout=(fn,delay,...args)=>actualSetTimeout(fn,delay===185000?80:delay,...args);
@@ -1953,8 +2760,12 @@ test('native speech times out during headers or audio download, reports the spea
    assert.match(h.$('status').textContent,/model model-a; voice n/);
    assert.match(h.$('status').textContent,/Completed passages were retained/);assert.equal(h.state.aborted,1);
    assert.equal(h.$('play').disabled,false);assert.ok(h.audios.every(audio=>audio.paused));
-   const requests=h.synthesis.length;h.state.holdSynthesisAt=null;await h.play();
-   assert.equal(h.synthesis.length,requests+1);assert.equal(h.state.previewFetches.length,1);
+   const failedText=h.synthesis[1].text;h.state.holdSynthesisAt=null;await h.play();
+   // Some later passages may not have been scheduled when the timeout fired.
+   // Retry the failed passage and generate those once; completed text stays cached.
+   const texts=[...new Set(h.synthesis.map(request=>request.text))];assert.equal(texts.join(' '),h.message.content);
+   for(const text of texts)assert.equal(h.synthesis.filter(request=>request.text===text).length,text===failedText?2:1);
+   assert.equal(h.state.previewFetches.length,1);
   }finally{globalThis.setTimeout=actualSetTimeout;await h.close();}
  }
 });
@@ -1970,5 +2781,47 @@ test('edits that only add images or trackers keep the plan, playback and saved a
     assert.equal(h.synthesis.length,4);assert.equal(h.requests.filter(r=>r.action==='plan').length,1);
     h.message.content='At dawn. "Greetings." "Wait." The gate closed.';h.events.get('MESSAGE_EDITED')({messageId:'message-a',chatId:'chat-a'});
     assert.equal(h.$('preview').children.length,0);
+  }finally{await h.close();}
+});
+
+test('read-along highlights the spoken passage, then words, without changing the message, and clears on stop',async()=>{
+  const original={CSS:globalThis.CSS,Highlight:globalThis.Highlight,requestAnimationFrame:globalThis.requestAnimationFrame,cancelAnimationFrame:globalThis.cancelAnimationFrame};
+  const highlights=new Map(),shown=[];
+  globalThis.CSS={highlights:{set:(name,highlight)=>{shown.push(highlight.ranges.map(String).join('|'));highlights.set(name,highlight);},delete:name=>highlights.delete(name)}};
+  globalThis.Highlight=class{constructor(...ranges){this.ranges=ranges;}};
+  globalThis.requestAnimationFrame=fn=>setTimeout(fn,1);globalThis.cancelAnimationFrame=clearTimeout;
+  const h=await harness();
+  try{
+    assert.equal(h.$('readAlong').value,'off');assert.equal(h.$('followNarration').checked,false);
+    const bubble=document.createElement('div');bubble.dataset.messageId='message-a';
+    bubble.innerHTML='<div data-component="MessageContent"><p>At <strong>dawn</strong>. <em>“Hello.”</em></p><p>“Wait.” The gate closed.</p><button>At dawn.</button></div>';
+    document.body.append(bubble);const rendered=bubble.innerHTML;
+    h.ctx.dom.findMessageElement=id=>document.querySelector(`[data-message-id="${id}"]`);
+    await h.plan();await h.play();
+    assert.deepEqual(shown,[],'the default draws nothing');
+    h.$('readAlong').value='passage';h.$('readAlong').dispatchEvent(new h.dom.window.Event('change'));
+    await h.play();
+    assert.deepEqual(shown.filter((text,i)=>text!==shown[i-1]),['At dawn','“Hello.”','“Wait.”','The gate closed.']);
+    assert.equal(bubble.innerHTML,rendered);assert.equal(highlights.size,0);
+    shown.length=0;h.state.blockAudio=true;
+    h.$('readAlong').value='word';h.$('readAlong').dispatchEvent(new h.dom.window.Event('change'));
+    h.footer.querySelector('button').click();await until(()=>shown.length);
+    assert.equal(shown.at(-1),'At');
+    h.audios.at(-1).currentTime=20;await until(()=>shown.at(-1)==='At dawn');
+    h.$('stop').click();assert.equal(highlights.size,0);
+    await until(()=>h.store.get('settings:global')?.readAlong==='word');await h.reload();
+    assert.equal(h.$('readAlong').value,'word');
+  }finally{await h.close();Object.assign(globalThis,original);}
+});
+
+test('read-along and Follow narration are inert without the CSS Custom Highlight API',async()=>{
+  const h=await harness();
+  try{
+    h.ctx.dom.findMessageElement=()=>{throw Error('message lookup without highlight support');};
+    h.$('readAlong').value='word';h.$('followNarration').checked=true;
+    for(const name of ['readAlong','followNarration'])h.$(name).dispatchEvent(new h.dom.window.Event('change'));
+    await h.plan();await h.play();
+    await until(()=>h.store.get('settings:global')?.followNarration===true);await h.reload();
+    assert.equal(h.$('followNarration').checked,true);
   }finally{await h.close();}
 });

@@ -1,8 +1,114 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {randomUuid,sha256Hex} from '../src/core.js';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
+import {speechPanel} from './fixtures/speech-panel.mjs';
+import {phoneWidget} from './fixtures/phone-widget.mjs';
+import {sfxCueOffset} from '../src/core.js';
+import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,reconcileCardCast} from '../src/core.js';
+import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
+
+test('ignored tags skip nested, attributed, mixed-case and unfinished blocks without dropping ordinary story markup',()=>{
+  assert.deepEqual(ignoredTagNames('Summary, <private-note>\nsummary; invalid.*'),['summary','private-note']);
+  const text='Before. <Summary title="a > b">Hidden. <summary>Nested.</summary><b>Also hidden.</b></Summary> <b>After.</b> <private-note/> End.';
+  assert.equal(transcriptFromMessage(text,'summary, private-note').replace(/\s+/g,' '),'Before. After. End.');
+  assert.equal(transcriptFromMessage('Safe. <summary>Never finished','summary'),'Safe.');
+  assert.equal(transcriptFromMessage('<summary>Entirely ignored.</summary>','summary'),'');
+  assert.equal(transcriptFromMessage('Read <story>this.</story>','other'),'Read this.');
+});
+
+test('ignored entries accept exact classes and IDs, optionally scoped to a tag',()=>{
+  assert.deepEqual(ignoredTagNames('Summary, <private-note>, .UI-note, #Panel-ID, div.ui-note, aside#sidebar, .ui-note, invalid.*, div[hidden], .one.two'),['summary','private-note','.ui-note','#panel-id','div.ui-note','aside#sidebar']);
+  const source=`Before. <div class="note extra" title="a > b">Hidden. <div>Nested.</div></div> <p class="note">Read this.</p> <aside id='sidebar'>Hidden too.</aside> <span class=not-note>After.</span>`;
+  assert.equal(transcriptFromMessage(source,'div.note, #sidebar').replace(/\s+/g,' '),'Before. Read this. After.');
+  assert.equal(transcriptFromMessage(source,'.NOTE, aside#SIDEBAR').replace(/\s+/g,' '),'Before. After.');
+  assert.equal(transcriptFromMessage('Read. <div class="note">An unfinished excluded block','.note'),'Read.');
+  assert.equal(transcriptFromMessage('<div id=sidebar/><p>Read.</p>','#sidebar'),'Read.');
+});
+
+test('complete radio-tabbed panels are removed automatically with their notification and status chrome',()=>{
+  assert.equal(transcriptFromMessage(speechPanel),'');
+  for(const wrapper of ['Before. '+speechPanel+' After.',`<div class="story"><p>Before.</p>${speechPanel}<p>After.</p></div>`]){
+    assert.equal(transcriptFromMessage(wrapper).replace(/\s+/g,' '),'Before. After.');
+  }
+  assert.equal(transcriptFromMessage(`<div><p>Before.</p>${speechPanel}${speechPanel}<p>After.</p></div>`).replace(/\s+/g,' '),'Before. After.');
+});
+
+test('ARIA tabbed panels are filtered as complete components while surrounding HTML prose survives',()=>{
+  const panel='<section class="browser-panel"><div role="tablist"><button role="tab" aria-controls="one">One</button><button role="tab" aria-controls="two">Two</button></div><div role="tabpanel" id="one">Interface article.</div><div role="tabpanel" id="two">Another article.</div></section>';
+  assert.equal(transcriptFromMessage(`<article><p>He opened the page.</p>${panel}<div>"Hello," she said.</div></article>`).replace(/\s+/g,' '),'He opened the page. "Hello," she said.');
+});
+
+test('single-checkbox phone components exclude notifications and notes while preserving surrounding story',()=>{
+  assert.equal(transcriptFromMessage(phoneWidget),'');
+  const widgets=[phoneWidget,phoneWidget.replaceAll('kb-msg-exp','another-control').replaceAll('kb-ph-','another-')];
+  for(const widget of widgets){
+    assert.equal(transcriptFromMessage(`Before. ${widget} After.`).replace(/\s+/g,' '),'Before. After.');
+    assert.equal(transcriptFromMessage(`<article style="background: navy"><p>Before.</p>${widget}<p>After.</p></article>`).replace(/\s+/g,' '),'Before. After.');
+  }
+  assert.equal(transcriptFromMessage(`<div><p>Before.</p>${widgets.join('')}<p>After.</p></div>`).replace(/\s+/g,' '),'Before. After.');
+});
+
+test('checkbox detection keeps ordinary styled prose, unrelated CSS and incomplete phone markup',()=>{
+  const story='<div style="background: navy"><style>.note {color: blue} .note::after {content: "#read:checked"}</style><input type="checkbox" id="read"><label for="read">She checked the box.</label><p>Then she left.</p></div>';
+  assert.equal(transcriptFromMessage(story),'She checked the box.Then she left.');
+  const unmatched=phoneWidget.replace('for="kb-msg-exp"','for="unrelated"');
+  assert.ok(transcriptFromMessage(unmatched).includes('Synthetic notification'));
+  const mixed=phoneWidget.replace('  <style>','Phone screen description. <style>');
+  assert.ok(transcriptFromMessage(mixed).includes('Phone screen description.'));
+  const incomplete=phoneWidget.slice(0,phoneWidget.lastIndexOf('</div>'))+'<p>The story continues.</p>';
+  assert.ok(transcriptFromMessage(incomplete).includes('The story continues.'));
+});
+
+test('interface controls, hidden text and SVG labels do not enter the speech transcript',()=>{
+  const widgets=['<button>Next page</button>','<select><option>Choose a tab</option></select>','<textarea>UI draft</textarea>','<svg><title>Battery</title><text>84%</text></svg>','<div hidden>Hidden panel</div>','<div aria-hidden="true">Decorative text</div>','<div style="color: red; display: none !important;">Invisible text</div>','<div role="toolbar"><button>Save</button>Toolbar label</div>'];
+  for(const widget of widgets)assert.equal(transcriptFromMessage('Before. '+widget+' After.').replace(/\s+/g,' '),'Before. After.');
+  assert.equal(transcriptFromMessage('Before. <style>.x::after { content: "<div>not HTML</div>"; }</style> After.').replace(/\s+/g,' '),'Before. After.');
+});
+
+test('styled story layouts, literal UI descriptions and incomplete tab markup are retained conservatively',()=>{
+  const story='<div style="background: navy; border: 1px solid blue"><p>She tapped the browser tab.</p><div class="tab-content">"Wait," he said.</div><span>Then he closed the window.</span></div>';
+  assert.equal(transcriptFromMessage(story).replace(/\s+/g,' '),'She tapped the browser tab."Wait," he said.Then he closed the window.');
+  const incomplete=speechPanel.slice(0,speechPanel.lastIndexOf('</div>'))+'<p>The story continues outside the incomplete widget.</p>';
+  assert.ok(transcriptFromMessage(incomplete).includes('The story continues outside the incomplete widget.'));
+  assert.equal(transcriptFromMessage('<div class="kb-content-wrap">Ordinary narration.</div>'),'Ordinary narration.');
+  assert.equal(transcriptFromMessage('<div data-class="hud">Actual story.</div>'),'Actual story.');
+  const mixed=speechPanel.replace('  <style>','Phone screen description. <style>');
+  const surrounding=`<div style="background: navy"><p>Story before.</p>${mixed}<p>Story after.</p></div>`;
+  assert.ok(transcriptFromMessage(surrounding).includes('Story before.'));assert.ok(transcriptFromMessage(surrounding).includes('Story after.'));
+});
+
+test('multiple card characters keep separate profiles even when the second begins beyond the description budget',()=>{
+  const card={name:'Adrian and Ethan | Show and Tell',description:'<adrian>\n# Adrian\nA male captain. '+ 'Captain. '.repeat(1000)+'\n</adrian>\n<ethan>\n# Ethan\nA male teammate with a different voice.\n</ethan>'};
+  const roles=characterCardRoles(card);assert.deepEqual(roles.map(role=>role.name),['Adrian','Ethan']);assert.equal(roles[0].description.length,8000);assert.match(roles[1].description,/different voice/);assert.ok(!roles[1].description.includes('Captain.'));
+  assert.deepEqual(characterCardRoles({name:'War and Peace',description:'A story about many people.'}),[]);
+  assert.deepEqual(characterCardRoles({name:'Mira',description:'# Appearance\nTall.\n# Personality\nCalm.'}),[]);
+  assert.deepEqual(characterCardRoles({...card,name:'Swimming team'}).map(role=>role.name),['Adrian','Ethan']);
+});
+
+test('decorated card titles reconcile existing lead identities and duplicate NPCs across providers without changing lead voices',()=>{
+  const title='Kellin Beckett || Toxic Fans',lead={speaker:'Kellin Beckett',voice:'lead',route:'native:b',style:'',aliases:['Kellin']};
+  const duplicate={speaker:title,voice:'npc',style:''},mikey={speaker:'Mikey Ross',voice:'npc',style:''};
+  const original={fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Laiyah',voice:'y',style:''},lead],casts:{'native:a':[mikey,duplicate],'native:b':[duplicate]},singleVoices:{'native:a':{[title]:'npc','Kellin Beckett':'lead','Mikey Ross':'npc'}}};
+  const clean=reconcileCardCast(original,{name:title});
+  assert.equal(clean.fixed[2].voice,'lead');assert.equal(clean.fixed[2].route,'native:b');assert.deepEqual(clean.fixed[2].aliases,['Kellin',title]);
+  assert.deepEqual(clean.casts,{'native:a':[mikey],'native:b':[]});assert.deepEqual(clean.singleVoices['native:a'],{'Kellin Beckett':'lead','Mikey Ross':'npc'});
+  assert.equal(original.casts['native:a'].length,2);assert.deepEqual(original.fixed[2].aliases,['Kellin']);
+  const cast={...clean,voices:[{id:'n',route:'native:a'},{id:'y',route:'native:a'},{id:'lead',route:'native:b'},{id:'npc',route:'native:a'}],npcs:clean.casts['native:a'],defaultRoute:'native:a'};
+  const plan=validatePlan({segments:[{speaker:title,voice:'npc',text:'"Hello."'}]},'"Hello."',cast);
+  assert.equal(plan.segments[0].speaker,'Kellin Beckett');assert.equal(plan.segments[0].voice,'lead');assert.deepEqual(plan.npcs,[mikey]);
+});
+
+test('card title identity matching preserves scenario casts, manual names, conflicting leads and separate characters',()=>{
+  const value={fixed:[{speaker:'Narrator'},{speaker:'Persona'},{speaker:'Kellin Beckett'}],casts:{'native:a':[{speaker:'Mikey Ross'}]}};
+  assert.strictEqual(reconcileCardCast(value,{name:'A crowded backstage'}),value);
+  const conflict={...value,fixed:[...value.fixed,{speaker:'Kellin Beckett || Toxic Fans'}]};assert.strictEqual(reconcileCardCast(conflict,{name:'Kellin Beckett || Toxic Fans'}),conflict);
+  const group={...value,fixed:[...value.fixed.slice(0,2),{speaker:'Adrian'},{speaker:'Ethan'}]};
+  assert.strictEqual(reconcileCardCast(group,{name:'Adrian and Ethan | Show and Tell',description:'# Adrian\nA captain.\n# Ethan\nA teammate.'}),group);
+  const named={...value,fixed:[...value.fixed.slice(0,2),{speaker:'My chosen name',aliases:['Kellin Beckett']}]};
+  assert.equal(reconcileCardCast(named,{name:'Kellin Beckett || Toxic Fans'}).fixed[2].speaker,'My chosen name');
+  const renamed={...value,fixed:[...value.fixed.slice(0,2),{speaker:'Kellin Beckett || Toxic Fans',aliases:['Kellin Beckett || Toxic Fans']}]};
+  assert.deepEqual(reconcileCardCast(renamed,{name:'Kellin Beckett || Toxic Fans'}).fixed[2].aliases,['Kellin Beckett']);
+});
 
 test('HTTP UUID fallback uses secure random bytes, preserves v4 bits and generates distinct IDs',()=>{
   const httpCrypto={getRandomValues:globalThis.crypto.getRandomValues.bind(globalThis.crypto)};
@@ -30,6 +136,9 @@ test('API errors preserve provider details across Lumiverse and gateway response
   assert.match(apiErrorMessage('',502),/returned no error details/);
   assert.ok(!apiErrorMessage('{"error":{}}',502).includes('[object Object]'));
   assert.ok(apiErrorMessage('x'.repeat(10000),502).length<600);
+  const gateway=apiErrorMessage('<h1>Bad gateway</h1><p>Browser Working Cloudflare Working Host Error</p><p>Cloudflare Ray ID: a4a7b9746d6c55f3</p><p>Your IP: private-address</p>',502);
+  assert.match(gateway,/HTTP 502: Cloudflare reports a Lumiverse host or gateway failure/);
+  assert.match(gateway,/Ray ID: a4a7b9746d6c55f3/);assert.ok(!gateway.includes('private-address'));
 });
 
 test('larger speech chunks respect provider limits while retaining a conservative unknown-provider limit',()=>{
@@ -38,6 +147,10 @@ test('larger speech chunks respect provider limits while retaining a conservativ
   assert.equal(speechRequestLimits('elevenlabs','eleven_v3').maxChars,5000);
   assert.equal(speechRequestLimits('custom').maxChars,2000);
   assert.equal(speechRequestLimits('google_vertex_tts').maxBytes,6000);
+  assert.equal(speechRequestLimits('openrouter_tts','fish-audio/s2.1-pro-free:free').maxChars,10000);
+  assert.equal(speechRequestLimits('openrouter_tts','google/gemini-3.8-flash-tts').maxBytes,6000);
+  assert.equal(speechRequestLimits('openrouter_tts','openai/gpt-4o-mini-tts').maxChars,4096);
+  assert.equal(speechRequestLimits('openrouter_tts','unrecognized/model').maxChars,2000);
   const text='A long neutral phrase '.repeat(400);
   const batches=speechBatches([{speaker:'Narrator',voice:'n',text}],10000,'native:a',false,()=>speechRequestLimits('openai_tts'));
   assert.ok(batches.length>1);assert.ok(batches.every(batch=>batch.text.length<=4096));
@@ -389,6 +502,24 @@ test('fastClassifyPlan uses dialogue tag attribution and detects emotion style',
   assert.equal(plan.segments[2].style, 'whispering');
 });
 
+test('heuristic attribution accepts hyphenated character names and aliases with Unicode matching',()=>{
+  const c=config(),actor=c.fixed.find(actor=>actor.speaker==='Alice');
+  actor.speaker='Gabrielle - Debug';actor.aliases=['Gabi-X'];
+  const plan=fastClassifyPlan('Gabrielle - Debug said, "Hello." Gabi-X said, "Ready."',c);
+  assert.ok(plan);assert.deepEqual(plan.segments.filter(segment=>segment.text.startsWith('"')).map(segment=>segment.speaker),['Gabrielle - Debug','Gabrielle - Debug']);
+});
+
+test('local one-on-one attribution recognizes a named persona and keeps explicit persona turns',()=>{
+  const c=config();c.fixed.splice(1,0,{speaker:'Jay',voice:'Puck',style:''});c.personaSpeaker='Jay';
+  const text='The door opened. "Hello." Jay said, "Welcome."';
+  const plan=fastClassifyPlan(text,c);
+  assert.ok(plan);
+  assert.deepEqual(plan.segments.filter(segment=>segment.text.startsWith('"')).map(segment=>[segment.speaker,segment.voice]),[['Alice','Kore'],['Jay','Puck']]);
+  c.fixed.push({speaker:'Bob',voice:'Fenrir',style:''});
+  assert.equal(fastClassifyPlan('The door opened. "Hello."',c),null);
+  assert.equal(fastClassifyPlan('Jay and Alice stood together. "Hello."',c),null);
+});
+
 test('fastClassifyPlan returns null on ambiguous multi-character dialogue without tags', () => {
   const c = config();
   c.fixed.push({ speaker: 'Bob', voice: 'Puck', route: 'gemini', style: '' });
@@ -396,6 +527,32 @@ test('fastClassifyPlan returns null on ambiguous multi-character dialogue withou
   const text = '"Who is there?" + "\n" + "I am not sure."';
   const plan = fastClassifyPlan(text, c);
   assert.equal(plan, null); // Falls back to LLM/Jev
+});
+
+test('heuristic failures distinguish missing voices from speaker ambiguity and identify the quote',()=>{
+  const c=config(),failure={};c.fixed.push({speaker:'Bob',voice:'Puck',style:''});
+  assert.equal(fastClassifyPlan('Alice said, "Hello." The door opened. "Who is there?"',c,failure),null);
+  assert.equal(failure.reason,'unattributed-dialogue');assert.match(failure.message,/Dialogue 2: "Who is there\?"/);
+  assert.doesNotMatch(failure.message,/unassigned|no assigned voice/);
+  c.fixed[1].voice='';
+  assert.equal(fastClassifyPlan('Alice said, "Hello."',c,failure),null);
+  assert.equal(failure.reason,'missing-voice');assert.match(failure.message,/Alice.*no assigned voice/);
+  c.fixed[0].voice='';
+  assert.equal(fastClassifyPlan('The room fell quiet.',c,failure),null);
+  assert.match(failure.message,/needs a voice for Narrator/);assert.equal(failure.unitId,undefined);
+  c.fixed[0].voice='Charon';
+  assert.ok(fastClassifyPlan('The room fell quiet.',c,failure));assert.equal(failure.message,undefined);
+});
+
+test('heuristic conflicting tags and invalid voice catalogues report their actual cause',()=>{
+  const c=config(),failure={};c.fixed.push({speaker:'Bob',voice:'Puck',style:''});
+  assert.equal(fastClassifyPlan('Alice said, "Hello," Bob replied.',c,failure),null);
+  assert.equal(failure.reason,'conflicting-tags');assert.match(failure.message,/Alice before.*Bob after/);
+  assert.equal(fastClassifyPlan('Alice and Bob said, "Hello."',c,failure),null);
+  assert.equal(failure.reason,'multiple-speakers');assert.match(failure.message,/Alice, Bob/);
+  c.voices=c.voices.filter(voice=>voice.id!=='Charon');
+  assert.equal(fastClassifyPlan('The room fell quiet.',c,failure),null);
+  assert.equal(failure.reason,'invalid-plan');assert.match(failure.message,/validate this plan/);
 });
 
 test('explicit planner selection wins over stale flags and legacy selections migrate',()=>{
@@ -539,6 +696,34 @@ test('cue triggers match across typographic and ASCII quotes and keep the story 
   assert.equal(cues[0].trigger,'"Don\'t go" and the door');
 });
 
+test('SFX action anchors keep the subject and verb together and preserve complete conjunction groups',()=>{
+  const text='Once she took the bite, Kellin set the plate back on the walnut edge and slid his scarred left hand beneath the wide bottom hem of her borrowed hoodie.';
+  for(const trigger of ['set the plate','Kellin set the plate','slid his scarred'])assert.equal(sfxCueOffset(text,trigger),text.indexOf('Kellin'));
+  assert.equal(sfxCueOffset(text,'and slid his scarred'),text.indexOf('and slid'));
+  assert.equal(sfxCueOffset('The page snapped as the glass shattered.','page snapped'),0);
+  assert.equal(sfxCueOffset('The page snapped as the glass shattered.','as the glass shattered'),17);
+  assert.match(soundCuePrompt([{speaker:'Narrator',text}])[0].content,/never insert an effect between a name\/pronoun and its verb/);
+});
+
+test('SFX placement uses punctuation and paragraphs without breaking titles, initials, decimals or quoted anchors',()=>{
+  for(const [text,trigger,prefix] of [
+    ['She paused; Kellin set the plate down.','set the plate','She paused; '],
+    ['She paused — Kellin set the plate down.','set the plate','She paused — '],
+    ['She paused.\nKellin set the plate down.','set the plate','She paused.\n'],
+    ['She paused\n\nKellin set the plate down.','set the plate','She paused\n\n'],
+    ['Kellin\nset the plate down.','set the plate',''],
+    ['Dr. Kellin set the plate down.','set the plate',''],
+    ['K. Beckett set the plate down.','set the plate',''],
+    ['It measured 1. 5 inches before he moved it.','5 inches',''],
+    ['She whispered “Don’t go” and held the door.','"Don\'t go"',''],
+    ['She said “Go, and lift it” beside the table.','and lift it',''],
+    ['She said “Go, now” and set the plate down.','set the plate',''],
+    ['La puerta se cerró; Kellin dejó el plato.','dejó el plato','La puerta se cerró; ']
+  ])assert.equal(sfxCueOffset(text,trigger),prefix.length,text);
+  assert.equal(sfxCueOffset('Nothing moved.','missing words'),0);
+  assert.equal(sfxCueOffset('Nothing moved.',''),0);
+});
+
 test('rankMusic scores feels, genre, keywords and full-length tracks',()=>{
   const piece=(title,feel,genre,length='00:03:00',extra={})=>({title,filename:`${title}.mp3`,feel,genre,length,instruments:'',description:'',...extra});
   const pieces=[
@@ -567,4 +752,48 @@ test('Fish community routes ask the planner to describe new voices and hide that
   const data=JSON.parse(community[1].content);
   assert.deepEqual(data.availableVoices.map(voice=>voice.id),['kept','Kore']);
   assert.deepEqual(data.communityRoutes,{'native:fish':'community','native:both':'both'});
+});
+
+test('read-along maps transcript passages onto rendered text nodes across markup, quote styles, repeats and scripts',()=>{
+  const nodes=['The gate',' creaked. “Hello,” said ','Mira','. “Hello,” the echo answered. ','Nested ','tags',' stay readable. ','「こんにちは」と','彼女は言った。Привет, ','МИР!'];
+  const {stream,at}=readAlongIndex(nodes);
+  const shown=span=>{
+    if(!span)return null;
+    const [startNode,startOffset]=at[span[0]],[endNode,endOffset]=at[span[1]-1];
+    return nodes.slice(startNode,endNode+1).map((text,i)=>text.slice(i?0:startOffset,startNode+i===endNode?endOffset+1:undefined)).join('');
+  };
+  const passages=['*The gate* creaked.','"Hello,"','said **Mira**.','Missing words.','"Hello,"','the echo answered.','Nested tags stay readable.','「こんにちは」と彼女は言った。','Привет, мир!'];
+  assert.deepEqual(locatePassages(stream,passages).map(shown),['The gate creaked','Hello','said Mira',null,'Hello','the echo answered','Nested tags stay readable','こんにちは」と彼女は言った','Привет, МИР']);
+  const spans=locatePassages(stream,passages);
+  assert.equal(at[spans[4][0]][0],3,'the second Hello resolves to its own occurrence');
+  assert.equal(readableText('“Don’t,” she SAID — İ.'),'dontshesaidİ');
+  assert.deepEqual(locatePassages(stream,['', '...']),[null,null]);
+});
+
+test('read-along word progress is monotonic, snaps to word ends and lingers on punctuation pauses',()=>{
+  const text='The gate closed. Then, slowly — it opened again…';
+  let previous=0;
+  for(let step=0;step<=100;step++){
+    const end=spokenLength(text,step/100);
+    assert.ok(end>=previous,'progress never moves backwards');
+    assert.ok(end===text.length || /\s/.test(text[end]),'the highlight ends on a word boundary');
+    previous=end;
+  }
+  assert.equal(spokenLength(text,0),3);
+  assert.equal(spokenLength(text,1),text.length);
+  assert.equal(spokenLength(text,-1),3);
+  assert.equal(spokenLength(text,2),text.length);
+  assert.equal(spokenLength('Stop. Go now',0.5),5,'a sentence end holds the highlight during its pause');
+  assert.equal(spokenLength('Stop Go now',0.5),7);
+});
+
+test('bracketed status headers are not read aloud while ordinary bracketed words stay',()=>{
+  const message=`[SK| 2015년 4월 7일 (화) | 12:35 | 점심시간에 제이가 제 자리로 와서 함께 밥을 먹으며 도시락 반찬 이야기를 나누고 있어요.]
+
+"오늘 반찬 뭐야?" 제이가 물었다.
+*[Day 3 | Evening]*
+【Status: tired】 〔HP 10〕
+[Mira | Hungry] She opened the box.
+She read the sign [closed] and left. [See the guide](https://x.test) for more.`;
+  assert.equal(transcriptFromMessage(message).replace(/\s+/g,' ').trim(),'"오늘 반찬 뭐야?" 제이가 물었다. She opened the box. She read the sign [closed] and left. See the guide for more.');
 });

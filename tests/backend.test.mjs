@@ -4,8 +4,32 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const bundle=readFileSync(new URL('../dist/backend.js',import.meta.url),'utf8');
 const manifest=JSON.parse(readFileSync(new URL('../spindle.json',import.meta.url),'utf8'));
+
+test('Jev distinguishes two male leads from one card and reuses independent automatically selected voices',async()=>{
+  const cast={voices:[{id:'n'},{id:'y'},{id:'low',gender:'male'},{id:'bright',gender:'male'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Persona',voice:'y',style:''},{speaker:'Adrian',voice:'',gender:'male',style:''},{speaker:'Ethan',voice:'',gender:'male',style:''}],npcs:[],useStyle:false,npcPolicy:{mode:'skip'},characterProfiles:[{speaker:'Adrian',name:'Adrian',role:'character',description:'A male captain with a low voice.'},{speaker:'Ethan',name:'Ethan',role:'character',description:'A male teammate with a brighter voice.'}]};
+  let request;const decisions={evaluate:async input=>{request=input;return {answers:{speaker_0:{choice:'Adrian'},speaker_1:{choice:'Ethan'},speaker_2:{choice:'Ethan'}}};}};
+  const h=await harness(null,null,null,null,null,decisions);h.send('planJev',{transcript:'Adrian said, "Hello." Ethan replied, "Wait." Ethan added, "Stay."',config:cast});
+  const result=(await h.result()).message;assert.equal(result.error,undefined);assert.deepEqual([...result.result.segments.filter(segment=>segment.speaker!=='Narrator').map(segment=>[segment.speaker,segment.voice])],[['Adrian','low'],['Ethan','bright'],['Ethan','bright']]);
+  assert.match(request.questions.speaker_0.criteria.Adrian,/lead character/);assert.match(request.state.characters.find(character=>character.name==='Ethan').about,/brighter/);assert.equal(result.result.npcs.length,0);
+});
+
 const config={voices:[{id:'Charon'},{id:'Kore'}],fixed:[{speaker:'Narrator',voice:'Charon',style:''}],npcs:[],useStyle:true};
+test('Jev expands explicit unison to both independently cast voices even if its speaker answer chooses one',async()=>{
+  const cast={voices:[{id:'n'},{id:'low',gender:'male'},{id:'bright',gender:'male'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Levi',voice:'',gender:'male',style:''},{speaker:'Cole',voice:'',gender:'male',style:''}],npcs:[],useStyle:false};
+  const decisions={evaluate:async()=>({answers:{speaker_0:{choice:'Cole'}}})};
+  const h=await harness(null,null,null,null,null,decisions);
+  h.send('planJev',{transcript:'Levi and Cole said in unison, "Hello."',config:cast});
+  const message=(await h.result()).message;assert.equal(message.error,undefined);
+  const line=message.result.segments.find(segment=>segment.unison);
+  assert.deepEqual([...line.unison.map(member=>[member.speaker,member.voice])],[['Levi','low'],['Cole','bright']]);assert.equal(line.text,'"Hello."');assert.equal(message.result.npcs.length,0);
+});
 const castConfig={...config,fixed:[...config.fixed,{speaker:'Mira',voice:'Kore',style:''}]};
+test('Jev unison with yelled excludes the named recipient',async()=>{
+ const cast={voices:[{id:'n'},{id:'a'},{id:'b'},{id:'j'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Alice',voice:'a',style:''},{speaker:'Bob',voice:'b',style:''},{speaker:'Judy',voice:'j',style:''}],npcs:[],useStyle:false};
+ const h=await harness(null,null,null,null,null,{evaluate:async()=>({answers:{speaker_0:{choice:'Alice'}}})});
+ h.send('planJev',{transcript:'"Hello," Alice and Bob yelled to Judy in unison.',config:cast});
+ const message=(await h.result()).message;assert.equal(message.error,undefined);assert.deepEqual([...message.result.segments.find(segment=>segment.unison).unison.map(member=>member.speaker)],['Alice','Bob']);
+});
 test('Gemini accepts speech beyond the old 2000-character cap when it fits the input budget',async()=>{
   let calls=0;const h=await harness(null,async(url,options)=>{calls++;assert.equal(JSON.parse(options.body).contents[0].parts[0].text.length,3000);return {status:200,body:JSON.stringify({candidates:[{content:{parts:[{inlineData:{data:'YQ==',mimeType:'audio/wav'}}]}}]})};});
   h.send('gemini',{apiKey:'test-key',model:'gemini-3.8-flash-tts',segment:{text:'x'.repeat(3000),voice:'Kore',style:'Warm'}});
@@ -53,6 +77,18 @@ test('Freesound uses the current search endpoint, authenticates in a header and 
  });
  h.send('freesound',{apiKey:'test-freesound-key',query:'page turn'});assert.equal((await h.result()).message.result.results[0].previewUrl,'https://freesound.test/high.mp3');
  const denied=await harness(null,async()=>({status:401,body:'Unauthorized'}));denied.send('freesound',{apiKey:'invalid-key',query:'page turn'});assert.match((await denied.result()).message.error,/Freesound HTTP 401/);
+});
+test('Freesound previews download through the CORS proxy as checked audio, only from freesound.org',async()=>{
+ const requests=[];
+ const h=await harness(null,async(url,options)=>{requests.push({url,options});return url.includes('missing')?{status:404,body:''}:{status:200,headers:{'content-type':'audio/mpeg; charset=binary'},body:'QUJD',encoding:'base64'};});
+ h.send('freesoundPreview',{url:'https://cdn.freesound.org/previews/1/1-hq.mp3'});
+ assert.deepEqual({...(await h.result()).message.result},{base64:'QUJD',mimeType:'audio/mpeg'});
+ assert.deepEqual({...requests[0].options},{responseType:'arraybuffer',mediaType:'audio'});
+ for(const [url,error] of [['https://example.com/x.mp3',/not from freesound\.org/],['https://cdn.freesound.org/missing.mp3',/Freesound preview HTTP 404/]]){
+  const other=await harness(null,async(...args)=>{requests.push(args);return {status:404,body:''};});
+  other.send('freesoundPreview',{url});assert.match((await other.result()).message.error,error);
+ }
+ assert.equal(requests.length,2);
 });
 
 const sounds=[
@@ -188,7 +224,7 @@ async function harness(generate, cors, provider, deadline, stream, decisions,con
   let handler;const sent=[];let wake;
   const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider,...connectionOverrides};
   vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate,rawStream:stream},connections:{get:async()=>connection,list:async()=>[connection]},cors,decisions},
-    console,Map,Set,AbortController,TextEncoder,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView,fetch:globalThis.fetch});
+    console,Map,Set,AbortController,TextEncoder,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView});
   return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
     result:()=>sent.some(item=>item.message.result || item.message.error)?Promise.resolve(sent.findLast(item=>item.message.result || item.message.error)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
 }
@@ -200,6 +236,14 @@ test('planner uses user identity and routes replies only to the originating brow
   assert.equal(request.userId,'user-a');assert.equal(result.user,'user-a');assert.equal(result.options.frontendSessionId,'session-a');
   assert.equal(request.type,'raw');assert.equal(request.parameters.max_tokens,8192);assert.equal(request.reasoning.source,'off');assert.equal(request.connection_id,'llm-a');
   assert.equal(result.message.result.segments[0].voice,'Charon');
+});
+
+test('generic card analysis reads freeform profiles and requires source evidence without TTS calls',async()=>{
+ let request,calls=0;
+ const card={name:'Closing Time',description:'Adrian is the captain, with a low voice. Ethan is his teammate, with a brighter voice.',scenario:'They run the station together.'};
+ const h=await harness(async input=>{calls++;request=input;return {content:JSON.stringify({roles:[{name:'Adrian',description:'A low-voiced captain.',evidence:'Adrian is the captain'},{name:'Ethan',description:'A brighter-voiced teammate.',evidence:'Ethan is his teammate'}]})};});
+ h.send('cardCast',{card,connectionId:'llm-a'});const result=(await h.result()).message;assert.equal(result.error,undefined);assert.deepEqual([...result.result.roles.map(role=>role.name)],['Adrian','Ethan']);assert.equal(calls,1);assert.match(request.messages[0].content,/regardless of formatting or title/);assert.match(request.messages[0].content,/untrusted data/);assert.equal(JSON.parse(request.messages[1].content).description,card.description);assert.equal(request.userId,'user-a');
+ const bad=await harness(async()=>({content:JSON.stringify({roles:[{name:'Invented',description:'A stranger.',evidence:'Not present in the card.'}]})}));bad.send('cardCast',{card});assert.match((await bad.result()).message.error,/source evidence/);
 });
 test('retries a malformed plan once and surfaces failure instead of speaking altered text',async()=>{
   let calls=0;const h=await harness(async()=>{calls++;return {content:'{"segments":[{"speaker":"Narrator","text":"Wrong."}]}'};});
@@ -418,20 +462,21 @@ test('searchVoices handles empty query or network failure', async () => {
 });
 
 
-import { classifyWithJev, planWithJev } from '../src/backend.js';
+import { classifyWithJev, planWithJev, speakerNameCandidates } from '../src/backend.js';
+
+// The backend reaches the network only through spindle.cors, so these src imports get a stand-in for it.
+async function withCors(respond, run) {
+  const original = globalThis.spindle;
+  globalThis.spindle = { cors: async (url, options) => { const { status = 200, body } = await respond(url, options); return { status, body: JSON.stringify(body) }; } };
+  try { await run(); } finally { globalThis.spindle = original; }
+}
 
 test('classifyWithJev asks the TypeSafe Decision API one choice question per item and returns candidate strings', async () => {
-  const originalFetch = globalThis.fetch;
   let request;
-  try {
-    globalThis.fetch = async (url, options) => {
-      request = { url, options, body: JSON.parse(options.body) };
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ model: 'jev-1.13.0', answers: { q0: { type: 'choice', choice: 'Alice', confidence: 0.9 }, q1: { type: 'choice', choice: 'Bob' } } })
-      };
-    };
+  await withCors(async (url, options) => {
+    request = { url, options, body: JSON.parse(options.body) };
+    return { body: { model: 'jev-1.13.0', answers: { q0: { type: 'choice', choice: 'Alice', confidence: 0.9 }, q1: { type: 'choice', choice: 'Bob' } } } };
+  }, async () => {
     const items = [
       { text: '"Hello"', context: 'Alice said' },
       { text: '"Hi there"', context: 'Bob replied' }
@@ -455,21 +500,17 @@ test('classifyWithJev asks the TypeSafe Decision API one choice question per ite
         q1: { type: 'choice', instructions: 'Which character speaks this dialogue: ""Hi there""?', criteria }
       }
     });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  });
 });
 
 test('classifyWithJev resolves a saved /classify endpoint to its base and rejects unknown answers', async () => {
-  const originalFetch = globalThis.fetch;
   const urls = [];
   let answer = 'Guard';
-  try {
-    globalThis.fetch = async (url, options) => {
-      urls.push(url);
-      assert.equal(options.headers.Authorization, 'Bearer existing-token');
-      return { ok: true, status: 200, json: async () => ({ answers: { q0: { choice: answer } } }) };
-    };
+  await withCors(async (url, options) => {
+    urls.push(url);
+    assert.equal(options.headers.Authorization, 'Bearer existing-token');
+    return { body: { answers: { q0: { choice: answer } } } };
+  }, async () => {
     for (const endpoint of ['https://custom.api.endpoint/v1/classify', 'https://custom.api.endpoint/v1']) {
       assert.deepEqual(await classifyWithJev({ items: [{ text: '"Halt!"' }], candidates: ['Guard'], apiKey: 'Bearer existing-token', endpoint }), ['Guard']);
     }
@@ -479,9 +520,7 @@ test('classifyWithJev resolves a saved /classify endpoint to its base and reject
       () => classifyWithJev({ items: [{ text: '"Halt!"' }], candidates: ['Guard'], apiKey: 'Bearer existing-token' }),
       /incomplete or unknown classification choices/
     );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  });
 });
 
 test('classifyWithJev validates required apiKey, choices, and handles network failure', async () => {
@@ -496,36 +535,20 @@ test('classifyWithJev validates required apiKey, choices, and handles network fa
   const emptyRes = await classifyWithJev({ items: [], candidates: ['Alice'], apiKey: 'key' });
   assert.deepEqual(emptyRes, []);
 
-  const originalFetch = globalThis.fetch;
-  try {
-    globalThis.fetch = async () => ({
-      ok: false,
-      status: 401,
-      json: async () => ({ error: { message: 'Invalid API key' } })
-    });
-    await assert.rejects(
-      () => classifyWithJev({ items: [{ text: '"test"' }], candidates: ['Alice'], apiKey: 'bad-key' }),
-      /Jev classification failed: Jev classification HTTP 401: Invalid API key/
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  await withCors(async () => ({ status: 401, body: { error: { message: 'Invalid API key' } } }), () => assert.rejects(
+    () => classifyWithJev({ items: [{ text: '"test"' }], candidates: ['Alice'], apiKey: 'bad-key' }),
+    /Jev classification failed: Jev classification HTTP 401: Invalid API key/
+  ));
 });
 
 test('planWithJev classifies dialogue speakers and emotion tags into valid speech plan segments', async () => {
-  const originalFetch = globalThis.fetch;
   const calls = [];
-  try {
-    globalThis.fetch = async (url, options) => {
-      const body = JSON.parse(options.body);
-      calls.push({ url, body });
-      const [first, second] = calls.length === 1 ? ['Alice', 'Bob'] : ['cheerful', 'whispering'];
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ answers: { q0: { choice: first }, q1: { choice: second } } })
-      };
-    };
+  await withCors(async (url, options) => {
+    const body = JSON.parse(options.body);
+    calls.push({ url, body });
+    const [first, second] = calls.length === 1 ? ['Alice', 'Bob'] : ['cheerful', 'whispering'];
+    return { body: { answers: { q0: { choice: first }, q1: { choice: second } } } };
+  }, async () => {
 
     const jevConfig = {
       voices: [{ id: 'Charon' }, { id: 'Kore' }],
@@ -548,7 +571,7 @@ test('planWithJev classifies dialogue speakers and emotion tags into valid speec
     assert.equal(calls.length, 2);
     assert.ok(calls.every(call => call.url === 'https://api.typesafe.ai/v1/systemone' && call.body.model === 'jev-latest'));
     // The persona speaks in replies too, and a speaker outside the cast has its own choice.
-    assert.deepEqual(Object.keys(calls[0].body.questions.q0.criteria), ['Persona', 'Alice', 'Bob', 'Someone not listed']);
+    assert.deepEqual(Object.keys(calls[0].body.questions.q0.criteria), ['Persona', 'Alice', 'Bob', 'Someone not listed', 'Nobody (not spoken aloud)']);
     assert.equal(calls[0].body.questions.q0.instructions, 'Which character speaks this dialogue: ""Good morning!""?');
     assert.deepEqual(Object.keys(calls[1].body.questions.q1.criteria), ['neutral', 'cheerful', 'whispering', 'angry', 'sad', 'sigh']);
 
@@ -570,19 +593,15 @@ test('planWithJev classifies dialogue speakers and emotion tags into valid speec
     assert.ok(narrSeg, 'Narrator segment found');
     assert.equal(narrSeg.speaker, 'Narrator');
     assert.equal(narrSeg.voice, 'Charon');
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  });
 });
 
 test('planWithJev handles pure narration without making classification calls', async () => {
-  const originalFetch = globalThis.fetch;
   let fetchCalled = false;
-  try {
-    globalThis.fetch = async () => {
-      fetchCalled = true;
-      throw new Error('Should not be called');
-    };
+  await withCors(async () => {
+    fetchCalled = true;
+    throw new Error('Should not be called');
+  }, async () => {
     const transcript = 'The sun set over the distant mountains. All was calm and peaceful.';
     const plan = await planWithJev({
       transcript,
@@ -593,9 +612,7 @@ test('planWithJev handles pure narration without making classification calls', a
     assert.equal(plan.segments.length, 1);
     assert.equal(plan.segments[0].speaker, 'Narrator');
     assert.equal(plan.segments[0].text, transcript);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  });
 });
 
 test('backend RPC handler supports action planJev and planWithJev', async () => {
@@ -772,10 +789,11 @@ const scenarioTranscript = 'Jay unhooked the receiver. "Hello?" Saki flinched. "
 test('Jev offers the persona and a scenario card by who they are, with profiles in the state, on both Jev paths', async () => {
   const expected = {
     Persona: "Persona (also called Jay): the user's own character (persona).",
-    'Metamorphosis: Just the Way You Are!': "Metamorphosis: Just the Way You Are!: the character card's main character. If this name is a story or scenario title, it is the lead character that story is about.",
+    'Metamorphosis: Just the Way You Are!': "Metamorphosis: Just the Way You Are!: a lead character defined by the character card; use this person's own profile, and distinguish other people in the same card.",
     'Student 1': 'Student 1: a supporting character.',
     'Student 2': 'Student 2 (also called Kenta): a supporting character.',
-    'Someone not listed': 'A speaker who matches none of the other choices, their names or descriptions.'
+    'Someone not listed': 'A speaker who matches none of the other choices, their names or descriptions.',
+    'Nobody (not spoken aloud)': "Not dialogue: these quoted words are not said aloud by anyone at this moment. Examples: a quoted word, name, nickname or term being talked about; written, typed or displayed text; words someone said earlier that the narration is only quoting; out-of-character notes; or a noise. A character's own quoted thoughts are not Nobody: they belong to that character."
   };
   const checkState = characters => {
     assert.deepEqual([...characters.map(c => c.name)], ['Persona', 'Metamorphosis: Just the Way You Are!', 'Student 1', 'Student 2']);
@@ -805,6 +823,18 @@ test('Jev offers the persona and a scenario card by who they are, with profiles 
   assert.deepEqual([...classified.segments.map(s => s.speaker)], [...decided.segments.map(s => s.speaker)]);
 });
 
+test('LLM and Jev card-title aliases resolve to the assigned lead voice instead of NPC policy',async()=>{
+  const title='Kellin Beckett || Toxic Fans',cast={...config,useStyle:false,fixed:[{speaker:'Narrator',voice:'Charon',style:''},{speaker:'Laiyah',voice:'Kore',style:''},{speaker:'Kellin Beckett',voice:'Charon',style:'',aliases:[title]}],npcPolicy:{mode:'single',voice:'Kore',route:''},characterProfiles:[{speaker:'Kellin Beckett',name:title,role:'character',description:'Kellin is the singer.'}]};
+  const llm=await harness(async input=>{
+    const data=JSON.parse(input.messages[1].content);assert.ok(data.fixedCast[2].aliases.includes(title));assert.match(input.messages[0].content,/aliases.*same person/);
+    return {content:JSON.stringify({segments:[{speaker:title,voice:'Kore',unit_ids:[0]}]})};
+  });
+  llm.send('plan',{transcript:'"Hello."',config:cast});const reply=(await llm.result()).message;assert.equal(reply.error,undefined);const standard=reply.result;assert.equal(standard.segments[0].speaker,'Kellin Beckett');assert.equal(standard.segments[0].voice,'Charon');assert.equal(standard.npcs.length,0);
+  let choices;const decisions={evaluate:async input=>{choices=input.questions.speaker_0.criteria;return {answers:{speaker_0:{choice:title}}};}};
+  const jev=await harness(null,null,null,null,null,decisions);jev.send('planJev',{transcript:'"Hello."',config:cast});const fast=(await jev.result()).message.result;
+  assert.match(choices['Kellin Beckett'],/also called Kellin Beckett \|\| Toxic Fans/);assert.ok(!Object.hasOwn(choices,title));assert.equal(fast.segments[0].speaker,'Kellin Beckett');assert.equal(fast.segments[0].voice,'Charon');assert.equal(fast.npcs.length,0);
+});
+
 test('a card voicing several characters keeps its lead and its named NPCs apart', async () => {
   const cast = { voices: [{ id: 'n' }, { id: 'saki' }, { id: 'kanade' }], useStyle: false,
     fixed: [{ speaker: 'Narrator', voice: 'n', style: '' }, { speaker: 'Saki & Kanade', voice: 'saki', style: '', aliases: ['Saki'] }],
@@ -815,10 +845,39 @@ test('a card voicing several characters keeps its lead and its named NPCs apart'
   const h = await harness(null, null, null, null, null, decisions);
   h.send('planJev', { transcript: '"Um, hi," Saki said. "Speak up!" Kanade laughed.', config: cast });
   const plan = (await h.result()).message.result;
-  assert.deepEqual(Object.keys(evalInput.questions.speaker_0.criteria), ['Saki & Kanade', 'Kanade', 'Someone not listed']);
+  assert.deepEqual(Object.keys(evalInput.questions.speaker_0.criteria), ['Saki & Kanade', 'Kanade', 'Someone not listed', 'Nobody (not spoken aloud)']);
   assert.match(evalInput.questions.speaker_0.criteria['Saki & Kanade'], /also called Saki/);
   assert.match(evalInput.questions.speaker_0.criteria.Kanade, /also called Kana/);
   assert.deepEqual([...plan.segments.filter(s => s.speaker !== 'Narrator').map(s => s.voice)], ['saki', 'kanade']);
+});
+
+test('Jev reads unspoken quotes as narration and names new speakers from the story', async () => {
+  const cast = { voices: [{ id: 'n' }, { id: 'jay' }, { id: 'alice' }, { id: 'npc' }], useStyle: false, npcs: [],
+    fixed: [{ speaker: 'Narrator', voice: 'n', style: '' }, { speaker: 'Jay', voice: 'jay', style: '' }, { speaker: 'Alice', voice: 'alice', style: '' }] };
+  const inputs = [];
+  const decisions = { evaluate: async input => {
+    inputs.push(input);
+    return { answers: inputs.length === 1
+      ? { speaker_0: { choice: 'Someone not listed' }, speaker_1: { choice: 'Someone not listed' }, speaker_2: { choice: 'Nobody (not spoken aloud)' } }
+      : { name_0: { choice: 'Miller' }, name_1: { choice: 'Unnamed (the story never gives this speaker a name)' } } };
+  } };
+  const h = await harness(null, null, null, null, null, decisions);
+  h.send('planJev', { transcript: 'Alice waved at Miller. "Move," he said. "Hey," the clerk said. The sign read "Closed".', config: cast });
+  const plan = (await h.result()).message.result;
+  assert.match(inputs[0].questions.speaker_0.instructions, /out loud, or thinks them/);
+  assert.deepEqual(Object.keys(inputs[1].questions), ['name_0', 'name_1']);
+  assert.ok(Object.hasOwn(inputs[1].questions.name_0.criteria, 'Miller'));
+  assert.ok(!Object.hasOwn(inputs[1].questions.name_0.criteria, 'Alice'));
+  const speakerOf = text => plan.segments.find(s => s.text.includes(text)).speaker;
+  assert.equal(speakerOf('"Move,"'), 'Miller');
+  assert.equal(speakerOf('"Hey,"'), 'Unknown speaker');
+  assert.equal(speakerOf('"Closed"'), 'Narrator');
+});
+
+test('speaker name candidates come from names the story uses, not from cast names or sentence starts', () => {
+  const text = 'Evelyn walked in. "Hi," said Dr. Choi to Miller. The farmer waved. Miller nodded at Jay\'s cat.';
+  assert.deepEqual(speakerNameCandidates(text, 'Evelyn walked in. Miller nodded.', ['Jay']), ['Miller', 'Evelyn', 'Dr. Choi']);
+  assert.deepEqual(speakerNameCandidates('「こんにちは」と農夫が言った。', '農夫が言った。', []), []);
 });
 
 test('dialogue from someone not in the cast goes to the enabled LLM fallback, otherwise to a separate NPC', async () => {
@@ -1017,4 +1076,25 @@ test('community search drops tag-stuffed voices that also carry the opposite gen
     h.send('plan',{transcript:'Mira smiled. "Hello."',config:communityCast});
     assert.equal((await h.result()).message.result.segments.find(segment=>segment.speaker==='Mira').voice,expected);
   }
+});
+
+test('Jev keeps Decision speakers when emotion answers are rejected and splits large replies into 256-question evaluations',async()=>{
+  const calls=[];
+  const decisions={evaluate:async input=>{
+    const ids=Object.keys(input.questions);calls.push(ids);
+    if(ids[0].startsWith('emotion_'))throw Error('Provider probabilities do not sum to 1 for emotion_83');
+    return {answers:Object.fromEntries(ids.map(id=>[id,{choice:'Alice'}]))};
+  }};
+  const h=await harness(null,null,null,null,null,decisions);
+  const transcript=Array.from({length:300},(_,i)=>`"Line ${i}."`).join(' ');
+  h.send('planJev',{transcript,config:{...config,fixed:[...config.fixed,{speaker:'Alice',voice:'Kore',style:''}]}});
+  const result=(await h.result()).message;
+  assert.equal(result.error,undefined);
+  assert.ok(result.result.segments.every(segment=>segment.speaker==='Alice' && !segment.style));
+  assert.deepEqual(calls.map(ids=>[ids[0],ids.length]),[['speaker_0',256],['speaker_256',44],['emotion_0',256]]);
+});
+test('a planner stopped by its provider names the stop reason instead of only the JSON error',async()=>{
+  const h=await harness(null,null,'google_vertex',null,async function*(){yield {type:'token',token:'{"segments":[{"speaker":"Narrator"'};yield {type:'done',content:'{"segments":[{"speaker":"Narrator"',finish_reason:'SAFETY'};});
+  h.send('plan',{transcript:'Hello.',config});
+  assert.match((await h.result()).message.error,/Planner failed twice: The planner stopped early \(SAFETY\)\. Planner returned no complete JSON speech plan/);
 });

@@ -100,7 +100,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     assert.ok(characterVoices.some(label=>label.includes('Kore · Female')));
     assert.ok(!characterVoices.some(label=>label.includes('Puck · Male')));
     $('key').value='session-key';
-    settingsMount.querySelector('button').click();
+    assert.equal(settingsMount.children.length,0);
     assert.ok(root.querySelector('[data-et="fixed"]'));
     assert.equal($('key').value,'session-key');
     placementListeners.get('drawer')();
@@ -234,7 +234,7 @@ test('older hosts show a visible settings diagnostic rather than disappearing',a
   try {
     const cleanup=await setup({messages:{},ui:{registerDrawerTab:()=>({root,activate(){},destroy(){root.replaceChildren();}}),mount:()=>mount}});
     assert.match(root.textContent,/newer Lumiverse staging/);
-    assert.equal(mount.querySelector('button').textContent,'Open Choir settings');
+    assert.equal(mount.children.length,0);
     cleanup();assert.equal(root.children.length,0);assert.equal(mount.children.length,0);
   } finally {globalThis.document=previous;dom.window.close();}
 });
@@ -926,7 +926,7 @@ test('plannerMode toggles Jev System 1 inputs directly in Speech & Planner secti
     // Switch to Jev System 1
     $('plannerMode').value = 'jev';
     $('plannerMode').dispatchEvent(new dom.window.Event('change'));
-    assert.equal($('llmPlannerBox').hidden, true);
+    assert.equal($('llmPlannerBox').hidden, false);
     assert.equal($('jevPlannerBox').hidden, false);
 
     // Enter Jev key and test planner
@@ -1411,7 +1411,8 @@ test('Settings changes (checkboxes and dropdowns) auto-persist globally and acro
     // Verify global settings store was updated
     const globalSaved = store.get('settings:global');
     assert.ok(globalSaved, 'Global settings should be saved');
-    assert.equal(globalSaved.muteNarrator, true);
+    assert.equal(globalSaved.muteNarrator, undefined);
+    assert.equal(store.get('chat:chat-1').muteNarrator,true);
     assert.equal(globalSaved.useFastClassifier, true);
     assert.equal(globalSaved.plannerMode, 'heuristic');
 
@@ -1437,7 +1438,7 @@ test('Settings changes (checkboxes and dropdowns) auto-persist globally and acro
 
     // User's choices must be preserved!
     assert.equal($2('muteNarrator'), null);
-    assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(), true, 'companion narrator preference should survive a new chat / reload');
+    assert.equal(globalThis.__CHOIR_API__.isNarratorMuted(), false, 'narrator exclusion belongs to this chat cast');
     assert.equal($2('useFastClassifier').checked, true, 'useFastClassifier should be preserved in new chat / reload');
     assert.equal($2('plannerMode').value, 'heuristic');
 
