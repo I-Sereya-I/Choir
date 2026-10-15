@@ -4,7 +4,7 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.26-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/staging)
+[![Version](https://img.shields.io/badge/version-1.1.8-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/main)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
 [![Tests](https://img.shields.io/badge/tests-370%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -13,7 +13,7 @@ An installable Lumiverse Spindle extension for multi-voice narration, dialogue a
 
 </div>
 
-This is the **staging branch of the original Choir repository**, using the original `choir` identifier and settings. Version **1.1.6-staging.26** removes every direct `fetch()` from the backend, which Lumiverse now refuses to load: Jev, Freesound and Incompetech requests go through Spindle's CORS proxy only, and Freesound previews are downloaded by that proxy as checked audio instead of by the browser. Version **1.1.6-staging.25** improves Jev attribution. Quoted words nobody says aloud (a quoted term, written text, words only reported) are read by the narrator, while quoted thoughts stay with the thinker. A speaker outside the cast is named by a second Jev question over the names the story uses, so the line gets its own NPC voice instead of the LLM fallback; speakers the story never names keep the previous behaviour. On a benchmark of 2,000 dialogue lines from real chats, overall Jev accuracy rose from 94% to 97% with unchanged accuracy for cast lines. Version **1.1.6-staging.24** declutters the settings drawer: **Speech & Planner** is grouped into Voices, Planner, Sound and Reading, set-and-forget interface toggles move to **Advanced Settings**, and long help texts become short tooltips. Choir preserves connection-specific voice selections when cards split into individual leads, bounds card profiles independently, and checks unstructured card content with a cached Planner LLM analysis. Unison excludes listeners, handles common speech verbs, and mixes all participants in main and Cue playback. Cached unison respects changed NPC policies and mixer levels. Connection-list failures retain the selected adapter, and saved clip controls wait for their voice catalogues. Native Fish/Google/OpenRouter grouping retains the supplied Lumiverse relay patch.
+Version **1.1.8** brings the tested staging line to the stable release. Choir now loads under Lumiverse's stricter extension checks: every backend request goes through Spindle's CORS proxy. Jev attribution reads unspoken quotes with the narrator and names new speakers from the story. Cards with several characters are split into individual leads with their own voices, and speakers in unison overlap. Optional read-along highlighting and **Follow narration** track the spoken passage. Speech & Planner preferences are shared across chats, and the drawer is grouped into Voices, Planner, Sound and Reading. Use **main** for the stable release and **staging** to test upcoming changes.
 
 
 Version **1.1.6-staging.23** identifies individual leads across formatted headings, named XML profiles and JSON casts. Freeform cards, scenario titles and content outside recognized profiles use a bounded Planner LLM card analysis in Standard LLM and Jev modes, cached until the card changes. Each lead keeps its own profile, aliases, voice and connection. Card titles are not treated as an individual speaker when they describe several people. Local heuristic mode stays local and needs recognizable profiles or manually configured speakers.
@@ -93,7 +93,7 @@ Choir also applies limits per voice route: Fish Audio uses up to the 10,000-char
 ### From GitHub
 
 1. In Lumiverse, open **Extensions -> Add -> Install from source**.
-2. Enter `https://github.com/patatasbravasch-arch/Choir` and select the `staging` branch.
+2. Enter `https://github.com/patatasbravasch-arch/Choir` and select the `main` branch.
 3. Enable **Choir** in your extension list.
 
 ### Local copy
