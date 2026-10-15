@@ -212,7 +212,7 @@ export async function setup(ctx) {
   root.innerHTML = `<div class="ensemble-tts">
     <div class="et-header">
       <div class="et-title-group">
-        <div><h2>Choir</h2><span class="et-constellation-name">Abyssal constellation</span></div>
+        <h2>Choir</h2>
         <span class="et-badge" data-et="branchBadge" hidden>Staging</span>
       </div>
       <span class="et-save-state" data-et="saveState" role="status" aria-live="polite">Settings saved per chat</span>

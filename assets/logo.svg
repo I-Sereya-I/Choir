@@ -1,16 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 380" width="100%" height="100%">
   <defs>
-    <!-- Clef Gradient: Abyssal Blue -->
+    <!-- Clef Gradient: Crimson / Raspberry -->
     <linearGradient id="clefGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#B9D0EB"/>
-      <stop offset="60%" stop-color="#86ABD5"/>
-      <stop offset="100%" stop-color="#45688F"/>
+      <stop offset="0%" stop-color="#C72C50"/>
+      <stop offset="60%" stop-color="#BA2448"/>
+      <stop offset="100%" stop-color="#A81D3E"/>
     </linearGradient>
 
-    <!-- Sparkle Star Gradient: Constellation Starlight -->
+    <!-- Sparkle Star Gradient: Warm Gold / Peach -->
     <linearGradient id="starGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#F5E9CB"/>
-      <stop offset="100%" stop-color="#E0CFAA"/>
+      <stop offset="0%" stop-color="#F2AE6B"/>
+      <stop offset="100%" stop-color="#DE8645"/>
     </linearGradient>
   </defs>
 
