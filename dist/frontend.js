@@ -1282,7 +1282,13 @@ function parseSoundCues(content, segments) {
   if (!Array.isArray(parsed?.cues)) throw new Error(hasJson?'the sound effect response has no cues list':'the sound effect response was not valid JSON');
   const valid = (entries, kind) => (Array.isArray(entries) ? entries : []).flatMap(entry => {
     if (!Number.isInteger(entry?.segment) || !segments[entry.segment]) return [];
-    const cue = segmentSoundCues(entry, segments[entry.segment].text, kind);
+    const text=segments[entry.segment].text,trigger=typeof entry.trigger==='string'?entry.trigger.trim():'';
+    const offset=trigger?cueOffset(text,trigger):-1;
+    // A hallucinated anchor must not silently become a cue at the beginning.
+    // Legacy saved cues can still use an empty trigger in segmentSoundCues.
+    if(offset<0)return [];
+    if(!kind && speechSourceUnits(text).some(unit=>unit.kind==='dialogue' && offset>unit.start && offset<unit.end))return [];
+    const cue = segmentSoundCues(entry, text, kind);
     return cue ? [{segment:entry.segment, ...cue[0]}] : [];
   });
   return {cues:valid(parsed.cues).slice(0, soundCueLimit(segments)), ambience:valid(parsed.ambience, 'ambience').slice(0, AMBIENCE_LIMIT), music:valid(parsed.music, 'music').slice(0, MUSIC_LIMIT)};
@@ -3448,7 +3454,10 @@ export async function setup(ctx) {
     let transcript=transcriptFromMessage(content,config?.ignoredTags);
     if(!transcript)throw new Error('This message contains no speakable text.');
     let snapshot=structuredClone(casting(config));
-    let context=ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
+    // Replanning an older reply must not see dialogue from its future. If the
+    // reply is outside the recent window, no chronological context is known.
+    const recent=ctx.messages.getRecent(12),sourceIndex=recent.findIndex(v=>v.id===messageId);
+    let context=recent.slice(0,Math.max(0,sourceIndex)).filter(v=>!v.extra?.is_system)
       .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content,config?.ignoredTags).slice(0,1000)}`).join('\n').slice(-4000);
     const ctrl=new AbortController();controller=ctrl;
     planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;
