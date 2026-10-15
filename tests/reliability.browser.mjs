@@ -9,6 +9,100 @@ import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
+function pocketCard(h,id,speaker,text) {
+  const host=h.dom.window.document.createElement('div');
+  host.dataset.pocketInlineAnchor=id;host.dataset.pocketMounted='true';
+  const activity={id,scope:{chatId:'chat-a',characterId:'mira'},source:{messageId:h.message.id},presentation:{format:'voice',senderName:speaker,voiceTranscript:text}};
+  const update=()=>{host.dataset.pocketSequence=JSON.stringify([[activity,{}]]);};update();h.root.after(host);
+  return {host,activity,update,anchor:`<div class="pocket-inline-anchor" data-pocket-inline-anchor="${id}"></div>`};
+}
+
+test('Abyssal reads a Pocket voice note at its anchor with the sender voice, retaining exact text across saved replay',async()=>{
+  const h=await harness();
+  try {
+    const card=pocketCard(h,'act_a','Captain','The train arrives at eight.');
+    h.message.content=`Before. ${card.anchor} After.`;
+    await h.plan();
+    const planned=h.requests.filter(request=>request.action==='plan');
+    assert.deepEqual(planned.map(request=>request.input.transcript),['Before.','After.']);
+    assert.ok(planned.every(request=>!JSON.stringify(request.input).includes('The train arrives')));
+    const saved=[...h.store.entries()].find(([key])=>key.startsWith('plan:'))[1];
+    assert.deepEqual(saved.attribution.segments.map(segment=>[segment.speaker,segment.text]),[['Narrator','Before.'],['Mira','The train arrives at eight.'],['Narrator','After.']]);
+    await h.play();
+    assert.deepEqual(h.synthesis.map(request=>[request.connectionId,request.voice,request.text]),[['a','n','Before.'],['b','m','The train arrives at eight.'],['a','n','After.']]);
+    const requests=h.requests.filter(request=>request.action==='plan').length,generated=h.synthesis.length;
+    await h.reload();await h.play();
+    assert.equal(h.requests.filter(request=>request.action==='plan').length,requests);
+    assert.equal(h.synthesis.length,generated);
+    card.activity.presentation.voiceTranscript='The train arrives at nine.';card.update();
+    await h.click('play',text=>text.includes('Playback finished'));
+    assert.equal(h.synthesis.length,generated+1);assert.equal(h.synthesis.at(-1).text,'The train arrives at nine.');
+  } finally { await h.close(); }
+});
+
+test('Pocket-only messages need no planner and changing the sender invalidates attribution even when text is identical',async()=>{
+  const h=await harness();
+  try {
+    const card=pocketCard(h,'act_a','Mira','Meet at the station.');h.message.content=card.anchor;
+    await h.plan();await h.play();
+    assert.equal(h.requests.filter(request=>['plan','planJev'].includes(request.action)).length,0);
+    assert.equal(h.synthesis.at(-1).voice,'m');
+    card.activity.presentation.senderName='Guard';card.update();await h.play();
+    assert.equal(h.synthesis.at(-1).voice,'g');assert.equal(h.synthesis.at(-1).text,'Meet at the station.');
+  } finally { await h.close(); }
+});
+
+test('Pocket notes do not borrow a narrator voice or silently disappear before their cards load',async()=>{
+  const h=await harness();
+  try {
+    const card=pocketCard(h,'act_a','Unknown','Meet at the station.');h.message.content=`Before. ${card.anchor}`;
+    h.$('latest').click();await until(()=>h.$('status').textContent.includes('Choose a Choir voice for Unknown'));
+    assert.equal(h.requests.filter(request=>request.action==='plan').length,0);assert.equal(h.synthesis.length,0);
+    card.host.remove();h.$('latest').click();await until(()=>h.$('status').textContent.includes('Pocket voice cards are not ready'));
+    assert.equal(h.synthesis.length,0);
+  } finally { await h.close(); }
+});
+
+test('Pocket voice reading respects hidden panels and heuristic attribution keeps notes on their saved speaker',async()=>{
+  const h=await harness();
+  try {
+    const hidden=pocketCard(h,'act_a','Unknown','Do not read this.'),audible=pocketCard(h,'act_b','Guard','The gate is open.');
+    h.message.content=`Before. <private-note>${hidden.anchor}</private-note> ${audible.anchor} After.`;
+    h.$('ignoredTags').value='private-note';h.$('ignoredTags').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));
+    h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+    await h.plan();await h.play();
+    assert.equal(h.requests.filter(request=>['plan','planJev'].includes(request.action)).length,0);
+    assert.deepEqual(h.synthesis.map(request=>request.voice),['n','g','n']);
+    assert.ok(h.synthesis.every(request=>!request.text.includes('Do not read')));
+  } finally { await h.close(); }
+});
+
+test('Jev attributes only the prose around Pocket notes and an enabled LLM fallback keeps their known sender',async()=>{
+  const h=await harness();
+  try {
+    const card=pocketCard(h,'act_a','Mira','Meet at the station.');h.message.content=`Before. ${card.anchor} After.`;
+    h.state.jevSuccess=true;h.$('plannerMode').value='jev';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+    await h.plan();await h.play();
+    assert.deepEqual(h.requests.filter(request=>request.action==='planJev').map(request=>request.input.transcript),['Before.','After.']);
+    assert.equal(h.requests.filter(request=>request.action==='plan').length,0);
+    h.state.jevSuccess=false;h.state.jevInvalid=true;h.$('allowLlmFallback').checked=true;h.$('allowLlmFallback').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
+    card.activity.presentation.voiceTranscript='Meet at the library.';card.update();
+    await h.play();
+    assert.equal(h.requests.filter(request=>request.action==='plan').length,2);
+    assert.equal(h.synthesis.at(-1).voice,'m');assert.equal(h.synthesis.at(-1).text,'Meet at the library.');
+  } finally { await h.close(); }
+});
+
+test('stopping attribution around a Pocket note cannot start voice-note audio when the late plan arrives',async()=>{
+  const h=await harness();
+  try {
+    const card=pocketCard(h,'act_a','Mira','Meet at the station.');h.message.content=`Before. ${card.anchor}`;
+    h.state.held=true;h.footer.querySelector('button').click();
+    await until(()=>h.requests.some(request=>request.action==='plan'));
+    h.dom.window.document.querySelector('[data-choir-action="stop"]').click();h.releaseHeld();await tick();
+    assert.equal(h.synthesis.length,0);assert.ok(h.audios.every(audio=>audio.paused));
+  } finally { await h.close(); }
+});
 const until=async(predicate)=>{for(let i=0;i<250;i++){if(predicate())return;await tick();}throw Error('Timed out waiting for regression state');};
 
 async function harness(mixerPreferences,mobile=false){
@@ -114,7 +208,10 @@ async function harness(mixerPreferences,mobile=false){
         else if(request.action==='gemini')result={base64:'AAABAA==',mimeType:'audio/L16;rate=24000'};
         else if(request.action==='cardCast')result={roles:state.cardRoles || []};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
-        else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
+        else if(request.action==='planJev'){
+          if(state.jevSuccess)result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({speaker:'Narrator',voice:'n',text:unit.text,style:''}))},request.input.transcript,request.input.config);
+          else {backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
+        }
         else if(request.action==='plan' && state.cardTitlePlan){
           result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Hello')?'Kellin Beckett || Toxic Fans':'Mikey Ross',voice:unit.kind==='narration'?'n':'g',style:unit.kind==='dialogue'?'Warm':''}))},request.input.transcript,request.input.config);
         }

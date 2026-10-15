@@ -1,5 +1,6 @@
 import { characterCardRoleDiscovery } from './core.js';
 import { ABYSSAL_THEME_CSS } from './abyssal-theme.js';
+import { pocketVoiceNotes, pocketVoiceReading } from './pocket-voice.js';
 import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, planningSections, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset } from './core.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
@@ -1945,7 +1946,7 @@ export async function setup(ctx) {
     const restored=restoreAttribution(saved.attribution,saved.transcript,cast);
     planAttribution=saved.attribution;
     const chosen=rememberPlanCast(restored);
-    plan={...restored,warning:saved.warning || ''};planSource={messageId,content:saved.content,transcript:saved.transcript,chatId:targetChat,sections:saved.sections,soundCues:Boolean(saved.soundCues),soundCueWarning:saved.soundCueWarning || ''};
+    plan={...restored,warning:saved.warning || ''};planSource={messageId,content:saved.content,transcript:saved.transcript,pocketSignature:saved.pocketSignature,chatId:targetChat,sections:saved.sections,soundCues:Boolean(saved.soundCues),soundCueWarning:saved.soundCueWarning || ''};
     if(renderRows)renderCast();renderPreview();
     if(chosen)await persistConfig(targetChat,config);
     return !disposed && targetChat===chatId && version===loadVersion && token===revision;
@@ -2181,7 +2182,8 @@ export async function setup(ctx) {
     }]);
   }
   // Edits that only add images, trackers or other non-spoken markup keep a plan and its audio valid.
-  const spokenText=content=>transcriptFromMessage(content,config?.ignoredTags).replace(/\s+/g,' ').trim();
+  const messageReading=(content,messageId)=>pocketVoiceReading(content,id=>pocketVoiceNotes(document,id,{...ctx.getActiveChat(),messageId}),value=>transcriptFromMessage(value,config?.ignoredTags));
+  const spokenText=content=>messageReading(content).transcript.replace(/\s+/g,' ').trim();
   const sameSpeech=(a,b)=>a===b || (a!=null && b!=null && spokenText(a)===spokenText(b));
   function mergedCardRecording(recording){
     const transcript=recording.transcript || '';
@@ -2194,11 +2196,52 @@ export async function setup(ctx) {
     return (recording.segments || []).flatMap(speechMembers).some(segment=>(config?.fixed || []).some(actor=>normalizeName(actor.speaker)!==normalizeName(segment.speaker) && (actor.aliases || []).some(alias=>normalizeName(alias)===normalizeName(segment.speaker))));
   }
   async function recordingMatchesTranscript(recording,content) {
-    let transcript=transcriptFromMessage(content,config?.ignoredTags);
+    const reading=messageReading(content,recording.messageId);
+    if(reading.unresolved.length || (recording.pocketSignature || '')!==reading.signature)return false;
+    let transcript=reading.transcript;
     if(/\{\{\s*user\s*\}\}/i.test(transcript))transcript=replacePersonaMacro(transcript,await personaName());
     const saved=recording.transcript ?? recording.segments?.map(segment=>segment.text).join(' ');
     const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
     return canonical(saved)===canonical(transcript);
+  }
+  async function planPocketReading(reading,snapshot,context,ctrl,token) {
+    const combined=[],warnings=[];
+    const check=()=>{if(ctrl.signal.aborted || token!==revision || disposed)throw abortError();};
+    const voiceActor=speaker=>[...snapshot.fixed,...snapshot.npcs].find(actor=>[actor.speaker,...(actor.aliases || [])].some(name=>normalizeName(name)===normalizeName(speaker)));
+    for(const note of reading.notes)if(!voiceActor(note.speaker)?.voice)throw new Error(`Choose a Choir voice for ${note.speaker} to read this Pocket voice message.`);
+    for(const part of reading.parts) {
+      check();
+      if(part.speaker) {
+        const actor=voiceActor(part.speaker);
+        if(!actor?.voice)throw new Error(`Choose a Choir voice for ${part.speaker} to read this Pocket voice message.`);
+        combined.push({speaker:actor.speaker,voice:actor.voice,route:actor.route || snapshot.defaultRoute,style:'',text:part.text,manualSpeaker:true});
+        continue;
+      }
+      for(const section of planningSections(part.text)) {
+        check();let result;
+        const mode=resolvePlannerMode(config);
+        if(mode==='heuristic') {
+          const failure={};result=fastClassifyPlan(section,snapshot,failure);
+          if(!result)throw new Error(failure.message || 'Choose Jev or LLM to attribute this passage.');
+        } else {
+          if(mode==='jev')try {
+            result=await rpc('planJev',{transcript:section,config:snapshot,context,decisionConnection:config.decisionConnection,
+              apiKey:(config.jevApiKey || $('jevKey')?.value || '').trim(),endpoint:config.jevEndpoint},ctrl.signal,snapshot.communityRoutes?60000:15000);
+            if(!Array.isArray(result?.segments))throw new Error('Jev returned no valid speech plan.');
+          }catch(error){check();if(!config.allowLlmFallback)throw error;result=null;warnings.push(error.message);}
+          if(!result)result=await rpc('plan',{transcript:section,config:snapshot,context,connectionId:config.planner,maxTokens:config.plannerTokens,
+            timeoutMs:90000,decisionConnection:config.decisionConnection,jevApiKey:config.jevApiKey,jevEndpoint:config.jevEndpoint},ctrl.signal,95000,
+            progress=>status(`Planning narration around Pocket voice messages: ${progress.stage}`));
+        }
+        check();adoptCommunityVoices(result,snapshot);
+        const checked=validatePlan({segments:result.segments.map(segment=>withoutBase(segment,snapshot))},section,snapshot);
+        snapshot.npcs=[...new Map([...snapshot.npcs,...checked.npcs].map(actor=>[normalizeName(actor.speaker),actor])).values()];
+        for(const actor of snapshot.fixed)if(!actor.voice)actor.voice=checked.segments.flatMap(speechMembers).find(segment=>normalizeName(segment.speaker)===normalizeName(actor.speaker))?.voice || '';
+        combined.push(...checked.segments.map(segment=>withoutBase(segment,snapshot)));
+        context=[context,section].join('\n').slice(-4000);
+      }
+    }
+    return {plan:validatePlan({segments:combined},reading.transcript,snapshot),warning:[...new Set(warnings)].join('; ')};
   }
   async function prepare(messageId,autoPlay=false,contentOverride,forceReplan=false) {
     if(!chatId)throw new Error('Open a chat first.');
@@ -2206,7 +2249,9 @@ export async function setup(ctx) {
     const token=revision, targetChat=chatId;
     const content=contentOverride ?? ctx.messages.getContent(messageId);
     if(content==null)throw new Error('Message is no longer available.');
-    let transcript=transcriptFromMessage(content,config?.ignoredTags);
+    const reading=messageReading(content,messageId);
+    if(reading.unresolved.length)throw new Error('Pocket voice cards are not ready. Scroll this message into view, wait for Pocket to load, then press Play again.');
+    let transcript=reading.transcript;
     if(!transcript)throw new Error('This message contains no speakable text.');
     let snapshot=structuredClone(casting(config));
     // Replanning an older reply must not see dialogue from its future. If the
@@ -2225,6 +2270,7 @@ export async function setup(ctx) {
         const name=await personaName();
         if(ctrl.signal.aborted || token!==revision)return;
         transcript=replacePersonaMacro(transcript,name);context=replacePersonaMacro(context,name);
+        reading.parts=reading.parts.map(part=>({...part,text:replacePersonaMacro(part.text,name)}));
       }
       if(!forceReplan && await restoreSavedPlan(messageId)){
         status('Saved attribution reused.');
@@ -2234,8 +2280,14 @@ export async function setup(ctx) {
       if(ctrl.signal.aborted || token!==revision || targetChat!==chatId || disposed)return;
       const stripBase=segments=>segments.map(segment=>withoutBase(segment,snapshot));
       const plannerMode=resolvePlannerMode(config);
-      let fastPlan = null;
-      if (plannerMode==='heuristic') {
+      let fastPlan = null,jevFailure='';
+      if(reading.notes.length) {
+        if(plannerMode!=='heuristic')snapshot.characterProfiles=await plannerProfiles(snapshot,ctrl.signal);
+        const resolvedReading={...reading,transcript};
+        const result=await planPocketReading(resolvedReading,snapshot,context,ctrl,token);
+        fastPlan=result.plan;jevFailure=result.warning;
+      }
+      if (!fastPlan && plannerMode==='heuristic') {
         const failure={};
         try {
           fastPlan = fastClassifyPlan(transcript, snapshot, failure);
@@ -2248,7 +2300,6 @@ export async function setup(ctx) {
       }
       if(!fastPlan){await rpc('ping',{},ctrl.signal,8000);if(token!==revision || ctrl.signal.aborted)return;}
       // 2. Jev System 1 classifier (~20ms)
-      let jevFailure='';
       if(!fastPlan){
         snapshot.characterProfiles=await plannerProfiles(snapshot,ctrl.signal);
         if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
@@ -2369,7 +2420,7 @@ export async function setup(ctx) {
       }
       // Validate the complete original reply before audio or cast persistence.
       const validated=validatePlan({segments:combined},transcript,snapshot);
-      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat,sections:playbackSections,soundCues:soundsChosen,soundCueWarning:[...soundCueWarnings].join('; ')};
+      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,pocketSignature:reading.signature,chatId:targetChat,sections:playbackSections,soundCues:soundsChosen,soundCueWarning:[...soundCueWarnings].join('; ')};
       if(!streaming){
         const cued=await cuePlannedSegments(plan.segments,ctrl,token);
         if(token!==revision || ctrl.signal.aborted)return;
@@ -2792,7 +2843,7 @@ export async function setup(ctx) {
     // Upgrade old complete recordings without discarding their audio.
     if(!cached?.passages)for(const [index,segment] of (cached?.segments || []).entries())if(cached.blobs?.[index] && (!segment.turns || segment.turns.length===1))passages[cacheKey(segment,snapshot)]=cached.blobs[index];
     const persist=()=>{
-      const value={content:source.content,transcript:source.transcript,segments:[...segments],blobs:[...blobs],passages:{...passages},sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
+      const value={content:source.content,transcript:source.transcript,pocketSignature:source.pocketSignature,segments:[...segments],blobs:[...blobs],passages:{...passages},sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention};
       saveQueue=saveQueue.then(()=>recordingStore('put',recordingKey(source.chatId,source.messageId),value)).catch(error=>{saveError=error.message;});
       return saveQueue;
     };
@@ -2934,6 +2985,11 @@ export async function setup(ctx) {
     if(chatId!==planSource.chatId || !sameSpeech(ctx.messages.getContent(planSource.messageId),planSource.content)) {
       clearPlan();throw new Error('Message or swipe changed. Generate a fresh plan.');
     }
+    const currentReading=messageReading(ctx.messages.getContent(planSource.messageId),planSource.messageId);
+    if(currentReading.unresolved.length || (planSource.pocketSignature || '')!==currentReading.signature) {
+      if(automatic){status('Auto-play skipped: plan this reply to load its current Pocket voice messages.');return;}
+      return prepare(planSource.messageId,true,undefined,true);
+    }
     config=capture();
     if(planAttribution){
       const cast=casting(config);
@@ -2988,7 +3044,7 @@ export async function setup(ctx) {
       const {blobs,warnings}=await player.playbackPromise;
       {
         if(token!==revision || ctrl.signal.aborted)throw abortError();
-        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,signature,segments,blobs,sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
+        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content:source.content,transcript:source.transcript,pocketSignature:source.pocketSignature,signature,segments,blobs,sfxPlacement:SFX_PLACEMENT_VERSION,retention:snapshot.retention});storageError='';}
         catch(error){storageError=error.message;}
       }
       if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:snapshot.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
@@ -3060,7 +3116,7 @@ export async function setup(ctx) {
         if(!valid())return;
         const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
         const recordedText=(recording.segments || []).flatMap(segment=>segment.turns || [segment]).filter(segment=>!segment.kind).map(segment=>segment.text).join(' ');
-        if(!outdatedSfxRecording(recording) && canonical(recordedText)===canonical(recording.transcript || transcriptFromMessage(content,config?.ignoredTags)) && Array.from(recording.blobs || []).every(Boolean) && recording.blobs?.length===recording.segments?.length){await replayRecording(messageId);return;}
+        if(!outdatedSfxRecording(recording) && canonical(recordedText)===canonical(recording.transcript || messageReading(content,messageId).transcript) && Array.from(recording.blobs || []).every(Boolean) && recording.blobs?.length===recording.segments?.length){await replayRecording(messageId);return;}
       }
       if(valid())await prepare(messageId,true);
     } finally {if(messageOperation===operation)messageOperation=null;}

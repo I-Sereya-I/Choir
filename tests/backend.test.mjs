@@ -212,7 +212,7 @@ async function harness(generate, cors, provider, deadline, stream, decisions,con
   let handler;const sent=[];let wake;
   const connection={id:'llm-a',is_default:true,model:'gemini-flash-text',provider,...connectionOverrides};
   vm.runInNewContext(bundle,{spindle:{onFrontendMessage:h=>handler=h,sendToFrontend:(message,user,options)=>{sent.push({message,user,options});if(message.result || message.error)wake?.();},generate:{raw:generate,rawStream:stream},connections:{get:async()=>connection,list:async()=>[connection]},cors,decisions},
-    console,Map,Set,AbortController,TextEncoder,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView,fetch:globalThis.fetch});
+    console,Map,Set,AbortController,TextEncoder,setTimeout:deadline?(fn,ms)=>{deadline(fn,ms);return 0;}:setTimeout,clearTimeout,URL,crypto:globalThis.crypto,atob,Uint8Array,DataView});
   return {sent,send:(action,input,id='request')=>handler({namespace:'choir',action,input,id},'user-a','session-a'),
     result:()=>sent.some(item=>item.message.result || item.message.error)?Promise.resolve(sent.findLast(item=>item.message.result || item.message.error)):new Promise(resolve=>{wake=()=>resolve(sent.at(-1));})};
 }
@@ -452,18 +452,46 @@ test('searchVoices handles empty query or network failure', async () => {
 
 import { classifyWithJev, planWithJev } from '../src/backend.js';
 
+test('Jev and sound catalogs report a missing Spindle bridge in the sandbox without native fetch', async () => {
+  for (const [action, input] of [
+    ['planJev', { transcript: '"Hello." said Mira.', config: castConfig, apiKey: 'test-key' }],
+    ['freesound', { apiKey: 'test-key', query: 'door' }],
+    ['music', { query: 'calm' }]
+  ]) {
+    const h = await harness();
+    h.send(action, input);
+    assert.match((await h.result()).message.error, /Spindle network bridge is unavailable/);
+  }
+});
+
+test('Jev bridge requests are cloneable and cancelled replies never reach the frontend', async () => {
+  let release;
+  const h = await harness(null, async (url, options) => {
+    assert.equal(url, 'https://api.typesafe.ai/v1/systemone');
+    assert.equal(options.method, 'POST');
+    assert.ok(!('signal' in options));
+    structuredClone(options);
+    return new Promise(resolve => release = resolve);
+  });
+  h.send('planJev', { transcript: '"Hello." said Mira.', config: castConfig, apiKey: 'test-key' });
+  assert.equal(typeof release, 'function');
+  h.send('cancel', {});
+  release({ status: 200, body: JSON.stringify({ answers: { q0: { choice: 'Mira' } } }) });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(h.sent.filter(item => item.message.result || item.message.error).length, 0);
+});
+
 test('classifyWithJev asks the TypeSafe Decision API one choice question per item and returns candidate strings', async () => {
-  const originalFetch = globalThis.fetch;
+  const originalSpindle = globalThis.spindle;
   let request;
   try {
-    globalThis.fetch = async (url, options) => {
+    globalThis.spindle = { cors: async (url, options) => {
       request = { url, options, body: JSON.parse(options.body) };
       return {
-        ok: true,
         status: 200,
-        json: async () => ({ model: 'jev-1.13.0', answers: { q0: { type: 'choice', choice: 'Alice', confidence: 0.9 }, q1: { type: 'choice', choice: 'Bob' } } })
+        body: JSON.stringify({ model: 'jev-1.13.0', answers: { q0: { type: 'choice', choice: 'Alice', confidence: 0.9 }, q1: { type: 'choice', choice: 'Bob' } } })
       };
-    };
+    } };
     const items = [
       { text: '"Hello"', context: 'Alice said' },
       { text: '"Hi there"', context: 'Bob replied' }
@@ -488,20 +516,21 @@ test('classifyWithJev asks the TypeSafe Decision API one choice question per ite
       }
     });
   } finally {
-    globalThis.fetch = originalFetch;
+    if (originalSpindle === undefined) delete globalThis.spindle;
+    else globalThis.spindle = originalSpindle;
   }
 });
 
 test('classifyWithJev resolves a saved /classify endpoint to its base and rejects unknown answers', async () => {
-  const originalFetch = globalThis.fetch;
+  const originalSpindle = globalThis.spindle;
   const urls = [];
   let answer = 'Guard';
   try {
-    globalThis.fetch = async (url, options) => {
+    globalThis.spindle = { cors: async (url, options) => {
       urls.push(url);
       assert.equal(options.headers.Authorization, 'Bearer existing-token');
-      return { ok: true, status: 200, json: async () => ({ answers: { q0: { choice: answer } } }) };
-    };
+      return { status: 200, body: { answers: { q0: { choice: answer } } } };
+    } };
     for (const endpoint of ['https://custom.api.endpoint/v1/classify', 'https://custom.api.endpoint/v1']) {
       assert.deepEqual(await classifyWithJev({ items: [{ text: '"Halt!"' }], candidates: ['Guard'], apiKey: 'Bearer existing-token', endpoint }), ['Guard']);
     }
@@ -512,7 +541,8 @@ test('classifyWithJev resolves a saved /classify endpoint to its base and reject
       /incomplete or unknown classification choices/
     );
   } finally {
-    globalThis.fetch = originalFetch;
+    if (originalSpindle === undefined) delete globalThis.spindle;
+    else globalThis.spindle = originalSpindle;
   }
 });
 
@@ -528,36 +558,35 @@ test('classifyWithJev validates required apiKey, choices, and handles network fa
   const emptyRes = await classifyWithJev({ items: [], candidates: ['Alice'], apiKey: 'key' });
   assert.deepEqual(emptyRes, []);
 
-  const originalFetch = globalThis.fetch;
+  const originalSpindle = globalThis.spindle;
   try {
-    globalThis.fetch = async () => ({
-      ok: false,
+    globalThis.spindle = { cors: async () => ({
       status: 401,
-      json: async () => ({ error: { message: 'Invalid API key' } })
-    });
+      body: JSON.stringify({ error: { message: 'Invalid API key' } })
+    }) };
     await assert.rejects(
       () => classifyWithJev({ items: [{ text: '"test"' }], candidates: ['Alice'], apiKey: 'bad-key' }),
       /Jev classification failed: Jev classification HTTP 401: Invalid API key/
     );
   } finally {
-    globalThis.fetch = originalFetch;
+    if (originalSpindle === undefined) delete globalThis.spindle;
+    else globalThis.spindle = originalSpindle;
   }
 });
 
 test('planWithJev classifies dialogue speakers and emotion tags into valid speech plan segments', async () => {
-  const originalFetch = globalThis.fetch;
+  const originalSpindle = globalThis.spindle;
   const calls = [];
   try {
-    globalThis.fetch = async (url, options) => {
+    globalThis.spindle = { cors: async (url, options) => {
       const body = JSON.parse(options.body);
       calls.push({ url, body });
       const [first, second] = calls.length === 1 ? ['Alice', 'Bob'] : ['cheerful', 'whispering'];
       return {
-        ok: true,
         status: 200,
-        json: async () => ({ answers: { q0: { choice: first }, q1: { choice: second } } })
+        body: JSON.stringify({ answers: { q0: { choice: first }, q1: { choice: second } } })
       };
-    };
+    } };
 
     const jevConfig = {
       voices: [{ id: 'Charon' }, { id: 'Kore' }],
@@ -603,30 +632,32 @@ test('planWithJev classifies dialogue speakers and emotion tags into valid speec
     assert.equal(narrSeg.speaker, 'Narrator');
     assert.equal(narrSeg.voice, 'Charon');
   } finally {
-    globalThis.fetch = originalFetch;
+    if (originalSpindle === undefined) delete globalThis.spindle;
+    else globalThis.spindle = originalSpindle;
   }
 });
 
 test('planWithJev handles pure narration without making classification calls', async () => {
-  const originalFetch = globalThis.fetch;
-  let fetchCalled = false;
+  const originalSpindle = globalThis.spindle;
+  let networkCalled = false;
   try {
-    globalThis.fetch = async () => {
-      fetchCalled = true;
+    globalThis.spindle = { cors: async () => {
+      networkCalled = true;
       throw new Error('Should not be called');
-    };
+    } };
     const transcript = 'The sun set over the distant mountains. All was calm and peaceful.';
     const plan = await planWithJev({
       transcript,
       config,
       apiKey: 'jev-key'
     });
-    assert.equal(fetchCalled, false);
+    assert.equal(networkCalled, false);
     assert.equal(plan.segments.length, 1);
     assert.equal(plan.segments[0].speaker, 'Narrator');
     assert.equal(plan.segments[0].text, transcript);
   } finally {
-    globalThis.fetch = originalFetch;
+    if (originalSpindle === undefined) delete globalThis.spindle;
+    else globalThis.spindle = originalSpindle;
   }
 });
 

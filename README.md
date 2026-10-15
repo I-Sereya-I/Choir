@@ -4,9 +4,9 @@
 
 # Choir
 
-[![Version](https://img.shields.io/badge/version-1.1.6--staging.24-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/abyssal-const)
+[![Version](https://img.shields.io/badge/version-1.1.6--abyssal.1-blue.svg)](https://github.com/patatasbravasch-arch/Choir/tree/abyssal-const)
 [![Platform](https://img.shields.io/badge/platform-Lumiverse%20Spindle-purple.svg)](https://docs.lumiverse.chat/)
-[![Tests](https://img.shields.io/badge/tests-367%20tests-blue.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-388%20tests-blue.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An installable Lumiverse Spindle extension for multi-voice narration, dialogue attribution, sound effects, ambience and background music.
@@ -27,6 +27,16 @@ With grouping enabled, message controls show **Audio clips** instead of planner 
 Heuristic attribution accepts hyphenated character names and aliases, including decorated card titles such as `Gabrielle - Debug`.
 
 The floating mixer’s panel, launcher, text, tabs, sliders, volume fields and button states update immediately when you edit the theme or switch between light and dark mode. Enabled switches use the theme's success color, Silent uses its warning color, and No voice uses its primary color.
+
+## Pocket voice messages on Abyssal
+
+Available in **1.1.6-abyssal.1** on the personal `abyssal-const` branch.
+
+Choir's full-message **Play** reads Pocket voice messages at their existing inline anchors, in story order, with the sender's assigned **Choir** voice and connection. No additional tag is needed. The voice transcript is read exactly as stored; it is already attributed and is not sent to the speaker planner. Ordinary phone texts, photo cards and interface labels stay outside narration. Mixed group bursts include only their voice rows.
+
+This integration reads Pocket's mounted card data, including combined phone sequences and older cards with a transcript control. Keep the reply in view while Pocket loads. If a card is unavailable, Choir asks you to load it and retry instead of silently omitting a possible voice note. Assign the sender a Choir voice first; it never substitutes the narrator for an unassigned sender. Pocket's separate Play button continues to use its own configured voice source.
+
+Saved speech plans and recordings include a fingerprint of these voice transcripts and senders. An older plan that skipped a note is rebuilt on the next Play; unchanged audio remains cached. Speaker **No voice**, Silent, stop, and the normal ignored-tag filters still apply. This addition is specific to the personal `abyssal-const` branch.
 
 ## Overview
 

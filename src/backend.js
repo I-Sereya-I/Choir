@@ -24,26 +24,7 @@ async function jevPost(url, headers, payload, signal) {
     }
     return data;
   }
-  if (typeof fetch === 'function') {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-      signal
-    });
-    if (!res.ok) {
-      let msg = '';
-      try {
-        const errObj = await res.json();
-        msg = errObj?.error?.message || errObj?.message || '';
-      } catch {
-        msg = await res.text().catch(() => '');
-      }
-      throw new Error(`Jev classification HTTP ${res.status}${msg ? `: ${msg}` : ''}`);
-    }
-    return await res.json();
-  }
-  throw new Error('No HTTP transport available (spindle.cors or fetch).');
+  throw new Error('Spindle network bridge is unavailable. Restart Choir in Lumiverse.');
 }
 
 // TypeSafe's Decision API, the contract behind Lumiverse Decision connections, called with a Jev key.
@@ -355,12 +336,7 @@ async function getJson(url, headers, signal, service) {
     if (resp.status < 200 || resp.status >= 300) throw new Error(`${service} HTTP ${resp.status}`);
     return typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body;
   }
-  if (typeof fetch === 'function') {
-    const resp = await fetch(url, { headers, signal });
-    if (!resp.ok) throw new Error(`${service} HTTP ${resp.status}`);
-    return await resp.json();
-  }
-  throw new Error('No HTTP transport available.');
+  throw new Error('Spindle network bridge is unavailable. Restart Choir in Lumiverse.');
 }
 
 const MUSIC_BASE = 'https://incompetech.com/music/royalty-free/';
@@ -463,7 +439,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.6-staging.24',ready:true}});return;
+      send({result:{version:'1.1.6-abyssal.1',ready:true}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;
