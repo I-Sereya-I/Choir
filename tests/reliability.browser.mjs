@@ -416,6 +416,24 @@ test('legacy defaults migrate cast choices and cannot replace newer global prefe
  }finally{await h.close();}
 });
 
+test('planning an older reply uses preceding messages and excludes later turns from its context',async()=>{
+ const h=await harness();try{
+  h.state.messages=[
+   {id:'earlier',name:'You',is_user:true,content:'Earlier speaker evidence.'},
+   h.message,
+   {id:'future',name:'Mira',is_user:false,content:'Later speaker evidence must not leak.'}
+  ];
+  await h.reload();
+  const row=[...h.$('messages').children].find(row=>row.textContent.includes(h.message.content.slice(0,20)));
+  assert.ok(row);row.querySelector('button').click();
+  await until(()=>h.requests.some(request=>request.action==='plan'));
+  const input=h.requests.find(request=>request.action==='plan').input;
+  assert.ok(input.context.includes('Earlier speaker evidence.'));
+  assert.ok(!input.context.includes('Later speaker evidence'));
+  assert.ok(!input.context.includes(h.message.content));
+ }finally{await h.close();}
+});
+
 test('automatic HTML panel and phone filtering reaches LLM and Jev input, context, TTS and Cue without ignoring story divs',async()=>{
  for(const widget of [speechPanel,phoneWidget]){
  const h=await harness();try{

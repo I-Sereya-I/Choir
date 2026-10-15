@@ -2209,7 +2209,10 @@ export async function setup(ctx) {
     let transcript=transcriptFromMessage(content,config?.ignoredTags);
     if(!transcript)throw new Error('This message contains no speakable text.');
     let snapshot=structuredClone(casting(config));
-    let context=ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
+    // Replanning an older reply must not see dialogue from its future. If the
+    // reply is outside the recent window, no chronological context is known.
+    const recent=ctx.messages.getRecent(12),sourceIndex=recent.findIndex(v=>v.id===messageId);
+    let context=recent.slice(0,Math.max(0,sourceIndex)).filter(v=>!v.extra?.is_system)
       .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content,config?.ignoredTags).slice(0,1000)}`).join('\n').slice(-4000);
     const ctrl=new AbortController();controller=ctrl;
     planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;

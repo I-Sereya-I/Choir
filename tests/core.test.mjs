@@ -642,7 +642,7 @@ test('LLM sound cues and ambience beds are validated against the segments, keep 
   // Short replies allow two effects and three bed entries; invalid segments, empty searches and non-boolean stops never count.
   assert.deepEqual(cues,[
     {segment:0,query:'door slam',trigger:'La puerta se cerró'},
-    {segment:1,query:'footsteps',trigger:''}
+    {segment:0,query:'rain',trigger:'Afuera llovía'}
   ]);
   assert.deepEqual(ambience,[
     {segment:0,query:'rain',trigger:'Afuera llovía'},
@@ -654,11 +654,23 @@ test('LLM sound cues and ambience beds are validated against the segments, keep 
   assert.throws(()=>parseSoundCues('{"effects":[]}',segments),/no cues list/);
   const config={voices:[{id:'n'},{id:'m'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Mira',voice:'m',style:''}],npcs:[]};
   const transcript=segments.map(segment=>segment.text).join(' ');
-  const plan=validatePlan({segments:applySoundCues(segments.map(segment=>({...segment,voice:segment.speaker==='Mira'?'m':'n'})),{cues:[...cues,{segment:0,trigger:'Afuera llovía',query:'rain'}],ambience})},transcript,config);
+  const plan=validatePlan({segments:applySoundCues(segments.map(segment=>({...segment,voice:segment.speaker==='Mira'?'m':'n'})),{cues,ambience})},transcript,config);
   assert.deepEqual(plan.segments[0].sfx,[{query:'door slam',trigger:'La puerta se cerró'},{query:'rain',trigger:'Afuera llovía'}]);
   assert.deepEqual(plan.segments.map(segment=>segment.ambience),[[{query:'rain',trigger:'Afuera llovía'}],[{stop:true,trigger:'¿Quién'},{query:'wind',trigger:'anda'}]]);
   const restored=restoreAttribution(structuredClone(attributionPlan(plan,config)),transcript,config);
   assert.deepEqual(restored.segments.map(({sfx,ambience})=>({sfx,ambience})),plan.segments.map(({sfx,ambience})=>({sfx,ambience})));
+});
+
+test('fresh sound choices discard missing anchors and quoted effects before applying the cue limit',()=>{
+ const segments=[{speaker:'Narrator',text:'She said, "The door slammed." Outside, thunder cracked.'}];
+ const result=parseSoundCues(JSON.stringify({cues:[
+  {segment:0,trigger:'Not in the scene',query:'door slam'},
+  {segment:0,query:'door slam'},
+  {segment:0,trigger:'The door slammed',query:'door slam'},
+  {segment:0,trigger:'Outside, thunder',query:'thunder crack'}
+ ],music:[{segment:0,trigger:'She said',feels:['Dark']}]}),segments);
+ assert.deepEqual(result.cues,[{segment:0,trigger:'Outside, thunder',query:'thunder crack'}]);
+ assert.equal(result.music.length,1,'music can start beneath a spoken line');
 });
 
 test('music entries are asked for only when enabled, keep known feels and genres, and survive saved attribution',()=>{
@@ -680,7 +692,7 @@ test('music entries are asked for only when enabled, keep known feels and genres
   assert.deepEqual(music,[
     {segment:0,feels:['Eerie','Dark','Mysterious'],genres:['Soundtrack','Horror'],keywords:['harp','forest','x','y','z'],trigger:'The forest'},
     {segment:0,stop:true,trigger:'Then the sun'},
-    {segment:0,feels:[],genres:[],keywords:['drums'],trigger:''}
+    {segment:0,feels:['Uplifting'],genres:[],keywords:[],trigger:'Then the sun'}
   ]);
   const config={voices:[{id:'n'}],fixed:[{speaker:'Narrator',voice:'n',style:''}],npcs:[]};
   const plan=validatePlan({segments:applySoundCues(segments.map(segment=>({...segment,voice:'n'})),{music})},segments[0].text,config);
