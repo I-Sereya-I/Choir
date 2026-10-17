@@ -891,6 +891,80 @@ Routes in communityRoutes cast new voices from the Fish Audio community library.
 }
 
 
+// Non-story check: the frozen skip-bench winner prompt. Measured as is; keep it verbatim.
+const SKIP_CHECK_SYSTEM = `You clean AI roleplay replies for an audiobook that reads only the STORY.
+Label every numbered line of the reply: K = story, S = not story (skip).
+S: model reasoning/planning, checklists, word counts, writing rules, recaps/summaries, setting checks, final reviews,
+trackers/status panels/HUD (date/time/location stamps, stats, attire lists, relationship meters, threads),
+character profile/sheet entries, choice menus offered to the user, OOC/author notes, commentary addressed to the user,
+credits, settings, banners, image placeholders/markup codes, game logs, counters, hidden spoiler sections,
+and the headers/labels of such blocks. A meta block stays S even if it quotes dialogue.
+K: narration, dialogue, thoughts, sound effects, and in-world text that characters see, write, send or read in the scene
+(letters, texts, chat/stream comments, forms, signs, songs). Prose containing a colon is still K.
+When unsure, use K: cutting story is much worse than reading a meta line.
+
+Example 1 lines:
+0: Mira pushed the door open. Rain dripped from her coat.
+1: "You're late," Tom said.
+2: [Status] Day 3 | 21:40 | Harbor Inn
+3: Mira — Mood: tired | Trust: 40%
+4: What will you do?
+5: - Ask about the letter
+Example 1 answer: 
+0 K
+1 K
+2 S
+3 S
+4 S
+5 S
+Example 2 lines:
+0: Okay, I need to show her fear first, then the reveal. Keep it under 400 words.
+1: The note on the table read: MEET ME AT THE PIER.
+2: Kai: are u coming or not
+3: She typed back with shaking fingers.
+Example 2 answer: 
+0 S
+1 K
+2 K
+3 K
+
+Answer with one row per line, nothing else: the line number, a space, then K or S. Example:
+0 K
+1 S`;
+
+// The lines the check labels: the transcript's non-empty lines, trimmed.
+function transcriptLines(transcript) {
+  return String(transcript || '').split('\n').map(line=>line.trim()).filter(Boolean);
+}
+
+// width shortens every line; a retry with line heads gets past some providers' content blocks.
+function skipCheckPrompt(lines, width=160) {
+  const numbered=lines.map((line,index)=>`${index}: ${Array.from(line).slice(0,width).join('')}`).join('\n');
+  return [{role:'system',content:SKIP_CHECK_SYSTEM},
+    {role:'user',content:`Reply to label (${lines.length} lines):\n${numbered}\n\nReturn exactly ${lines.length} labels.`}];
+}
+
+// Rows are `index K|S`; missing rows stay story. Null when the answer has no rows at all.
+function parseSkipRows(text, count) {
+  const labels=Array(count).fill('K');let rows=0;
+  for(const [,index,label] of String(text || '').matchAll(/^\D{0,3}(\d+)\s*[:=\-]?\s*\W{0,2}([KSks])\b/gm)) {
+    if(Number(index)<count){labels[Number(index)]=label.toUpperCase();rows++;}
+  }
+  return rows?labels.join(''):null;
+}
+
+// Whole-line template or inlay markup is never story, whatever the labels say.
+function skippedLines(lines, labels) {
+  return lines.flatMap((line,index)=>/^\s*(INLAY\[)?\{\{[^{}]*\}\}\]?\s*$/.test(line) || labels?.[index]==='S'?[index]:[]);
+}
+
+function withoutLines(transcript, skip) {
+  if(!skip?.length)return transcript;
+  const skipped=new Set(skip);let index=0;
+  return String(transcript).split('\n').filter(line=>!line.trim() || !skipped.has(index++))
+    .join('\n').replace(/\n\s*\n/g,'\n\n').trim();
+}
+
 function resolvePlannerMode(config = {}) {
   if (['llm', 'jev', 'heuristic'].includes(config.plannerMode)) return config.plannerMode;
   if (config.useJev) return 'jev';
@@ -1715,7 +1789,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.6-staging.27',ready:true}});return;
+      send({result:{version:'1.1.6-staging.28',ready:true}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;
@@ -1910,6 +1984,24 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         }
       }
       throw new Error(`Planner failed twice: ${failure.message}`);
+    }
+    if (message.action === 'skipCheck') {
+      const lines=Array.isArray(input.lines)?input.lines.map(String):[];
+      const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
+      if(controller.signal.aborted)return;
+      if(!connection?.model)throw new Error('Select a Planner LLM connection to check for non-story blocks.');
+      let labels=null;
+      // Some providers refuse or return nothing for adult replies; one retry with 60-character line heads, then keep every line.
+      for(const width of [160,60]){
+        progress({stage:'Checking for non-story blocks',provider:connection.provider,model:connection.model});
+        let content='';
+        try{content=(await spindle.generate.raw({type:'raw',userId,model:connection.model,connection_id:connection.id,messages:skipCheckPrompt(lines,width),
+          ...textGenerationOptions(connection,{max_tokens:4096,temperature:0}),signal:controller.signal})).content;}
+        catch(error){if(controller.signal.aborted || width===60)throw error;}
+        if(controller.signal.aborted)return;
+        if((labels=parseSkipRows(content,lines.length)))break;
+      }
+      send({result:{skip:skippedLines(lines,labels)}});return;
     }
     if (message.action === 'sfx') {
       const segments=Array.isArray(input.segments)?input.segments.filter(segment=>typeof segment?.text==='string' && segment.text.trim()):[];

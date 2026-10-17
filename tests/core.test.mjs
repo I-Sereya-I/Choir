@@ -5,7 +5,7 @@ import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 import {sfxCueOffset} from '../src/core.js';
 import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,reconcileCardCast} from '../src/core.js';
-import {validatePlan, validateCastConfig, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
+import {validatePlan, validateCastConfig, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, transcriptLines, skipCheckPrompt, parseSkipRows, skippedLines, withoutLines, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
 
 test('ignored tags skip nested, attributed, mixed-case and unfinished blocks without dropping ordinary story markup',()=>{
   assert.deepEqual(ignoredTagNames('Summary, <private-note>\nsummary; invalid.*'),['summary','private-note']);
@@ -739,4 +739,17 @@ test('bracketed status headers are not read aloud while ordinary bracketed words
 [Mira | Hungry] She opened the box.
 She read the sign [closed] and left. [See the guide](https://x.test) for more.`;
   assert.equal(transcriptFromMessage(message).replace(/\s+/g,' ').trim(),'"오늘 반찬 뭐야?" 제이가 물었다. She opened the box. She read the sign [closed] and left. See the guide for more.');
+});
+
+test('non-story check rows parse by index, keep missing rows as story and drop whole skipped lines between paragraphs',()=>{
+  assert.equal(parseSkipRows('Sure:\n0 K\n2: S\n- 3 s\n9 S',4),'KKSS');
+  assert.equal(parseSkipRows('I cannot help with that.',3),null);
+  const transcript='Mira ran.\n"Stop!" she said.\n\nActive Pressures:\n\nOpen Loop  Unanswered: the battery.\n\n{{img::door}}\nINLAY[{{a1}}]\nThe door held.';
+  const lines=transcriptLines(transcript);assert.equal(lines.length,7);
+  assert.deepEqual(skippedLines(lines,'KKSSKKK'),[2,3,4,5]);assert.deepEqual(skippedLines(lines,null),[4,5]);
+  assert.equal(withoutLines(transcript,[2,3,4,5]),'Mira ran.\n"Stop!" she said.\n\nThe door held.');
+  assert.equal(withoutLines(transcript,[1]),'Mira ran.\n\nActive Pressures:\n\nOpen Loop  Unanswered: the battery.\n\n{{img::door}}\nINLAY[{{a1}}]\nThe door held.');
+  const [system,user]=skipCheckPrompt(['x'.repeat(200),'Kai: hi'],60);
+  assert.match(system.content,/^You clean AI roleplay replies/);assert.match(system.content,/Example 2 answer: \n0 S\n1 K/);
+  assert.equal(user.content,`Reply to label (2 lines):\n0: ${'x'.repeat(60)}\n1: Kai: hi\n\nReturn exactly 2 labels.`);
 });

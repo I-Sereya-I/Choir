@@ -73,6 +73,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
         let result;
         if(message.action==='ping')result={version:'1.0.18',ready:true};
         else if(message.action==='testPlanner')result={model:'gpt-text-test',provider:'openai',response:'READY'};
+        else if(message.action==='skipCheck')result={skip:[]};
         else if(message.action==='plan' && (message.input.transcript.trim().startsWith('Long narration') || message.input.transcript.trim().startsWith('"Welcome."')))result=validatePlan({segments:speechSourceUnits(message.input.transcript).map(unit=>({
           speaker:unit.kind==='dialogue'?'Traveler':'Narrator',text:unit.text,
           voice:message.input.config.voices.filter(voice=>voice.route===message.input.config.defaultRoute).at(-1).id
@@ -288,6 +289,7 @@ test('pipelined playback begins playing section 1 while subsequent sections are 
       requests.push(message);
       setTimeout(() => {
         if (message.action === 'ping') onBackend?.({namespace: 'choir', id: message.id, result: {version: '1.0.18', ready: true}});
+        else if (message.action === 'skipCheck') onBackend?.({namespace: 'choir', id: message.id, result: {skip: []}});
         else if (message.action === 'plan') {
           const units = speechSourceUnits(message.input.transcript);
           onBackend?.({namespace: 'choir', id: message.id, result: {segments: units.map(u => ({
@@ -860,6 +862,7 @@ test('muteNarrator skips narrator synthesis and badges preview cards', async () 
       requests.push(msg);
       setTimeout(() => {
         if (msg.action === 'ping') onBackend?.({ namespace: 'choir', id: msg.id, result: { ready: true } });
+        else if (msg.action === 'skipCheck') onBackend?.({ namespace: 'choir', id: msg.id, result: { skip: [] } });
         else if (msg.action === 'plan') {
           const units = speechSourceUnits(msg.input.transcript);
           onBackend?.({

@@ -891,6 +891,80 @@ Routes in communityRoutes cast new voices from the Fish Audio community library.
 }
 
 
+// Non-story check: the frozen skip-bench winner prompt. Measured as is; keep it verbatim.
+const SKIP_CHECK_SYSTEM = `You clean AI roleplay replies for an audiobook that reads only the STORY.
+Label every numbered line of the reply: K = story, S = not story (skip).
+S: model reasoning/planning, checklists, word counts, writing rules, recaps/summaries, setting checks, final reviews,
+trackers/status panels/HUD (date/time/location stamps, stats, attire lists, relationship meters, threads),
+character profile/sheet entries, choice menus offered to the user, OOC/author notes, commentary addressed to the user,
+credits, settings, banners, image placeholders/markup codes, game logs, counters, hidden spoiler sections,
+and the headers/labels of such blocks. A meta block stays S even if it quotes dialogue.
+K: narration, dialogue, thoughts, sound effects, and in-world text that characters see, write, send or read in the scene
+(letters, texts, chat/stream comments, forms, signs, songs). Prose containing a colon is still K.
+When unsure, use K: cutting story is much worse than reading a meta line.
+
+Example 1 lines:
+0: Mira pushed the door open. Rain dripped from her coat.
+1: "You're late," Tom said.
+2: [Status] Day 3 | 21:40 | Harbor Inn
+3: Mira — Mood: tired | Trust: 40%
+4: What will you do?
+5: - Ask about the letter
+Example 1 answer: 
+0 K
+1 K
+2 S
+3 S
+4 S
+5 S
+Example 2 lines:
+0: Okay, I need to show her fear first, then the reveal. Keep it under 400 words.
+1: The note on the table read: MEET ME AT THE PIER.
+2: Kai: are u coming or not
+3: She typed back with shaking fingers.
+Example 2 answer: 
+0 S
+1 K
+2 K
+3 K
+
+Answer with one row per line, nothing else: the line number, a space, then K or S. Example:
+0 K
+1 S`;
+
+// The lines the check labels: the transcript's non-empty lines, trimmed.
+function transcriptLines(transcript) {
+  return String(transcript || '').split('\n').map(line=>line.trim()).filter(Boolean);
+}
+
+// width shortens every line; a retry with line heads gets past some providers' content blocks.
+function skipCheckPrompt(lines, width=160) {
+  const numbered=lines.map((line,index)=>`${index}: ${Array.from(line).slice(0,width).join('')}`).join('\n');
+  return [{role:'system',content:SKIP_CHECK_SYSTEM},
+    {role:'user',content:`Reply to label (${lines.length} lines):\n${numbered}\n\nReturn exactly ${lines.length} labels.`}];
+}
+
+// Rows are `index K|S`; missing rows stay story. Null when the answer has no rows at all.
+function parseSkipRows(text, count) {
+  const labels=Array(count).fill('K');let rows=0;
+  for(const [,index,label] of String(text || '').matchAll(/^\D{0,3}(\d+)\s*[:=\-]?\s*\W{0,2}([KSks])\b/gm)) {
+    if(Number(index)<count){labels[Number(index)]=label.toUpperCase();rows++;}
+  }
+  return rows?labels.join(''):null;
+}
+
+// Whole-line template or inlay markup is never story, whatever the labels say.
+function skippedLines(lines, labels) {
+  return lines.flatMap((line,index)=>/^\s*(INLAY\[)?\{\{[^{}]*\}\}\]?\s*$/.test(line) || labels?.[index]==='S'?[index]:[]);
+}
+
+function withoutLines(transcript, skip) {
+  if(!skip?.length)return transcript;
+  const skipped=new Set(skip);let index=0;
+  return String(transcript).split('\n').filter(line=>!line.trim() || !skipped.has(index++))
+    .join('\n').replace(/\n\s*\n/g,'\n\n').trim();
+}
+
 function resolvePlannerMode(config = {}) {
   if (['llm', 'jev', 'heuristic'].includes(config.plannerMode)) return config.plannerMode;
   if (config.useJev) return 'jev';
@@ -1543,6 +1617,7 @@ export async function setup(ctx) {
         <label>Prefetch passages<input data-et="prefetch" type="number" min="0" max="4" value="1"></label>
         <label class="et-check"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
         <label class="et-check"><input data-et="normalizeLoudness" type="checkbox" checked> Match passage loudness</label>
+        <label class="et-check"><input data-et="skipMeta" type="checkbox" checked> Skip non-story blocks</label>
         <label hidden>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
         <label>Freesound API key (Foley)<input data-et="freesoundApiKey" type="password" placeholder="Freesound token"></label>
       </div>
@@ -1663,7 +1738,7 @@ export async function setup(ctx) {
   const voiceCatalogues=new Map();
   let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
   const defaults = () => ({planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,concurrency:1,plannerTokens:8192,
-    prefetch:1,normalizeLoudness:true,allowLlmFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
+    prefetch:1,normalizeLoudness:true,skipMeta:true,allowLlmFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
     extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
@@ -2063,7 +2138,7 @@ export async function setup(ctx) {
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
   const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
-  const preferenceFields=['planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration'];
+  const preferenceFields=['planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','skipMeta','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration'];
   const defaultVoiceFields=['voice','route','gender','style','accent','excluded'];
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   let closeDefaultEditor;
@@ -2293,7 +2368,7 @@ export async function setup(ctx) {
         try{ctx.sendToBackend({namespace:'choir',id,action:'cancel'});}catch{}
         done(new Error(action==='ping'
           ? 'Choir backend did not respond. Update and restart Choir in Extensions, then reload the page. Both backend and frontend must be running.'
-          : `${action==='plan' || action==='testPlanner'?'Planner':action==='sfx'?'Sound effect':'TTS'} request timed out waiting for the backend. ${lastProgress?`Last reported stage: ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}.`:'The backend did not acknowledge this request; restart Choir and reload the page.'}`));
+          : `${action==='plan' || action==='testPlanner' || action==='skipCheck'?'Planner':action==='sfx'?'Sound effect':'TTS'} request timed out waiting for the backend. ${lastProgress?`Last reported stage: ${lastProgress.stage}. ${lastProgress.provider || ''} ${lastProgress.model || ''}.`:'The backend did not acknowledge this request; restart Choir and reload the page.'}`));
       },timeoutMs);
       const done=(error,result)=>{clearTimeout(timer);signal?.removeEventListener('abort',cancel);pending.delete(id);error?reject(error):resolve(result);};
       done.progress=progress=>{lastProgress=progress;onProgress?.(progress);};
@@ -2808,7 +2883,7 @@ export async function setup(ctx) {
       planner:$('planner').value,connection:$('connection').value,decisionConnection:$('decisionConnection')?$('decisionConnection').value:(config.decisionConnection||''),
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
       plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchSpeech:$('batchSpeech').checked,concurrency:Number($('concurrency').value),
-      prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
+      prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,skipMeta:$('skipMeta').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
       extraVoices:$('extraVoices').value,ignoredTags:$('ignoredTags').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,loopMusic:$('loopMusic').checked,readAlong:$('readAlong').value,followNarration:$('followNarration').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')},activeCharacterCard || {});
   }
   function casting(c=config) {
@@ -2939,7 +3014,7 @@ export async function setup(ctx) {
     if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);
     if($('jevKey'))$('jevKey').value=config.jevApiKey||'';
     if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';
-    for(const name of ['allowLlmFallback','normalizeLoudness','sectionButtons'])$(name).checked=Boolean(config[name]);
+    for(const name of ['allowLlmFallback','normalizeLoudness','skipMeta','sectionButtons'])$(name).checked=Boolean(config[name]);
     $('prefetch').value=config.prefetch;
     $('batchSpeech').checked=Boolean(config.batchSpeech);
     updatePlannerVisibility();
@@ -2949,7 +3024,7 @@ export async function setup(ctx) {
     busy=value;
     if(!value){scheduleAutoReplies();clearReadAlong();}
     for (const name of ['save','latest','load','testPlanner','add','reset','connection','connectionMode','apply'])if($(name))$(name).disabled=value;
-    for (const name of ['planner','plannerMode','decisionConnection','fishVoiceSource','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','useStyle','useFastClassifier','planJson','retention','allowLlmFallback','prefetch','normalizeLoudness','sectionButtons','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','testTts','importCast'])if($(name))$(name).disabled=value;
+    for (const name of ['planner','plannerMode','decisionConnection','fishVoiceSource','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','useStyle','useFastClassifier','planJson','retention','allowLlmFallback','prefetch','normalizeLoudness','skipMeta','sectionButtons','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','testTts','importCast'])if($(name))$(name).disabled=value;
     updateTransport();
     $('batchSpeech').disabled=value;if($('concurrency'))$('concurrency').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button'),...$('npcPolicyRoot').querySelectorAll('input,select')])node.disabled=value;
@@ -3300,8 +3375,30 @@ export async function setup(ctx) {
   function aliasedLeadRecording(recording){
     return (recording.segments || []).flatMap(speechMembers).some(segment=>(config?.fixed || []).some(actor=>normalizeName(actor.speaker)!==normalizeName(segment.speaker) && (actor.aliases || []).some(alias=>normalizeName(alias)===normalizeName(segment.speaker))));
   }
+  // The non-story check runs once per cleaned transcript. Its saved line numbers give every later
+  // read of the reply the same text; without a signal only the saved result is used.
+  const skipChecks=new Map();
+  async function storyTranscript(transcript,signal){
+    if(!transcript || config?.skipMeta===false || resolvePlannerMode(config)==='heuristic')return transcript;
+    const key=`skip:${await sha256Hex(transcript)}`;
+    let skip=skipChecks.get(key) ?? await ctx.settings.get(key).catch(()=>null);
+    if(!Array.isArray(skip) && signal){
+      status('Checking for non-story blocks…');
+      try{
+        skip=(await rpc('skipCheck',{lines:transcriptLines(transcript),connectionId:config.planner},signal,90000)).skip;
+        await ctx.settings.set(key,skip).catch(()=>{});
+      }catch(error){
+        if(signal.aborted)throw error;
+        status(`Non-story check failed (${error.message}); reading the whole reply.`);
+        return transcript;
+      }
+    }
+    if(!Array.isArray(skip))return transcript;
+    skipChecks.set(key,skip);
+    return withoutLines(transcript,skip);
+  }
   async function recordingMatchesTranscript(recording,content) {
-    let transcript=transcriptFromMessage(content,config?.ignoredTags);
+    let transcript=await storyTranscript(transcriptFromMessage(content,config?.ignoredTags));
     if(/\{\{\s*user\s*\}\}/i.test(transcript))transcript=replacePersonaMacro(transcript,await personaName());
     const saved=recording.transcript ?? recording.segments?.map(segment=>segment.text).join(' ');
     const canonical=text=>String(text || '').replace(/\s+/g,' ').trim();
@@ -3315,9 +3412,7 @@ export async function setup(ctx) {
     if(content==null)throw new Error('Message is no longer available.');
     let transcript=transcriptFromMessage(content,config?.ignoredTags);
     if(!transcript)throw new Error('This message contains no speakable text.');
-    let snapshot=structuredClone(casting(config));
-    let context=ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
-      .map(v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${transcriptFromMessage(v.content,config?.ignoredTags).slice(0,1000)}`).join('\n').slice(-4000);
+    let snapshot=structuredClone(casting(config)),context='';
     const ctrl=new AbortController();controller=ctrl;
     planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;
     setBusy(true);status('Checking Choir backend…');
@@ -3325,11 +3420,6 @@ export async function setup(ctx) {
     const soundCueWarnings=new Set();
     try {
       const cardAnalyzed=Boolean(await discoverCardCast(ctrl.signal));snapshot=structuredClone(casting(config));
-      if(/\{\{\s*user\s*\}\}/i.test(transcript+context)) {
-        const name=await personaName();
-        if(ctrl.signal.aborted || token!==revision)return;
-        transcript=replacePersonaMacro(transcript,name);context=replacePersonaMacro(context,name);
-      }
       if(!forceReplan && await restoreSavedPlan(messageId)){
         status('Saved attribution reused.');
         if(autoPlay){controller=null;setBusy(false);await play();}
@@ -3338,6 +3428,19 @@ export async function setup(ctx) {
       if(ctrl.signal.aborted || token!==revision || targetChat!==chatId || disposed)return;
       const stripBase=segments=>segments.map(segment=>withoutBase(segment,snapshot));
       const plannerMode=resolvePlannerMode(config);
+      if(plannerMode!=='heuristic'){
+        await rpc('ping',{},ctrl.signal,8000);if(token!==revision || ctrl.signal.aborted)return;
+        transcript=await storyTranscript(transcript,ctrl.signal);
+        context=(await Promise.all(ctx.messages.getRecent(12).filter(v=>v.id!==messageId && !v.extra?.is_system)
+          .map(async v=>`${v.name || (v.is_user ? 'Persona':'Character')}: ${(await storyTranscript(transcriptFromMessage(v.content,config?.ignoredTags))).slice(0,1000)}`))).join('\n').slice(-4000);
+        if(token!==revision || ctrl.signal.aborted)return;
+        if(!transcript)throw new Error('This message contains only non-story blocks.');
+      }
+      if(/\{\{\s*user\s*\}\}/i.test(transcript+context)) {
+        const name=await personaName();
+        if(ctrl.signal.aborted || token!==revision)return;
+        transcript=replacePersonaMacro(transcript,name);context=replacePersonaMacro(context,name);
+      }
       let fastPlan = null;
       if (plannerMode==='heuristic') {
         const failure={};
@@ -3350,7 +3453,6 @@ export async function setup(ctx) {
         }
         if(!fastPlan)throw new Error(failure.message || 'Heuristic could not identify the speaker. Add clear speaker tags or choose Jev or LLM. No LLM request was made.');
       }
-      if(!fastPlan){await rpc('ping',{},ctrl.signal,8000);if(token!==revision || ctrl.signal.aborted)return;}
       // 2. Jev System 1 classifier (~20ms)
       let jevFailure='';
       if(!fastPlan){

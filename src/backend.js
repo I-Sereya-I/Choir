@@ -1,4 +1,4 @@
-import { validateCardRoles, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, plannerPrompt, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES } from './core.js';
+import { validateCardRoles, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, plannerPrompt, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -468,7 +468,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.6-staging.27',ready:true}});return;
+      send({result:{version:'1.1.6-staging.28',ready:true}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;
@@ -663,6 +663,24 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         }
       }
       throw new Error(`Planner failed twice: ${failure.message}`);
+    }
+    if (message.action === 'skipCheck') {
+      const lines=Array.isArray(input.lines)?input.lines.map(String):[];
+      const connection=input.connectionId?await spindle.connections.get(input.connectionId,userId):(await spindle.connections.list(userId)).find(profile=>profile.is_default);
+      if(controller.signal.aborted)return;
+      if(!connection?.model)throw new Error('Select a Planner LLM connection to check for non-story blocks.');
+      let labels=null;
+      // Some providers refuse or return nothing for adult replies; one retry with 60-character line heads, then keep every line.
+      for(const width of [160,60]){
+        progress({stage:'Checking for non-story blocks',provider:connection.provider,model:connection.model});
+        let content='';
+        try{content=(await spindle.generate.raw({type:'raw',userId,model:connection.model,connection_id:connection.id,messages:skipCheckPrompt(lines,width),
+          ...textGenerationOptions(connection,{max_tokens:4096,temperature:0}),signal:controller.signal})).content;}
+        catch(error){if(controller.signal.aborted || width===60)throw error;}
+        if(controller.signal.aborted)return;
+        if((labels=parseSkipRows(content,lines.length)))break;
+      }
+      send({result:{skip:skippedLines(lines,labels)}});return;
     }
     if (message.action === 'sfx') {
       const segments=Array.isArray(input.segments)?input.segments.filter(segment=>typeof segment?.text==='string' && segment.text.trim()):[];

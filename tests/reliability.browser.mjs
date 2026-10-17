@@ -122,6 +122,10 @@ async function harness(mixerPreferences,mobile=false){
         else if(request.action==='searchVoices')result={results:state.voiceSearchResults || [{id:'community_fish_voice',name:'Community narrator',description:'A warm, steady storyteller.'}]};
         else if(request.action==='cardCast')result={roles:state.cardRoles || []};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
+        else if(request.action==='skipCheck'){
+          if(state.skipError){backend({namespace:'choir',id:request.id,error:state.skipError});return;}
+          result={skip:request.input.lines.flatMap((line,index)=>state.skipLines?.test(line)?[index]:[])};
+        }
         else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
         else if(request.action==='plan' && state.cardTitlePlan){
           result=validatePlan({segments:speechSourceUnits(request.input.transcript).map(unit=>({text:unit.text,speaker:unit.kind==='narration'?'Narrator':unit.text.includes('Hello')?'Kellin Beckett || Toxic Fans':'Mikey Ross',voice:unit.kind==='narration'?'n':'g',style:unit.kind==='dialogue'?'Warm':''}))},request.input.transcript,request.input.config);
@@ -2809,4 +2813,39 @@ test('read-along and Follow narration are inert without the CSS Custom Highlight
     await until(()=>h.store.get('settings:global')?.followNarration===true);await h.reload();
     assert.equal(h.$('followNarration').checked,true);
   }finally{await h.close();}
+});
+
+const metaReply='At dawn. "Hello."\n\nActive Pressures:\n\nOpen Loop  Unanswered: What happens when the battery requires its next 2-hour physical recharge cycle.\n\n"Wait." The gate closed.';
+const skipChecks=h=>h.requests.filter(request=>request.action==='skipCheck');
+const plannedText=h=>h.requests.filter(request=>request.action==='plan').at(-1).input.transcript;
+
+test('non-story blocks are checked once per reply and stay out of planning, audio, replay and reload',async()=>{
+ const h=await harness();try{
+  h.message.content=metaReply;h.state.skipLines=/^(Active Pressures|Open Loop)/;
+  await h.plan();
+  assert.equal(skipChecks(h).length,1);assert.equal(skipChecks(h)[0].input.lines.length,4);
+  assert.equal(plannedText(h),'At dawn. "Hello."\n\n"Wait." The gate closed.');
+  await h.play();assert.ok(h.synthesis.length && h.synthesis.every(request=>!/Pressures|Open Loop/.test(request.text)));
+  const generated=h.synthesis.length;await h.play();await h.reload();await h.play();
+  assert.equal(h.synthesis.length,generated);assert.equal(skipChecks(h).length,1);assert.equal(h.requests.filter(request=>request.action==='plan').length,1);
+ }finally{await h.close();}
+});
+
+test('a failed non-story check plays the whole reply and is not cached',async()=>{
+ const h=await harness();try{
+  h.message.content=metaReply;h.state.skipLines=/^(Active Pressures|Open Loop)/;h.state.skipError='Planner quota exhausted';
+  await h.plan();assert.equal(skipChecks(h).length,1);assert.match(plannedText(h),/Open Loop/);
+  assert.ok(![...h.store.keys()].some(key=>key.startsWith('skip:')));
+ }finally{await h.close();}
+});
+
+test('Local heuristic mode and the Skip non-story blocks toggle make no check request',async()=>{
+ const h=await harness();try{
+  h.message.content=metaReply;h.state.skipLines=/^(Active Pressures|Open Loop)/;
+  h.$('skipMeta').checked=false;h.$('skipMeta').dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
+  await h.plan();assert.equal(skipChecks(h).length,0);assert.match(plannedText(h),/Open Loop/);
+  await h.reload();assert.equal(h.$('skipMeta').checked,false);
+  h.$('skipMeta').checked=true;h.$('plannerMode').value='heuristic';h.$('plannerMode').dispatchEvent(new h.dom.window.Event('change'));
+  h.message.content='The room fell quiet.';await h.plan();assert.equal(skipChecks(h).length,0);
+ }finally{await h.close();}
 });

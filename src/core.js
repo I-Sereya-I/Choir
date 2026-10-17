@@ -890,6 +890,80 @@ Routes in communityRoutes cast new voices from the Fish Audio community library.
 }
 
 
+// Non-story check: the frozen skip-bench winner prompt. Measured as is; keep it verbatim.
+const SKIP_CHECK_SYSTEM = `You clean AI roleplay replies for an audiobook that reads only the STORY.
+Label every numbered line of the reply: K = story, S = not story (skip).
+S: model reasoning/planning, checklists, word counts, writing rules, recaps/summaries, setting checks, final reviews,
+trackers/status panels/HUD (date/time/location stamps, stats, attire lists, relationship meters, threads),
+character profile/sheet entries, choice menus offered to the user, OOC/author notes, commentary addressed to the user,
+credits, settings, banners, image placeholders/markup codes, game logs, counters, hidden spoiler sections,
+and the headers/labels of such blocks. A meta block stays S even if it quotes dialogue.
+K: narration, dialogue, thoughts, sound effects, and in-world text that characters see, write, send or read in the scene
+(letters, texts, chat/stream comments, forms, signs, songs). Prose containing a colon is still K.
+When unsure, use K: cutting story is much worse than reading a meta line.
+
+Example 1 lines:
+0: Mira pushed the door open. Rain dripped from her coat.
+1: "You're late," Tom said.
+2: [Status] Day 3 | 21:40 | Harbor Inn
+3: Mira — Mood: tired | Trust: 40%
+4: What will you do?
+5: - Ask about the letter
+Example 1 answer: 
+0 K
+1 K
+2 S
+3 S
+4 S
+5 S
+Example 2 lines:
+0: Okay, I need to show her fear first, then the reveal. Keep it under 400 words.
+1: The note on the table read: MEET ME AT THE PIER.
+2: Kai: are u coming or not
+3: She typed back with shaking fingers.
+Example 2 answer: 
+0 S
+1 K
+2 K
+3 K
+
+Answer with one row per line, nothing else: the line number, a space, then K or S. Example:
+0 K
+1 S`;
+
+// The lines the check labels: the transcript's non-empty lines, trimmed.
+export function transcriptLines(transcript) {
+  return String(transcript || '').split('\n').map(line=>line.trim()).filter(Boolean);
+}
+
+// width shortens every line; a retry with line heads gets past some providers' content blocks.
+export function skipCheckPrompt(lines, width=160) {
+  const numbered=lines.map((line,index)=>`${index}: ${Array.from(line).slice(0,width).join('')}`).join('\n');
+  return [{role:'system',content:SKIP_CHECK_SYSTEM},
+    {role:'user',content:`Reply to label (${lines.length} lines):\n${numbered}\n\nReturn exactly ${lines.length} labels.`}];
+}
+
+// Rows are `index K|S`; missing rows stay story. Null when the answer has no rows at all.
+export function parseSkipRows(text, count) {
+  const labels=Array(count).fill('K');let rows=0;
+  for(const [,index,label] of String(text || '').matchAll(/^\D{0,3}(\d+)\s*[:=\-]?\s*\W{0,2}([KSks])\b/gm)) {
+    if(Number(index)<count){labels[Number(index)]=label.toUpperCase();rows++;}
+  }
+  return rows?labels.join(''):null;
+}
+
+// Whole-line template or inlay markup is never story, whatever the labels say.
+export function skippedLines(lines, labels) {
+  return lines.flatMap((line,index)=>/^\s*(INLAY\[)?\{\{[^{}]*\}\}\]?\s*$/.test(line) || labels?.[index]==='S'?[index]:[]);
+}
+
+export function withoutLines(transcript, skip) {
+  if(!skip?.length)return transcript;
+  const skipped=new Set(skip);let index=0;
+  return String(transcript).split('\n').filter(line=>!line.trim() || !skipped.has(index++))
+    .join('\n').replace(/\n\s*\n/g,'\n\n').trim();
+}
+
 export function resolvePlannerMode(config = {}) {
   if (['llm', 'jev', 'heuristic'].includes(config.plannerMode)) return config.plannerMode;
   if (config.useJev) return 'jev';

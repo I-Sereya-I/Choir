@@ -1004,3 +1004,18 @@ test('a planner stopped by its provider names the stop reason instead of only th
   h.send('plan',{transcript:'Hello.',config});
   assert.match((await h.result()).message.error,/Planner failed twice: The planner stopped early \(SAFETY\)\. Planner returned no complete JSON speech plan/);
 });
+
+test('non-story check labels lines through the Planner connection, retries a refusal with 60-character lines and then skips only markup',async()=>{
+  const lines=['Mira ran. '+'a'.repeat(100),'Active Pressures:','{{img::door}}'],requests=[];
+  let h=await harness(async input=>{requests.push(input);return {content:'0 K\n1 S\n2 K'};});
+  h.send('skipCheck',{lines,connectionId:'llm-a'});
+  assert.deepEqual([...(await h.result()).message.result.skip],[1,2]);
+  assert.equal(requests.length,1);assert.equal(requests[0].connection_id,'llm-a');assert.equal(requests[0].parameters.temperature,0);assert.equal(requests[0].reasoning.source,'off');
+  assert.ok(requests[0].messages[1].content.includes('a'.repeat(100)));
+  requests.length=0;h=await harness(async input=>{requests.push(input);if(requests.length===1)throw Error('PROHIBITED_CONTENT');return {content:''};});
+  h.send('skipCheck',{lines});
+  assert.deepEqual([...(await h.result()).message.result.skip],[2]);
+  assert.equal(requests.length,2);assert.ok(requests[1].messages[1].content.includes(`0: Mira ran. ${'a'.repeat(50)}\n`));
+  h=await harness(async()=>{throw Error('Connection refused');});h.send('skipCheck',{lines});
+  assert.match((await h.result()).message.error,/Connection refused/);
+});
