@@ -30,19 +30,7 @@ test('Jev unison with yelled excludes the named recipient',async()=>{
  h.send('planJev',{transcript:'"Hello," Alice and Bob yelled to Judy in unison.',config:cast});
  const message=(await h.result()).message;assert.equal(message.error,undefined);assert.deepEqual([...message.result.segments.find(segment=>segment.unison).unison.map(member=>member.speaker)],['Alice','Bob']);
 });
-test('Gemini accepts speech beyond the old 2000-character cap when it fits the input budget',async()=>{
-  let calls=0;const h=await harness(null,async(url,options)=>{calls++;assert.equal(JSON.parse(options.body).contents[0].parts[0].text.length,3000);return {status:200,body:JSON.stringify({candidates:[{content:{parts:[{inlineData:{data:'YQ==',mimeType:'audio/wav'}}]}}]})};});
-  h.send('gemini',{apiKey:'test-key',model:'gemini-3.8-flash-tts',segment:{text:'x'.repeat(3000),voice:'Kore',style:'Warm'}});
-  assert.equal((await h.result()).message.result.base64,'YQ==');assert.equal(calls,1);
-});
 
-test('oversized Gemini text or multilingual input is rejected before making a provider request',async()=>{
-  for(const text of ['x'.repeat(6001),'你'.repeat(2001)]){
-    let calls=0;const h=await harness(null,async()=>{calls++;throw Error('Unexpected request');});
-    h.send('gemini',{apiKey:'test-key',model:'gemini-3.8-flash-tts',segment:{text,voice:'Kore',style:''}});
-    assert.match((await h.result()).message.error,/safe input budget/);assert.equal(calls,0);
-  }
-});
 test('Jev proxy options are clone-safe and cancellation discards a late response',async()=>{
   let release,options;
   const h=await harness(()=>{throw Error('No LLM fallback');},async(url,input)=>{
@@ -193,12 +181,6 @@ test('unknown or missing Jev classifications fail rather than attributing to the
   }
 });
 
-test('TTS failures never silently switch a custom voice',async()=>{
-  let calls=0;
-  const h=await harness(null,async()=>{calls++;return {status:404,body:'Voice not found'};});
-  h.send('gemini',{apiKey:'secret',model:'gemini-3.8-flash-tts',segment:{text:'Hello.',voice:'voice_missing',style:''}});
-  assert.match((await h.result()).message.error,/HTTP 404/);assert.equal(calls,1);
-});
 test('streaming planner reports activity, keeps reasoning private and uses completed JSON',async()=>{
   let limit,request;
   const content='{"segments":[{"speaker":"Narrator","unit_ids":[0]}]}';
@@ -249,14 +231,6 @@ test('retries a malformed plan once and surfaces failure instead of speaking alt
   let calls=0;const h=await harness(async()=>{calls++;return {content:'{"segments":[{"speaker":"Narrator","text":"Wrong."}]}'};});
   h.send('plan',{transcript:'Hello.',config});
   const result=await h.result();assert.equal(calls,2);assert.match(result.message.error,/Planner failed twice/);
-});
-test('Gemini request uses header authentication and speech metadata',async()=>{
-  let request;
-  const h=await harness(null,async(url,options)=>{request={url,options};return {status:200,body:JSON.stringify({candidates:[{content:{parts:[{inlineData:{data:'YQ==',mimeType:'audio/wav'}}]}}]})};});
-  h.send('gemini',{apiKey:'secret-test',model:'gemini-3.8-flash-tts',segment:{text:'Hello.',voice:'Kore',style:'Soft'}});
-  const result=await h.result();assert.equal(result.message.result.base64,'YQ==');
-  assert.ok(!request.url.includes('secret-test'));assert.equal(request.options.headers['x-goog-api-key'],'secret-test');
-  assert.equal(JSON.parse(request.options.body).contents[0].parts[0].speech_metadata.style,'Soft');
 });
 test('cancellation aborts planner and suppresses stale replies',async()=>{
   let resolve;let signal;
@@ -325,74 +299,6 @@ test('a stalled planner test reports its model and cancels generation at the dea
   assert.equal(limit,60000);expire();
   const result=await h.result();assert.match(result.message.error,/Waiting for a short LLM test response/);
   assert.match(result.message.error,/gemini-flash-text/);assert.ok(signal.aborted);
-});
-
-test('designVoice creates a custom Gemini voice from a natural language prompt',async()=>{
-  let request;
-  const h=await harness(null,async(url,options)=>{
-    request={url,options};
-    return {status:200,body:JSON.stringify({name:'voices/voice_test_123',voice:{id:'voice_test_123'}})};
-  });
-  h.send('designVoice',{apiKey:'key-test',prompt:'Gruff dwarf blacksmith'});
-  const result=await h.result();
-  assert.equal(result.message.result.id,'voice_test_123');
-  assert.equal(result.message.result.description,'Gruff dwarf blacksmith');
-  assert.equal(request.url,'https://generativelanguage.googleapis.com/v1beta/voices');
-  assert.equal(request.options.headers['x-goog-api-key'],'key-test');
-  assert.deepEqual(JSON.parse(request.options.body),{type:'prompted',prompt:'Gruff dwarf blacksmith',store:true});
-});
-
-test('designVoice handles missing API key or empty prompt',async()=>{
-  const h=await harness();
-  h.send('designVoice',{apiKey:'',prompt:'Gruff dwarf'});
-  assert.match((await h.result()).message.error,/Enter a Gemini API key/);
-
-  const h2=await harness();
-  h2.send('designVoice',{apiKey:'key',prompt:''});
-  assert.match((await h2.result()).message.error,/Describe the voice to design/);
-});
-
-test('explicit custom voice fallback retries once on 404',async()=>{
-  const calls=[];
-  const h=await harness(null,async(url,options)=>{
-    calls.push({url,options,body:JSON.parse(options.body)});
-    if(calls.length===1) {
-      return {status:404,body:JSON.stringify({error:{message:'Voice voices/voice_dwarf_abc not found',status:'NOT_FOUND'}})};
-    }
-    return {status:200,body:JSON.stringify({candidates:[{content:{parts:[{inlineData:{data:'ZmFsbGJhY2s=',mimeType:'audio/wav'}}]}}]})};
-  });
-  h.send('gemini',{
-    apiKey:'test-key',
-    model:'gemini-3.8-flash-tts',
-    allowVoiceFallback:true,
-    segment:{text:'Halt!',voice:'voice_dwarf_abc',gender:'male',style:'Stern'}
-  });
-  const result=await h.result();
-  assert.equal(result.message.result.base64,'ZmFsbGJhY2s=');
-  assert.equal(calls.length,2);
-  assert.equal(calls[0].body.generationConfig.speechConfig.voiceConfig.voice,'voice_dwarf_abc');
-  assert.equal(calls[1].body.generationConfig.speechConfig.voiceConfig.voice,'Charon');
-
-  // Test female voice falling back to Kore
-  const femaleCalls=[];
-  const h2=await harness(null,async(url,options)=>{
-    femaleCalls.push({url,options,body:JSON.parse(options.body)});
-    if(femaleCalls.length===1) {
-      return {status:404,body:JSON.stringify({error:{message:'Voice not found'}})};
-    }
-    return {status:200,body:JSON.stringify({candidates:[{content:{parts:[{inlineData:{data:'a29yZQ==',mimeType:'audio/wav'}}]}}]})};
-  });
-  h2.send('gemini',{
-    apiKey:'test-key',
-    model:'gemini-3.8-flash-tts',
-    allowVoiceFallback:true,
-    segment:{text:'Greetings.',voice:'voice_female_elf',gender:'female',style:'Gentle'}
-  });
-  const result2=await h2.result();
-  assert.equal(result2.message.result.base64,'a29yZQ==');
-  assert.equal(femaleCalls.length,2);
-  assert.equal(femaleCalls[0].body.generationConfig.speechConfig.voiceConfig.voice,'voice_female_elf');
-  assert.equal(femaleCalls[1].body.generationConfig.speechConfig.voiceConfig.voice,'Kore');
 });
 
 test('fishaudio synthesizes speech with Authorization header and emotion tag formatting', async () => {

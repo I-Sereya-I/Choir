@@ -1,4 +1,4 @@
-import { MAX_SPEECH_CHARS, validateCardRoles, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, plannerPrompt, geminiRequest, extractGeminiAudio, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES } from './core.js';
+import { validateCardRoles, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, plannerPrompt, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -468,7 +468,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.6-staging.26',ready:true}});return;
+      send({result:{version:'1.1.6-staging.27',ready:true}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;
@@ -691,24 +691,6 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
       }
       throw new Error(`Sound-effect choices failed for ${connection.name || connection.id} (${connection.provider} · ${connection.model}): ${failure.message}.${finishReason?` Finish reason: ${finishReason}.`:''}`);
     }
-    if (message.action === 'designVoice') {
-      if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Gemini API key for this session.');
-      if (typeof input.prompt !== 'string' || !input.prompt.trim()) throw new Error('Describe the voice to design.');
-      const response = await spindle.cors('https://generativelanguage.googleapis.com/v1beta/voices', {
-        method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':input.apiKey.trim()},
-        body:JSON.stringify({type:'prompted',prompt:input.prompt.trim(),store:true})
-      });
-      if (controller.signal.aborted) return;
-      if (response.status < 200 || response.status >= 300) {
-        let detail = '';
-        try { detail = JSON.parse(response.body)?.error?.message || ''; } catch {}
-        throw new Error(`Gemini Voice Design HTTP ${response.status}${detail ? `: ${detail}` : ''}. Check API key and quota.`);
-      }
-      const data = JSON.parse(response.body);
-      const voiceId = (data?.name || data?.id || data?.voice?.id || data?.voice?.name || '').replace(/^voices\//, '');
-      if (!voiceId) throw new Error('Gemini Voice Design did not return a voice ID.');
-      send({result:{id:voiceId,name:voiceId,description:input.prompt.trim()}});return;
-    }
     if (message.action === 'fishaudio') {
       if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Fish Audio API key for this session.');
       const segment = input.segment;
@@ -798,44 +780,6 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         languages: Array.isArray(item.languages) ? item.languages : []
       })).filter(item => item.id);
       send({ result: { query, results } }); return;
-    }
-    if (message.action === 'gemini') {
-      if (typeof input.apiKey !== 'string' || !input.apiKey.trim()) throw new Error('Enter a Gemini API key for this session.');
-      const segment = input.segment;
-      if (!segment || typeof segment.text !== 'string' || segment.text.length > MAX_SPEECH_CHARS || !segment.text.trim()) throw new Error('Invalid speech chunk.');
-      if (typeof segment.voice !== 'string' || segment.voice.length > 200 || typeof segment.style !== 'string' || segment.style.length > 1300) throw new Error('Invalid voice or style.');
-      if(segment.turns && (!Array.isArray(segment.turns) || segment.turns.some(turn=>typeof turn.text!=='string' || typeof turn.speaker!=='string' || turn.speaker.length>200 || typeof turn.voice!=='string' || turn.voice.length>200 || typeof turn.style!=='string' || turn.style.length>1300)))throw new Error('Invalid batch turns.');
-      const body = geminiRequest(segment,input.model);
-      let response = await spindle.cors(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(input.model)}:generateContent`,{
-        method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':input.apiKey.trim()},body:JSON.stringify(body)
-      });
-      if (controller.signal.aborted) return;
-      const isCustomVoice = v => typeof v === 'string' && (v.startsWith('voice_') || v.includes('_'));
-      const fallbackVoice = gender => gender === 'female' ? 'Kore' : 'Charon';
-      const hasCustomVoice = isCustomVoice(segment.voice) || (Array.isArray(segment.turns) && segment.turns.some(turn => isCustomVoice(turn.voice)));
-      if (input.allowVoiceFallback === true && (response.status === 404 || response.status === 400) && hasCustomVoice) {
-        let detail = '';
-        try { detail = JSON.parse(response.body)?.error?.message || response.body || ''; } catch { detail = String(response.body || ''); }
-        if (response.status === 404 || !detail || /voice|not found|invalid/i.test(detail)) {
-          const fallbackSegment = {
-            ...segment,
-            voice: isCustomVoice(segment.voice) ? fallbackVoice(segment.gender) : segment.voice,
-            ...(segment.turns ? {
-              turns: segment.turns.map(turn => ({
-                ...turn,
-                voice: isCustomVoice(turn.voice) ? fallbackVoice(turn.gender) : turn.voice
-              }))
-            } : {})
-          };
-          const retryBody = geminiRequest(fallbackSegment, input.model);
-          response = await spindle.cors(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(input.model)}:generateContent`, {
-            method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':input.apiKey.trim()},body:JSON.stringify(retryBody)
-          });
-          if (controller.signal.aborted) return;
-        }
-      }
-      if (response.status < 200 || response.status >= 300) throw new Error(`Gemini TTS HTTP ${response.status}. Check key, quota and model access.`);
-      send({result:extractGeminiAudio(JSON.parse(response.body))}); return;
     }
     throw new Error('Unknown Choir action.');
   })().catch(error => send({error: [jevFailure?.message, error?.message || 'Choir request failed.'].filter(Boolean).join('\nLLM fallback failed: ')}))

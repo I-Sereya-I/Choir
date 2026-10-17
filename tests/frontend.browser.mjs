@@ -17,7 +17,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   let onBackend,active='chat-a';const listeners=new Map(),events=new Map(),store=new Map(),requests=[],audios=[];
   const message={id:'message-a',chat_id:'chat-a',name:'Mira',is_user:false,content:'The hall fell silent. Hello, stranger. Welcome.',extra:{}};
   const nativeRequests=[];
-  store.set('settings:global', { mode: 'gemini', connectionMode: 'one' });
+  store.set('settings:global', { connectionMode: 'one' });
   let blockAudio=false;
   class FakeAudio {
     constructor(url){this.url=url;this.paused=true;audios.push(this);}
@@ -30,9 +30,10 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     if(url.endsWith('/tts/synthesize')){nativeRequests.push(JSON.parse(options.body));activeTTS++;peakTTS=Math.max(peakTTS,activeTTS);await new Promise(resolve=>setTimeout(resolve,20));activeTTS--;return new Response(new Uint8Array([1,2]),{headers:{'Content-Type':'audio/mpeg'}});}
     let value;
     if(url.includes('/providers'))value={providers:[{id:'openai_tts',capabilities:{parameters:{instructions:{type:'string'}}}}]};
+    else if(url.includes('/google-a/voices'))value={voices:[]};
     else if(url.endsWith('/voices'))value={voices:['alloy','coral','onyx','echo'].map((id,index)=>({id,name:id,gender:['female','feminine','masculine','NEUTRAL'][index]}))};
     else if(url.includes('/connections?'))value={data:[{id:'planner-a',name:'GPT planner',provider:'openai',model:'gpt-text-test'}]};
-    else value={data:[{id:'native-a',name:'OpenAI',provider:'openai_tts',model:'gpt-4o-mini-tts'}]};
+    else value={data:[{id:'google-a',name:'Google',provider:'google_tts',model:'gemini-3.8-flash-tts'},{id:'native-a',name:'OpenAI',provider:'openai_tts',model:'gpt-4o-mini-tts'}]};
     return new Response(JSON.stringify(value),{headers:{'Content-Type':'application/json'}});
   };
   const root=dom.window.document.querySelector('main');
@@ -77,7 +78,7 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
           voice:message.input.config.voices.filter(voice=>voice.route===message.input.config.defaultRoute).at(-1).id
         }))},message.input.transcript,message.input.config);
         else if(message.action==='plan')result=validatePlan({segments:[
-          {speaker:'Narrator',text:'The hall fell silent.',style:'Calm'},
+          {speaker:'Narrator',voice:'Charon',text:'The hall fell silent.',style:'Calm'},
           {speaker:'Mira',voice:(message.input.config.voices.find(v=>v.gender==='female') || message.input.config.voices[1]).id,text:message.input.transcript.match(/Hello, [^.]+\./)[0],style:'Curious'},
           {speaker:'Guard',voice:message.input.config.voices.filter(voice=>voice.route===message.input.config.defaultRoute).at(-1).id,text:'Welcome.',style:'Warm'}]},message.input.transcript,message.input.config);
         else result={base64:'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=',mimeType:'audio/wav'};
@@ -99,37 +100,34 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     const characterVoices=[...$('fixed').querySelectorAll('[data-choir-voice]')[2].options].map(option=>option.textContent);
     assert.ok(characterVoices.some(label=>label.includes('Kore · Female')));
     assert.ok(!characterVoices.some(label=>label.includes('Puck · Male')));
-    $('key').value='session-key';
     assert.equal(settingsMount.children.length,0);
     assert.ok(root.querySelector('[data-et="fixed"]'));
-    assert.equal($('key').value,'session-key');
     placementListeners.get('drawer')();
     assert.ok(root.querySelector('[data-et="fixed"]'));
     // Drawer roots can be detached when the user is looking at the story.
     root.remove();
-    $('key').value = 'test-key'; messageActions.querySelector('button').click();await until(()=>$('status').textContent.includes('Playback finished'));
+    messageActions.querySelector('button').click();await until(()=>$('status').textContent.includes('Playback finished'));
     assert.equal(audios.length,3);audios.length=0;
     assert.match(messageActions.textContent,/Playback finished/);
     assert.match(minimalFooter.textContent,/Playback finished/);
     assert.equal($('preview').querySelectorAll('.et-card').length,3);
-    assert.equal(store.get('chat:chat-a').casts.gemini[0].speaker,'Guard');
-    assert.equal(store.get('chat:chat-a').singleVoices.gemini.Mira,'Zephyr');
+    assert.equal(store.get('chat:chat-a').casts['native:google-a'][0].speaker,'Guard');
+    assert.equal(store.get('chat:chat-a').singleVoices['native:google-a'].Mira,'Zephyr');
     assert.equal(store.get('chat:chat-a').fixed.find(actor=>actor.speaker==='Mira').gender,'female');
     assert.equal(requests.find(request=>request.action==='plan').input.config.fixed[2].gender,'female');
-    $('key').value='test-key';$('play').click();await until(()=>$('status').textContent.includes('finished'));
+    $('play').click();await until(()=>$('status').textContent.includes('finished'));
     assert.equal(audios.length,3);assert.match($('status').textContent,/finished/);
     assert.match($('status').textContent,/Audio saved/);
-    const generated=requests.filter(v=>v.action==='gemini').length;
-    $('key').value='';$('play').click();await until(()=>$('status').textContent.includes('finished'));
-    assert.equal(requests.filter(v=>v.action==='gemini').length,generated);
+    const googleCalls=()=>nativeRequests.filter(request=>request.connectionId==='google-a').length,generated=googleCalls();
+    $('play').click();await until(()=>$('status').textContent.includes('finished'));
+    assert.equal(googleCalls(),generated);
     cleanup();cleanup=await setup(ctx);
     const replay=[...$('messages').querySelectorAll('button')].find(button=>button.textContent==='Replay');
     replay.click();await until(()=>$('status').textContent==='Replay finished.');
-    assert.equal(requests.filter(v=>v.action==='gemini').length,generated);
+    assert.equal(googleCalls(),generated);
     $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3 && !$('latest').disabled);
-    assert.ok(!JSON.stringify([...store.values()]).includes('test-key'));
-    blockAudio=true;$('play').click();await tick();const previous=requests.filter(v=>v.action==='gemini').length;
-    $('stop').click();await tick();assert.equal(requests.filter(v=>v.action==='gemini').length,previous);
+    blockAudio=true;$('play').click();await tick();const previous=googleCalls();
+    $('stop').click();await tick();assert.equal(googleCalls(),previous);
     assert.ok(audios.at(-1).paused);
     blockAudio=false;
     $('connectionMode').value='several';$('connectionMode').dispatchEvent(new dom.window.Event('change'));await until(()=>$('status').textContent.startsWith('Several TTS restored'));
@@ -138,20 +136,15 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     await until(()=>$('fixed').querySelectorAll('[data-choir-voice]')[2].textContent.includes('coral'));
     $('fixed').querySelectorAll('[data-choir-voice]')[2].value='coral';
     $('save').click();await until(()=>$('status').textContent.includes('retention saved'));
-    $('key').value='mixed-key';
     $('latest').click();await until(()=>$('preview').querySelectorAll('.et-card').length===3 && !$('latest').disabled);
-    const beforeMixed=requests.filter(request=>request.action==='gemini').length;
+    nativeRequests.length=0;
     $('play').click();await until(()=>$('status').textContent.includes('Audio saved'));
     assert.equal(nativeRequests.length,1);assert.equal(nativeRequests[0].voice,'coral');
     assert.equal(nativeRequests[0].parameters.instructions,'Curious');
-    assert.equal(requests.filter(request=>request.action==='gemini').length,beforeMixed);
     assert.equal(store.get('chat:chat-a').fixed[2].route,'native:native-a');
-    $('key').value='';
     $('play').click();await until(()=>$('status').textContent.includes('Audio saved'));
     assert.equal(nativeRequests.length,1);
-    assert.equal(requests.filter(request=>request.action==='gemini').length,beforeMixed);
     nativeRequests.length=0;
-    $('mode').value='native';$('mode').dispatchEvent(new dom.window.Event('change'));await tick();
     $('connection').value='native-a';$('connection').dispatchEvent(new dom.window.Event('change'));await tick();
     assert.match($('fixed').querySelector('[data-choir-voice]').textContent,/coral · Female/);
     assert.match($('fixed').querySelector('[data-choir-voice]').textContent,/onyx · Male/);
@@ -265,6 +258,7 @@ test('pipelined playback begins playing section 1 while subsequent sections are 
     if (url.endsWith('/tts/synthesize')) return new Response(new Uint8Array([1, 2]), {headers: {'Content-Type': 'audio/mpeg'}});
     if (url.includes('/providers')) return new Response(JSON.stringify({providers: []}), {headers: {'Content-Type': 'application/json'}});
     if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}, {id: 'Zephyr', name: 'Zephyr', gender: 'female'}]}), {headers: {'Content-Type': 'application/json'}});
+    if (url.includes('/tts-connections?')) return new Response(JSON.stringify({data: [{id: 'google-a', name: 'Google', provider: 'google_tts', model: 'gemini-3.8-flash-tts'}]}), {headers: {'Content-Type': 'application/json'}});
     return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
   };
   const messageActions = dom.window.document.createElement('div');
@@ -302,14 +296,12 @@ test('pipelined playback begins playing section 1 while subsequent sections are 
             voice: u.kind === 'dialogue' ? 'Zephyr' : 'Charon'
           }))}});
         }
-        else if (message.action === 'gemini') onBackend?.({namespace: 'choir', id: message.id, result: {base64: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=', mimeType: 'audio/wav'}});
       }, 5);
     }
   };
   try {
     const cleanup = await setup(ctx);
     const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
-    $('key').value = 'test-key';
     messageActions.querySelector('button').click();
     await until(() => audios.length > 0);
     const planRequestsWhilePlaying = requests.filter(r => r.action === 'plan').length;
@@ -326,13 +318,16 @@ test('pipelined playback begins playing section 1 while subsequent sections are 
 });
 
 
-test('auditionVoice synthesizes and plays a voice sample', async () => {
+test('settings saved in the retired Gemini mode load on the Lumiverse connection picker', async () => {
   const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
   const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
   globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
   globalThis.document = dom.window.document;
   let onBackend;
   const store = new Map(), requests = [], audios = [];
+  store.set('settings:global', {mode: 'gemini', model: 'gemini-3.8-flash-tts'});
+  store.set('chat:chat-audition', {mode: 'gemini', connectionMode: 'several', fixed: [{speaker: 'Narrator', voice: 'Charon', style: '', route: 'gemini'}, {speaker: 'Persona', voice: '', style: ''}, {speaker: 'Mira', voice: 'Kore', style: ''}],
+    casts: {gemini: [{speaker: 'Guard', voice: 'Puck', style: ''}]}, singleVoices: {gemini: {Mira: 'Kore'}}, npcPolicy: {mode: 'llm', route: 'gemini', voice: '', voices: []}});
   class FakeAudio {
     constructor(url) { this.url = url; this.paused = true; audios.push(this); }
     play() { this.paused = false; setTimeout(() => this.onended?.(), 5); return Promise.resolve(); }
@@ -341,7 +336,8 @@ test('auditionVoice synthesizes and plays a voice sample', async () => {
   globalThis.Audio = FakeAudio;
   globalThis.fetch = async (url, options) => {
     if (url.includes('/providers')) return new Response(JSON.stringify({providers: []}), {headers: {'Content-Type': 'application/json'}});
-    if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}]}), {headers: {'Content-Type': 'application/json'}});
+    if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: []}), {headers: {'Content-Type': 'application/json'}});
+    if (url.includes('/tts-connections?')) return new Response(JSON.stringify({data: [{id: 'google-a', name: 'Google', provider: 'google_tts', model: 'gemini-3.8-flash-tts'}]}), {headers: {'Content-Type': 'application/json'}});
     return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
   };
   const root = dom.window.document.createElement('div');
@@ -368,157 +364,21 @@ test('auditionVoice synthesizes and plays a voice sample', async () => {
       requests.push(message);
       setTimeout(() => {
         if (message.action === 'ping') onBackend?.({namespace: 'choir', id: message.id, result: {version: '1.0.18', ready: true}});
-        else if (message.action === 'gemini') {
-          onBackend?.({namespace: 'choir', id: message.id, result: {base64: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=', mimeType: 'audio/wav'}});
-        }
       }, 5);
     }
   };
   try {
     const cleanup = await setup(ctx);
     const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
-    $('key').value = 'gemini-key-123';
-    $('voicePrompt').value = 'voice_custom_audition';
-    assert.ok($('auditionVoice'));
-    $('auditionVoice').click();
-    await until(() => $('status').textContent.includes('Audition finished'));
-    const geminiReq = requests.find(r => r.action === 'gemini');
-    assert.ok(geminiReq);
-    assert.equal(geminiReq.input.segment.voice, 'voice_custom_audition');
-    assert.equal(geminiReq.input.segment.text, 'Hello! I am your new voice for this story.');
-    assert.equal(audios.length, 1);
-    cleanup();
-  } finally {
-    Object.assign(globalThis, old);
-    dom.window.close();
-  }
-});
-
-test('autoDesignNPCs setting auto-designs bespoke Gemini voices for new NPCs with graceful fallback', async () => {
-  const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
-  const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
-  globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
-  globalThis.document = dom.window.document;
-  let onBackend;
-  const store = new Map(), requests = [], audios = [];
-  let currentMsgId = 'msg-npc-1';
-  const messages = {
-    'msg-npc-1': {
-      id: 'msg-npc-1',
-      chat_id: 'chat-npc',
-      name: 'Mira',
-      is_user: false,
-      content: 'The old blacksmith looked up. "Welcome to my forge," the blacksmith said.',
-      extra: {}
-    },
-    'msg-npc-2': {
-      id: 'msg-npc-2',
-      chat_id: 'chat-npc',
-      name: 'Mira',
-      is_user: false,
-      content: 'The baker smiled warmly. "Fresh bread is ready," the baker said.',
-      extra: {}
-    }
-  };
-  class FakeAudio {
-    constructor(url) { this.url = url; this.paused = true; audios.push(this); }
-    play() { this.paused = false; setTimeout(() => this.onended?.(), 5); return Promise.resolve(); }
-    pause() { this.paused = true; }
-  }
-  globalThis.Audio = FakeAudio;
-  globalThis.fetch = async (url) => {
-    if (url.includes('/providers')) return new Response(JSON.stringify({providers: []}), {headers: {'Content-Type': 'application/json'}});
-    if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}, {id: 'Zephyr', name: 'Zephyr', gender: 'female'}]}), {headers: {'Content-Type': 'application/json'}});
-    return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
-  };
-  const messageActions = dom.window.document.createElement('div');
-  const root = dom.window.document.createElement('div');
-  let designVoiceShouldFail = false;
-  const ctx = {
-    registerDomDecorator: options => options.render(messageActions, {scope: 'message:msg-npc-1:bubble:footer'}),
-    settings: {
-      get: async key => store.get(key) || null,
-      set: async (key, value) => { store.set(key, structuredClone(value)); }
-    },
-    messages: {
-      getRecent: () => [messages[currentMsgId]],
-      getContent: id => messages[id]?.content || null
-    },
-    state: { subscribe: () => () => {} },
-    connections: { list: () => [] },
-    characters: { get: async () => ({name: 'Mira'}) },
-    getActiveChat: () => ({chatId: 'chat-npc', characterId: 'character-a'}),
-    dom: { addStyle: () => () => {} },
-    ui: {
-      registerDrawerTab: () => ({root, activate() {}, destroy() {}}),
-      mount: () => dom.window.document.createElement('div'),
-      registerInputBarAction: () => ({onClick() {}, destroy() {}})
-    },
-    events: { on: () => () => {} },
-    onBackendMessage: fn => { onBackend = fn; return () => null; },
-    sendToBackend: message => {
-      requests.push(message);
-      setTimeout(() => {
-        if (message.action === 'ping') onBackend?.({namespace: 'choir', id: message.id, result: {version: '1.0.18', ready: true}});
-        else if (message.action === 'plan') {
-          const units = speechSourceUnits(message.input.transcript);
-          onBackend?.({namespace: 'choir', id: message.id, result: {segments: units.map(u => ({
-            speaker: u.kind === 'dialogue' ? (currentMsgId === 'msg-npc-1' ? 'Blacksmith' : 'Baker') : 'Narrator',
-            text: u.text,
-            voice: 'Charon'
-          }))}});
-        }
-        else if (message.action === 'designVoice') {
-          if (designVoiceShouldFail) {
-            onBackend?.({namespace: 'choir', id: message.id, error: 'Gemini Voice Design rate limited'});
-          } else {
-            onBackend?.({namespace: 'choir', id: message.id, result: {id: 'voice_bespoke_blacksmith', name: 'voice_bespoke_blacksmith', description: message.input.prompt}});
-          }
-        }
-        else if (message.action === 'gemini') {
-          onBackend?.({namespace: 'choir', id: message.id, result: {base64: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=', mimeType: 'audio/wav'}});
-        }
-      }, 5);
-    }
-  };
-  try {
-    let cleanup = await setup(ctx);
-    const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
-    assert.ok($('autoDesignNPCs'));
-    assert.equal($('autoDesignNPCs').checked, false);
-    
-    // Enable auto-design of NPCs (requires Gemini mode)
-    $('mode').value = 'gemini';
-    $('mode').dispatchEvent(new dom.window.Event('change'));
-    await tick();
-    $('autoDesignNPCs').checked = true;
-    $('key').value = 'gemini-key-test';
-    
-    // Plan message 1
-    messageActions.querySelector('button').click();
-    await until(() => $('status').textContent.includes('Playback finished'));
-    
-    // Check that designVoice was called for the Blacksmith NPC
-    const designReq = requests.find(r => r.action === 'designVoice');
-    assert.ok(designReq, 'Expected designVoice request to be made');
-    assert.match(designReq.input.prompt, /Blacksmith/);
-    
-    // Check that NPC voice was updated in extraVoices, casts, and settings
-    assert.match($('extraVoices').value, /voice_bespoke_blacksmith/);
-    const savedConfig = store.get('chat:chat-npc');
-    assert.ok(savedConfig);
-    assert.equal(savedConfig.casts.gemini[0].speaker, 'Blacksmith');
-    assert.equal(savedConfig.casts.gemini[0].voice, 'voice_bespoke_blacksmith');
-
-    // Test graceful fallback: when designVoice throws on newly planned NPC, keep prebuilt voice without failing
-    designVoiceShouldFail = true;
-    requests.length = 0;
-    currentMsgId = 'msg-npc-2';
-    $('latest').click();
-    await until(() => $('status').textContent.includes('Ready:'));
-    
-    assert.ok(requests.some(r => r.action === 'designVoice'));
-    assert.match($('status').textContent, /Ready:/);
+    await until(() => $('fixed').querySelectorAll('[data-choir-route]').length === 3);
+    assert.equal($('connection').value, 'google-a');assert.equal($('connection').closest('[hidden]'), null);
+    assert.equal(root.querySelector('[data-et="key"]'), null);
+    assert.ok(![...root.querySelectorAll('option')].some(option => option.value === 'gemini'));
+    assert.deepEqual([...$('fixed').querySelectorAll('[data-choir-route]')].map(select => select.value), ['', '', '']);
+    $('save').click();await until(() => $('status').textContent.includes('retention saved'));
+    const saved = store.get('chat:chat-audition');
+    assert.equal(saved.mode, undefined);assert.equal(saved.casts.gemini, undefined);assert.equal(saved.singleVoices.gemini, undefined);
+    assert.equal(saved.fixed[0].route, '');assert.equal(saved.npcPolicy.route, '');
     cleanup();
   } finally {
     Object.assign(globalThis, old);
@@ -534,7 +394,8 @@ test('character row allows inline voice search and community voice discovery dir
   const store = new Map(), requests = [];
   globalThis.fetch = async (url) => {
     if (url.includes('/providers')) return new Response(JSON.stringify({providers: []}), {headers: {'Content-Type': 'application/json'}});
-    if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}]}), {headers: {'Content-Type': 'application/json'}});
+    if (url.endsWith('/voices')) return new Response(JSON.stringify({voices: []}), {headers: {'Content-Type': 'application/json'}});
+    if (url.includes('/tts-connections?')) return new Response(JSON.stringify({data: [{id: 'google-a', name: 'Google', provider: 'google_tts', model: 'gemini-3.8-flash-tts'}]}), {headers: {'Content-Type': 'application/json'}});
     return new Response(JSON.stringify({data: []}), {headers: {'Content-Type': 'application/json'}});
   };
   const root = dom.window.document.createElement('div');
@@ -625,39 +486,19 @@ test('detects Fish Audio vs Gemini/Vertex provider and dynamically adapts UI con
   const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
   await until(() => $('fixed')?.querySelectorAll('.et-card')?.length >= 2);
 
-  // 1. In Gemini mode
-  $('mode').value = 'gemini';
-  $('mode').dispatchEvent(new dom.window.Event('change'));
-  await until(() => !$('voiceDesignBox').hidden);
-  assert.equal($('batchGeminiWrap').hidden, true, 'Mixer uses individual passages in Gemini mode');
-  assert.equal($('voiceDesignBox').hidden, false, 'Gemini voice design should be visible');
-  
-  // 2. Switch to Fish Audio native connection
-  $('mode').value = 'native';
-  $('mode').dispatchEvent(new dom.window.Event('change'));
+  // 1. Fish Audio connection
   $('connection').value = 'conn-fish';
   $('connection').dispatchEvent(new dom.window.Event('change'));
-  await until(() => $('batchGeminiWrap').hidden && $('fixed')?.querySelector('input[placeholder="Filter / search Fish library…"]'));
-  
-  assert.equal($('batchGeminiWrap').hidden, true, 'Batch Gemini turns should be hidden when Fish Audio connection is selected');
-  assert.equal($('voiceDesignBox').hidden, true, 'Gemini voice design should be hidden when Fish Audio connection is selected');
-  
-  // Verify character card controls adapted to Fish Audio
-  const firstCard = $('fixed').querySelector('.et-card');
-  const searchInput = firstCard.querySelector('input[placeholder="Filter / search Fish library…"]');
-  assert.ok(searchInput, 'Character card input placeholder should mention Fish library');
-  const searchBtn = firstCard.querySelector('button[title*="Fish"]');
+  await until(() => $('fixed')?.querySelector('input[placeholder="Filter / search Fish library…"]') && /Provider selected|Choose valid voices/.test($('status').textContent));
+  const searchBtn = $('fixed').querySelector('.et-card button[title*="Fish"]');
   assert.ok(searchBtn && !searchBtn.hidden, 'Search button should be visible for Fish Audio');
-  const designBtn = firstCard.querySelector('button[title*="Design"]');
-  assert.ok(designBtn && designBtn.hidden, 'Design button should be hidden for Fish Audio');
 
-  // 3. Switch to Vertex native connection
+  // 2. Vertex connection uses Gemini voices and delivery metadata
   $('connection').value = 'conn-vertex';
   $('connection').dispatchEvent(new dom.window.Event('change'));
-  await tick();
-
-  assert.equal($('batchGeminiWrap').hidden, true, 'Mixer uses individual passages for Vertex');
-  assert.equal($('voiceDesignBox').hidden, false, 'Voice design should be visible for Vertex');
+  await until(() => $('fixed')?.querySelector('input[placeholder="Filter Gemini voices…"]'));
+  assert.ok($('fixed').querySelector('.et-card button[title*="Fish"]').hidden, 'Fish search should be hidden for Vertex');
+  assert.match($('extraVoicesLabel').textContent, /Gemini voices/);
 
   cleanup?.();
   Object.assign(globalThis, old);
@@ -749,7 +590,6 @@ test('opens Fish Audio voice library overlay modal with avatars, audio preview, 
   await until(() => $('fixed')?.querySelectorAll('.et-card')?.length >= 2);
 
   // Switch to Fish Audio
-  $('mode').value = 'native';
   $('connection').value = 'conn-fish';
   $('connection').dispatchEvent(new dom.window.Event('change'));
   await until(() => $('fixed')?.querySelector('input[placeholder*="Fish"]'));
@@ -822,14 +662,15 @@ test('fast classifier setting resolves speech plan locally in 0ms without sendin
     pause() { this.paused = true; }
   }
   globalThis.Audio = FakeAudio;
-  globalThis.fetch = async () => new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}], data: []}), {headers: {'Content-Type': 'application/json'}});
+  globalThis.fetch = async url => url.endsWith('/tts/synthesize') ? new Response(new Uint8Array([1, 2]), {headers: {'Content-Type': 'audio/mpeg'}})
+    : new Response(JSON.stringify({voices: [{id: 'Charon', name: 'Charon', gender: 'male'}], data: url.includes('/tts-connections?') ? [{id: 'google-a', name: 'Google', provider: 'google_tts', model: 'gemini-3.8-flash-tts'}] : []}), {headers: {'Content-Type': 'application/json'}});
 
   const messageActions = dom.window.document.createElement('div');
   const root = dom.window.document.createElement('div');
   const ctx = {
     registerDomDecorator: options => options.render(messageActions, {scope: 'message:message-fc:bubble:footer'}),
     settings: {
-      get: async () => ({useFastClassifier: true, mode: 'gemini', casts: {}, fixed: [{speaker: 'Narrator', voice: 'Charon', style: ''}], voices: [{id: 'Charon'}]}),
+      get: async () => ({useFastClassifier: true, casts: {}, fixed: [{speaker: 'Narrator', voice: 'Charon', style: ''}], voices: [{id: 'Charon'}]}),
       set: async () => {}
     },
     messages: {
@@ -851,7 +692,6 @@ test('fast classifier setting resolves speech plan locally in 0ms without sendin
     sendToBackend: msg => {
       requests.push(msg);
       if (msg.action === 'ping') onBackend?.({namespace: 'choir', id: msg.id, result: {ready: true}});
-      if (msg.action === 'gemini') onBackend?.({namespace: 'choir', id: msg.id, result: {base64: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQAAAAA=', mimeType: 'audio/wav'}});
     }
   };
   let onBackend;
@@ -860,7 +700,6 @@ test('fast classifier setting resolves speech plan locally in 0ms without sendin
   try {
     const cleanup = await setup(ctx);
     const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
-    $('key').value = 'test-key';
     messageActions.querySelector('button').click();
     await until(() => audios.length > 0 || $('status').textContent.includes('Speech plan ready'));
     // Zero plan RPC requests because fastClassifyPlan handled it locally!
@@ -884,14 +723,14 @@ test('plannerMode toggles Jev System 1 inputs directly in Speech & Planner secti
     pause() {}
   }
   globalThis.Audio = FakeAudio;
-  globalThis.fetch = async () => new Response(JSON.stringify({voices: [{id: 'Charon'}], data: []}), {headers: {'Content-Type': 'application/json'}});
+  globalThis.fetch = async url => new Response(JSON.stringify({voices: [{id: 'Charon'}], data: url.includes('/tts-connections?') ? [{id: 'google-a', name: 'Google', provider: 'google_tts', model: 'gemini-3.8-flash-tts'}] : []}), {headers: {'Content-Type': 'application/json'}});
 
   const root = dom.window.document.createElement('div');
   let onBackend;
   const ctx = {
     registerDomDecorator: () => () => {},
     settings: {
-      get: async () => ({mode: 'gemini', plannerMode: 'llm', casts: {}, fixed: [{speaker: 'Narrator', voice: 'Charon', style: ''}], voices: [{id: 'Charon'}]}),
+      get: async () => ({plannerMode: 'llm', casts: {}, fixed: [{speaker: 'Narrator', voice: 'Charon', style: ''}], voices: [{id: 'Charon'}]}),
       set: async () => {}
     },
     messages: { getRecent: () => [], getContent: () => null },
@@ -1047,9 +886,6 @@ test('muteNarrator skips narrator synthesis and badges preview cards', async () 
     const cleanup = await setup(ctx);
     const $ = name => root.querySelector(`[data-et="${name}"]`);
 
-    $('mode').value = 'native';
-    $('mode').dispatchEvent(new dom.window.Event('change'));
-    await tick();
     $('connection').value = 'conn-native';
     $('connection').dispatchEvent(new dom.window.Event('change'));
     await tick();
@@ -1176,9 +1012,6 @@ test('__CHOIR_API__ companion bridge exposes controls and handles paragraph play
     const cleanup = await setup(ctx);
     const $ = name => root.querySelector(`[data-et="${name}"]`);
 
-    $('mode').value = 'native';
-    $('mode').dispatchEvent(new dom.window.Event('change'));
-    await tick();
     $('connection').value = 'conn-native';
     $('connection').dispatchEvent(new dom.window.Event('change'));
     await tick();
@@ -1315,9 +1148,6 @@ test('Cue companion keeps narration when no Freesound key is configured and poin
     const cleanup = await setup(ctx);
     const $ = name => root.querySelector(`[data-et="${name}"]`);
 
-    $('mode').value = 'native';
-    $('mode').dispatchEvent(new dom.window.Event('change'));
-    await tick();
     $('connection').value = 'conn-native';
     $('connection').dispatchEvent(new dom.window.Event('change'));
     await tick();

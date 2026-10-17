@@ -1,13 +1,13 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {groupedSpeechBatches,geminiRequest,passageKey} from '../src/core.js';
-const turn=(speaker,text='Hello.',voice=speaker==='Narrator'?'Charon':'Kore')=>({speaker,text,voice,style:'',route:'gemini'});
+import {groupedSpeechBatches,passageKey} from '../src/core.js';
+const turn=(speaker,text='Hello.',voice=speaker==='Narrator'?'Charon':'Kore')=>({speaker,text,voice,style:'',route:'native:google'});
 const limits=()=>({maxChars:10000,maxBytes:6000,maxSpeakers:2,group:'same'});
-const batch=(items,options)=>groupedSpeechBatches(items,3000,'gemini',limits,options);
+const batch=(items,options)=>groupedSpeechBatches(items,3000,'native:google',limits,options);
 test('grouped speech reduces alternating turns while preserving order and voices',()=>{
   const turns=Array.from({length:12},(_,i)=>turn(i%2?'Alice':'Narrator',`Turn ${i}.`));
   const result=batch(turns);assert.equal(result.length,1);assert.equal(result[0].dialogue,true);
-  assert.deepEqual(result[0].turns,turns);assert.equal(geminiRequest(result[0],'gemini-3.8-flash-tts').contents[0].parts.length,12);
+  assert.deepEqual(result[0].turns,turns);
 });
 test('short opening clip is followed by longer bounded clips without losing text',()=>{
   const text='A sentence with a little room to breathe. '.repeat(150).trim();
@@ -22,7 +22,7 @@ test('a moderate dialogue-narration-dialogue passage stays in one multi-speaker 
   for(const sfx of [false,true]){
     const result=batch(turns,{sfx});assert.equal(result.length,1);assert.equal(result[0].dialogue,true);assert.deepEqual(result[0].turns,turns);
   }
-  assert.ok(groupedSpeechBatches(turns,500,'gemini',limits).length>1);
+  assert.ok(groupedSpeechBatches(turns,500,'native:google',limits).length>1);
 });
 test('SFX stays between clips and bounds later requests to 900 characters',()=>{
   const cue={kind:'sfx',route:'sfx',speaker:'SFX',text:'[SFX: door]',sfx:{query:'door'}};
@@ -34,10 +34,10 @@ test('third speaker, route, conflicting voice or unequal mixer group starts anot
   for(const extra of [turn('Bob','Third.','Puck'),{...turn('Alice'),route:'native:other'},turn('Alice','Changed.','Puck')]){
     const result=batch([turn('Narrator'),turn('Alice'),extra]);assert.equal(result.length,2);
   }
-  const result=groupedSpeechBatches([turn('Narrator'),turn('Alice')],1800,'gemini',segment=>({...limits(),group:segment.speaker}));assert.equal(result.length,2);
+  const result=groupedSpeechBatches([turn('Narrator'),turn('Alice')],1800,'native:google',segment=>({...limits(),group:segment.speaker}));assert.equal(result.length,2);
 });
 test('unsupported providers group only compatible adjacent single-voice speech',()=>{
-  const result=groupedSpeechBatches([turn('Narrator'),turn('Narrator'),turn('Alice')],1800,'gemini',()=>({...limits(),maxSpeakers:0}));
+  const result=groupedSpeechBatches([turn('Narrator'),turn('Narrator'),turn('Alice')],1800,'native:google',()=>({...limits(),maxSpeakers:0}));
   assert.equal(result.length,2);assert.equal(result[0].dialogue,false);assert.equal(result[1].speaker,'Alice');
 });
 test('multilingual text plus per-turn instructions stays in the byte budget',()=>{
@@ -47,6 +47,6 @@ test('multilingual text plus per-turn instructions stays in the byte budget',()=
   assert.equal(result.flatMap(item=>item.turns || [item]).map(item=>item.text).join('').replace(/\s/g,''),source.map(item=>item.text).join(''));
 });
 test('cache identity includes every dialogue voice and delivery',()=>{
-  const clip=batch([turn('Narrator'),turn('Alice')])[0],key=passageKey(clip,{model:'gemini-3.8-flash-tts'});
-  const changed=structuredClone(clip);changed.turns[1].voice='Puck';assert.notEqual(passageKey(changed,{model:'gemini-3.8-flash-tts'}),key);
+  const clip=batch([turn('Narrator'),turn('Alice')])[0],key=passageKey(clip,{});
+  const changed=structuredClone(clip);changed.turns[1].voice='Puck';assert.notEqual(passageKey(changed,{}),key);
 });

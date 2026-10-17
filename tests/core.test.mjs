@@ -5,7 +5,7 @@ import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 import {sfxCueOffset} from '../src/core.js';
 import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,reconcileCardCast} from '../src/core.js';
-import {validatePlan, validateCastConfig, geminiRequest, extractGeminiAudio, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
+import {validatePlan, validateCastConfig, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
 
 test('ignored tags skip nested, attributed, mixed-case and unfinished blocks without dropping ordinary story markup',()=>{
   assert.deepEqual(ignoredTagNames('Summary, <private-note>\nsummary; invalid.*'),['summary','private-note']);
@@ -152,7 +152,7 @@ test('larger speech chunks respect provider limits while retaining a conservativ
   assert.equal(speechRequestLimits('openrouter_tts','openai/gpt-4o-mini-tts').maxChars,4096);
   assert.equal(speechRequestLimits('openrouter_tts','unrecognized/model').maxChars,2000);
   const text='A long neutral phrase '.repeat(400);
-  const batches=speechBatches([{speaker:'Narrator',voice:'n',text}],10000,'native:a',false,()=>speechRequestLimits('openai_tts'));
+  const batches=speechBatches([{speaker:'Narrator',voice:'n',text}],10000,'native:a',()=>speechRequestLimits('openai_tts'));
   assert.ok(batches.length>1);assert.ok(batches.every(batch=>batch.text.length<=4096));
   assert.equal(batches.map(batch=>batch.text).join(' ').trim(),text.trim());
   assert.equal(splitSegment({text:'x'.repeat(10000)},10000).length,1);
@@ -166,37 +166,17 @@ test('multilingual byte-limited chunks preserve text and never split Unicode sur
   assert.ok(chunks.every(chunk=>new TextEncoder().encode(chunk.text).length<=6000 && !/[\uD800-\uDBFF]$/.test(chunk.text) && !/^[\uDC00-\uDFFF]/.test(chunk.text)));
 });
 
-test('Gemini batching includes delivery metadata in its safe input budget',()=>{
-  const batches=speechBatches([{speaker:'A',voice:'Kore',text:'a'.repeat(3000),style:'Warm'},{speaker:'B',voice:'Puck',text:'b'.repeat(3000),style:'Quiet'}],10000,'gemini');
-  assert.equal(batches.length,2);assert.ok(batches.every(batch=>geminiRequest(batch,'gemini-3.8-flash-tts')));
-  assert.throws(()=>geminiRequest({text:'你'.repeat(2000),voice:'Kore',style:'Warm'},'gemini-3.8-flash-tts'),/safe input budget/);
-});
-
 test('consecutive Foley cues keep separate audio parts when narration is muted',()=>{
   const cues=['page turn','door creak','page turn'].map(query=>({kind:'sfx',speaker:'SFX',voice:'',route:'sfx',text:`[SFX: ${query}]`,sfx:{query}}));
-  const batches=speechBatches(cues,1800,'native:a',false);
+  const batches=speechBatches(cues,1800,'native:a');
   assert.deepEqual(batches.map(batch=>batch.sfx.query),['page turn','door creak','page turn']);
   assert.deepEqual(batches.map(batch=>batch.text),cues.map(cue=>cue.text));
 });
 
 test('speech around an ambience marker never merges into it',()=>{
   const narration=text=>({speaker:'Narrator',voice:'n',style:'',text});
-  const batches=speechBatches([narration('Night fell.'),{kind:'ambience',speaker:'Ambience',voice:'',route:'ambience',text:'[Ambience: rain]',ambience:{query:'rain'}},narration('Rain hammered the roof.')],1800,'native:a',false);
+  const batches=speechBatches([narration('Night fell.'),{kind:'ambience',speaker:'Ambience',voice:'',route:'ambience',text:'[Ambience: rain]',ambience:{query:'rain'}},narration('Rain hammered the roof.')],1800,'native:a');
   assert.deepEqual(batches.map(batch=>batch.text),['Night fell.','[Ambience: rain]','Rain hammered the roof.']);
-});
-
-test('Gemini batches preserve turn metadata and split on third speaker or provider change',()=>{
-  const turns=['Narrator','Alice','Narrator','Bob','Alice'].map((speaker,i)=>({speaker,voice:speaker==='Narrator'?'Charon':speaker==='Alice'?'Kore':'Puck',text:'Turn '+i,style:'Soft',route:'gemini'}));
-  const batches=speechBatches(turns,1800,'gemini');
-  assert.equal(batches.length,2);
-  assert.deepEqual(batches.flatMap(batch=>batch.turns).map(turn=>turn.text),turns.map(turn=>turn.text));
-  const body=geminiRequest(batches[0],'gemini-3.8-flash-tts');
-  assert.equal(body.generationConfig.speechConfig.multiSpeakerVoiceConfig.speakerVoiceConfigs.length,2);
-  assert.equal(body.contents[0].parts[1].speech_metadata.speaker,'Alice');
-  assert.equal(body.contents[0].parts[1].speech_metadata.style,'Soft');
-  assert.equal(speechBatches(turns,1800,'gemini',false).length,5);
-  turns[1].route='native:other';
-  assert.equal(speechBatches(turns,1800,'gemini')[0].turns.length,1);
 });
 
 const config = () => ({voices:[{id:'Charon'},{id:'Kore'},{id:'Puck'},{id:'Fenrir'}],useStyle:true,
@@ -246,12 +226,6 @@ test('style can be disabled independently of multi-voice casting',()=>{
   const plan=validatePlan({segments:[{speaker:'Narrator',text:'Hello.',style:'Whispered'}]},'Hello.',c);
   assert.equal(plan.segments[0].style,'');
 });
-test('Gemini REST body separates transcript, metadata and voice',()=>{
-  const body=geminiRequest({text:'Hello.',voice:'Kore',style:'Whisper urgently'},'gemini-3.8-flash-tts');
-  assert.deepEqual(body.contents[0].parts[0],{text:'Hello.',speech_metadata:{style:'Whisper urgently'}});
-  assert.deepEqual(body.generationConfig.speechConfig,{voiceConfig:{voice:'Kore'}});
-  assert.throws(()=>geminiRequest({text:'x',voice:'Kore'},'gemini-2.5-pro-preview-tts'));
-});
 test('splitting preserves ordered words, style and speaker without empty chunks',()=>{
   const original=('First sentence. Second sentence! '+ 'Longer phrase repeated here. ').repeat(30);
   const chunks=splitSegment({text:original,speaker:'Alice',voice:'Kore',style:'Warm'},160);
@@ -265,8 +239,6 @@ test('WAV is never wrapped twice; legacy raw PCM is playable',()=>{
   assert.equal(result.data.length,48);assert.equal(result.mimeType,'audio/wav');
   const roundTrip=audioBytes(Buffer.from(result.data).toString('base64'),'audio/wav');
   assert.deepEqual(roundTrip.data,result.data);
-  assert.deepEqual(extractGeminiAudio({candidates:[{content:{parts:[{inline_data:{data:'YQ==',mime_type:'audio/wav'}}]}}]}),{base64:'YQ==',mimeType:'audio/wav'});
-  assert.throws(()=>extractGeminiAudio({}));
 });
 test('speech preprocessing keeps narration, strips markup and hidden thinking',()=>{
   assert.equal(transcriptFromMessage('<think>hidden</think>*The room was cold.* **Hello.** [Friend](https://example.com)'),'The room was cold. Hello. Friend');
@@ -348,21 +320,21 @@ test('more than 250 speech turns can be planned without an artificial segment ca
 });
 
 test('speaker connections remain fixed even when providers share a voice ID',()=>{
-  const c={defaultRoute:'gemini',voices:[{id:'same',route:'gemini',gender:'male'},{id:'same',route:'native:other',gender:'female'}],
-    fixed:[{speaker:'Narrator',voice:'same',route:'gemini',style:''},{speaker:'Alice',voice:'',route:'native:other',gender:'female',style:''}],npcs:[]};
+  const c={defaultRoute:'native:google',voices:[{id:'same',route:'native:google',gender:'male'},{id:'same',route:'native:other',gender:'female'}],
+    fixed:[{speaker:'Narrator',voice:'same',route:'native:google',style:''},{speaker:'Alice',voice:'',route:'native:other',gender:'female',style:''}],npcs:[]};
   const plan=validatePlan({segments:[{speaker:'Narrator',voice:'same',route:'native:other',text:'Alice said,'},
-    {speaker:'Alice',voice:'same',route:'gemini',text:'"Hello."'}]},'Alice said, "Hello."',c);
-  assert.deepEqual(plan.segments.map(segment=>segment.route),['gemini','native:other']);
+    {speaker:'Alice',voice:'same',route:'native:google',text:'"Hello."'}]},'Alice said, "Hello."',c);
+  assert.deepEqual(plan.segments.map(segment=>segment.route),['native:google','native:other']);
   assert.equal(plan.segments[1].voice,'same');
   c.fixed[1].voice='missing';assert.throws(()=>validateCastConfig(c),/selected TTS connection/);
 });
 
 test('new NPCs use the default connection and saved NPC overrides remain stable',()=>{
-  const c={defaultRoute:'gemini',voices:[{id:'Kore',route:'gemini'},{id:'custom',route:'native:other'}],
+  const c={defaultRoute:'native:google',voices:[{id:'Kore',route:'native:google'},{id:'custom',route:'native:other'}],
     fixed:[{speaker:'Narrator',voice:'Kore',style:''}],npcs:[]};
   assert.throws(()=>validatePlan({segments:[{speaker:'Guard',voice:'custom',route:'native:other',text:'Hello.'}]},'Hello.',c),/selected TTS connection/);
   c.npcs=[{speaker:'Guard',voice:'custom',route:'native:other',style:''}];
-  assert.equal(validatePlan({segments:[{speaker:'Guard',voice:'Kore',route:'gemini',text:'Hello.'}]},'Hello.',c).segments[0].route,'native:other');
+  assert.equal(validatePlan({segments:[{speaker:'Guard',voice:'Kore',route:'native:google',text:'Hello.'}]},'Hello.',c).segments[0].route,'native:other');
 });
 
 test('long replies split into planning sections without splitting quoted speech or losing whitespace',()=>{
@@ -401,35 +373,6 @@ test('stripAudioTags and validatePlan allowing inline tags like <sigh> or [whisp
   },'Hello world. Wait! Are you sure?',c);
   assert.equal(plan.segments[0].text,'<sigh> Hello world.');
   assert.equal(plan.segments[1].text,'Wait! [whispers] Are you sure? <gasp>');
-});
-
-test('validatePlan preserving voicePrompt on newly cast NPCs',()=>{
-  const c=config();
-  const plan=validatePlan({
-    segments:[
-      {speaker:'Narrator',voice:'Charon',text:'He entered.'},
-      {speaker:'Blacksmith',voice:'Fenrir',text:'Welcome to my forge.',voicePrompt:'Gruff Scottish blacksmith, deep gravelly timbre'}
-    ]
-  },'He entered. Welcome to my forge.',c);
-  assert.equal(plan.npcs.length,1);
-  assert.equal(plan.npcs[0].speaker,'Blacksmith');
-  assert.equal(plan.npcs[0].voice,'Fenrir');
-  assert.equal(plan.npcs[0].voicePrompt,'Gruff Scottish blacksmith, deep gravelly timbre');
-
-  // Also test preservation when raw.newNPCs is provided
-  const c2=config();
-  const plan2=validatePlan({
-    segments:[
-      {speaker:'Narrator',voice:'Charon',text:'He looked around.'},
-      {speaker:'Merchant',voice:'Puck',text:'Looking to buy?'}
-    ],
-    newNPCs:[
-      {name:'Merchant',voice:'Puck',voicePrompt:'Fast-talking traveling merchant, nasal high pitch'}
-    ]
-  },'He looked around. Looking to buy?',c2);
-  assert.equal(plan2.npcs.length,1);
-  assert.equal(plan2.npcs[0].speaker,'Merchant');
-  assert.equal(plan2.npcs[0].voicePrompt,'Fast-talking traveling merchant, nasal high pitch');
 });
 
 test('stripAudioTags strips Fish Audio natural language bracket and parenthetical emotion tags', () => {
@@ -491,8 +434,8 @@ test('fastClassifyPlan resolves 1-on-1 character dialogue directly in 0ms', () =
 
 test('fastClassifyPlan uses dialogue tag attribution and detects emotion style', () => {
   const c = config();
-  c.fixed.push({ speaker: 'Bob', voice: 'Puck', route: 'gemini', style: '' });
-  c.voices.push({ id: 'Puck', route: 'gemini', gender: 'male' });
+  c.fixed.push({ speaker: 'Bob', voice: 'Puck', route: 'native:google', style: '' });
+  c.voices.push({ id: 'Puck', route: 'native:google', gender: 'male' });
   const text = '"Good morning," Alice smiled. Bob whispered, "Keep your voice down."';
   const plan = fastClassifyPlan(text, c);
   assert.ok(plan);
@@ -522,8 +465,8 @@ test('local one-on-one attribution recognizes a named persona and keeps explicit
 
 test('fastClassifyPlan returns null on ambiguous multi-character dialogue without tags', () => {
   const c = config();
-  c.fixed.push({ speaker: 'Bob', voice: 'Puck', route: 'gemini', style: '' });
-  c.voices.push({ id: 'Puck', route: 'gemini', gender: 'male' });
+  c.fixed.push({ speaker: 'Bob', voice: 'Puck', route: 'native:google', style: '' });
+  c.voices.push({ id: 'Puck', route: 'native:google', gender: 'male' });
   const text = '"Who is there?" + "\n" + "I am not sure."';
   const plan = fastClassifyPlan(text, c);
   assert.equal(plan, null); // Falls back to LLM/Jev
@@ -742,7 +685,7 @@ test('rankMusic scores feels, genre, keywords and full-length tracks',()=>{
 });
 
 test('Fish community routes ask the planner to describe new voices and hide that route\'s own catalogue; My Fish voices keep the old prompt',()=>{
-  const cast={voices:[{id:'own',route:'native:fish'},{id:'kept',route:'native:both'},{id:'Kore',route:'gemini'}],fixed:[{speaker:'Narrator',voice:'Kore',style:'',route:'gemini'}],npcs:[],defaultRoute:'native:fish'};
+  const cast={voices:[{id:'own',route:'native:fish'},{id:'kept',route:'native:both'},{id:'Kore',route:'native:google'}],fixed:[{speaker:'Narrator',voice:'Kore',style:'',route:'native:google'}],npcs:[],defaultRoute:'native:fish'};
   const own=plannerPrompt('Hello.',cast,'');
   assert.doesNotMatch(own[0].content,/voiceSearch/);
   assert.deepEqual(Object.keys(JSON.parse(own[1].content)),['fixedCast','existingNPCs','characterProfiles','availableVoices','defaultRoute','context','sourceUnits']);

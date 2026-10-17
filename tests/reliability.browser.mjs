@@ -21,7 +21,7 @@ async function harness(mixerPreferences,mobile=false){
   const createObjectURL=URL.createObjectURL;URL.createObjectURL=blob=>{audioBlobs.push(blob);return createObjectURL(blob);};
   if(mixerPreferences)store.set('ui:mixer',mixerPreferences);
   const message={id:'message-a',content:'At dawn. "Hello." "Wait." The gate closed.',name:'Mira',is_user:false};
-  store.set('chat:chat-a',{mode:'native',connection:'a',styleParam:'instructions',chunk:500,concurrency:1,prefetch:0,
+  store.set('chat:chat-a',{connection:'a',styleParam:'instructions',chunk:500,concurrency:1,prefetch:0,
     fixed:[{speaker:'Narrator',voice:'n',style:'Calm'},{speaker:'You',voice:'y',style:''},{speaker:'Mira',voice:'m',route:'native:b',style:'',aliases:['Captain'],pronunciation:'Mira: mee-rah',accent:'Irish'}],
     casts:{'native:a':[{speaker:'Guard',voice:'g',style:''}]}});
   class FakeAudio{
@@ -99,7 +99,7 @@ async function harness(mixerPreferences,mobile=false){
       }
       setTimeout(()=>{
         if(!backend)return;
-        if(request.action==='plan' && state.held || request.action==='designVoice' && state.holdDesignVoice || request.action==='freesound' && state.holdFoley || request.action==='sfx' && state.holdSfx){heldPlans.push(request);return;}
+        if(request.action==='plan' && state.held || request.action==='freesound' && state.holdFoley || request.action==='sfx' && state.holdSfx){heldPlans.push(request);return;}
         if(request.action==='plan' && state.failPlanAt===requests.filter(r=>r.action==='plan').length){backend({namespace:'choir',id:request.id,error:'Planner quota exhausted'});return;}
         let result;
         if(request.action==='ping')result={ready:true};
@@ -120,7 +120,6 @@ async function harness(mixerPreferences,mobile=false){
           if(state.holdMusic){state.releaseMusic=reply;return;}result={title,url:`https://incompetech.com/music/royalty-free/mp3-royaltyfree/${title}.mp3`};
         }
         else if(request.action==='searchVoices')result={results:state.voiceSearchResults || [{id:'community_fish_voice',name:'Community narrator',description:'A warm, steady storyteller.'}]};
-        else if(request.action==='gemini')result={base64:'AAABAA==',mimeType:'audio/L16;rate=24000'};
         else if(request.action==='cardCast')result={roles:state.cardRoles || []};
         else if(request.action==='testPlanner')result={provider:'Planner',model:'text-model',response:'READY'};
         else if(request.action==='planJev'){backend({namespace:'choir',id:request.id,...(state.jevInvalid?{result:{}}:{error:'Jev classification failed: The object cannot be cloned'})});return;}
@@ -379,7 +378,7 @@ test('applying a captured default restores lead voices without overwriting globa
 
 test('default capture rejects invalid settings and retains the previous snapshot when storage fails',async()=>{
  const h=await harness();try{
-  h.$('key').value='session-gemini-secret';h.$('jevKey').value='session-jev-secret';captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));
+  h.$('jevKey').value='session-jev-secret';captureDefault(h);await until(()=>h.$('defaultStatus').textContent.startsWith('Default saved.'));
   const preset=structuredClone(h.store.get('settings:captured-defaults'));assert.ok(!JSON.stringify(preset).includes('session-'));
   h.$('chunk').value='10001';captureDefault(h);await until(()=>document.querySelector('[data-default-feedback]')?.textContent.includes('whole number from'));assert.deepEqual(h.store.get('settings:captured-defaults'),preset);
   h.$('chunk').value='8000';h.state.failDefaultsSave=true;captureDefault(h);await until(()=>h.$('defaultStatus').textContent.includes('save failed'));assert.deepEqual(h.store.get('settings:captured-defaults'),preset);assert.equal(h.$('captureDefaults').disabled,false);
@@ -405,7 +404,7 @@ test('global Speech and Planner edits override historical chat preferences while
   h.store.set('chat:chat-b',{...original,plannerMode:'heuristic',chunk:9999,enableMusic:false,fixed:original.fixed.map(actor=>({...actor,speaker:actor.speaker==='Mira'?'Other lead':actor.speaker}))});
   const edit=(name,value)=>{const node=h.$(name);if(typeof value==='boolean')node.checked=value;else node.value=value;node.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));};
   edit('chunk','8000');edit('planner','planner');edit('decisionConnection','decision-b');edit('plannerMode','jev');edit('auto',true);edit('enableSfx',false);edit('enableAmbience',false);edit('enableMusic',true);edit('sectionButtons',true);edit('enableMixer',true);edit('normalizeLoudness',false);edit('ignoredTags','summary, private-note');
-  h.$('key').value='session-secret';h.$('jevKey').value='jev-session-secret';await until(()=>h.$('saveState').textContent==='Saved automatically');
+  h.$('jevKey').value='jev-session-secret';await until(()=>h.$('saveState').textContent==='Saved automatically');
   const global=structuredClone(h.store.get('settings:global'));assert.equal(global.npcPolicy,undefined);assert.ok(!JSON.stringify(global).includes('session-secret'));
   h.state.active='chat-b';h.subscriptions.get('chat.active')();await until(()=>h.$('saveState').textContent==='Saved settings restored' && h.$('fixed').children[2]?.querySelector('input').value==='Other lead');
   for(const [name,value] of Object.entries(global))if(h.$(name) && h.$(name).type==='checkbox')assert.equal(h.$(name).checked,value,name);
@@ -571,12 +570,12 @@ test('Levi and Cole profile headings migrate the cast and unison creates one ove
 test('card splitting transfers One TTS voice choices on every connection',async()=>{
  const h=await harness();try{
   const saved=structuredClone(h.store.get('chat:chat-a'));saved.connectionMode='one';saved.fixed[2].speaker='Alice & Bob';saved.fixed[2].aliases=[];
-  saved.singleVoices={'native:a':{'Alice & Bob':'g',Narrator:'n',You:'y'},'native:b':{'Alice & Bob':'new'},gemini:{'Alice & Bob':'Kore'}};h.store.set('chat:chat-a',saved);
+  saved.singleVoices={'native:a':{'Alice & Bob':'g',Narrator:'n',You:'y'},'native:b':{'Alice & Bob':'new'},'native:google':{'Alice & Bob':'Kore'}};h.store.set('chat:chat-a',saved);
   h.store.set('settings:global',{plannerMode:'heuristic',useFastClassifier:true,enableSfx:false,enableAmbience:false});h.state.character={name:'Alice & Bob'};await h.reload();
   assert.equal(globalThis.__CHOIR_API__.planParagraph('"Hello," Alice & Bob said.').segments[0].voice,'g');
   h.state.character.description='# Alice\nName: Alice Ward\nBright.\n# Bob\nName: Bob Gray\nDeep.';await h.reload();
   const config=globalThis.__CHOIR_API__.getConfig();assert.equal(globalThis.__CHOIR_API__.planParagraph('"Hello," Alice said.').segments[0].voice,'g');
-  assert.equal(config.singleVoices['native:a'].Alice,'g');assert.equal(config.singleVoices['native:b'].Alice,'new');assert.equal(config.singleVoices.gemini.Alice,'Kore');
+  assert.equal(config.singleVoices['native:a'].Alice,'g');assert.equal(config.singleVoices['native:b'].Alice,'new');assert.equal(config.singleVoices['native:google'].Alice,'Kore');
   assert.ok(!Object.hasOwn(config.singleVoices['native:a'],'Alice & Bob'));
   await h.reload();assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'g');
  }finally{await h.close();}
@@ -619,8 +618,8 @@ test('Cue mixes both unison voices and reuses cached members after failures, lev
 test('connection-list outages retain the selected native adapter and voices and can be reloaded',async()=>{
  const h=await harness();try{
   const originalFetch=globalThis.fetch;globalThis.fetch=async(url,options)=>String(url).endsWith('/tts-connections?limit=200')?new Response('Temporary outage',{status:502}):originalFetch(url,options);
-  await h.reload();const config=globalThis.__CHOIR_API__.getConfig();assert.equal(config.mode,'native');assert.equal(config.connection,'a');assert.equal(config.fixed[2].voice,'m');
-  assert.equal(h.$('mode').value,'native');assert.equal(h.$('connection').value,'a');assert.match(h.$('status').textContent,/Could not load TTS connections/);
+  await h.reload();const config=globalThis.__CHOIR_API__.getConfig();assert.equal(config.connection,'a');assert.equal(config.fixed[2].voice,'m');
+  assert.equal(h.$('connection').value,'a');assert.match(h.$('status').textContent,/Could not load TTS connections/);
   globalThis.fetch=originalFetch;await h.reload();assert.equal(h.$('connection').value,'a');await h.plan();await h.play();assert.ok(h.synthesis.some(input=>input.voice==='m'));
  }finally{await h.close();}
 });
@@ -1652,13 +1651,14 @@ test('larger native requests apply OpenAI, Fish, and unknown-provider chunk limi
   }
 });
 
-test('larger Gemini requests preserve multilingual text and reserve input space for delivery instructions',async()=>{
+test('larger Google TTS requests preserve multilingual text and reserve input space for delivery instructions',async()=>{
   const h=await harness();try{
-    const saved=h.store.get('chat:chat-a');h.store.set('chat:chat-a',{...saved,mode:'gemini',chunk:10000,fixed:[{speaker:'Narrator',voice:'Charon',style:'Calm'}],casts:{gemini:[]}});
-    await h.reload();h.$('key').value='test-session-key';h.message.content=Array.from({length:1500},(_,index)=>`你好世界${index}`).join(' ');
-    await h.plan();await h.play();const segments=h.requests.filter(request=>request.action==='gemini').map(request=>request.input.segment);
-    assert.ok(segments.length>1);assert.ok(segments.every(segment=>new TextEncoder().encode(segment.text+segment.style).length<=6000));
-    assert.ok(segments.map(segment=>segment.text).join(' ').replace(/\s+/g,' ').trim()===h.message.content,'Gemini chunks must preserve the original multilingual text.');
+    h.connections[0].provider='google_tts';h.connections[0].model='gemini-3.8-flash-tts';h.state.catalogues={a:{voices:[{id:'Charon',name:'Charon'}]}};
+    const style='Calm, measured narration with gentle warmth',saved=h.store.get('chat:chat-a');h.store.set('chat:chat-a',{...saved,chunk:10000,fixed:[{speaker:'Narrator',voice:'Charon',style}],casts:{}});
+    await h.reload();h.message.content=Array.from({length:1500},(_,index)=>`你好世界${index}`).join(' ');
+    await h.plan();await h.play();const requests=h.synthesis;
+    assert.ok(requests.length>1);assert.ok(requests.every(request=>new TextEncoder().encode(request.text+style).length<=6000));
+    assert.ok(requests.map(request=>request.text).join(' ').replace(/\s+/g,' ').trim()===h.message.content,'Google chunks must preserve the original multilingual text.');
   }finally{await h.close();}
 });
 
@@ -1841,22 +1841,19 @@ test('grouped playback keeps an SFX cue between the spoken text it interrupts',a
     assert.match(h.synthesis[1].text,/page snapped/);assert.equal(h.state.previewFetches.length,1);
   }finally{await h.close();}
 });
-test('Google relay and Gemini adapter group prebuilt voices using their existing connections',async()=>{
-  for(const adapter of [false,true]){
-    const h=await harness();try{
-      const voices=['Charon','Kore','Puck'].map(id=>({id,name:id}));
-      h.connections[0].provider='google_tts';h.connections[0].model='gemini-3.8-flash-tts';
-      h.state.providers=[{id:'google_tts',capabilities:{parameters:{},staticVoices:voices,multiSpeaker:{maxSpeakers:2,models:['gemini-3.8-flash-tts']}}}];
-      h.state.catalogues={a:{voices}};h.state.planForCatalogue=true;
-      const saved=h.store.get('chat:chat-a');saved.mode=adapter?'gemini':'native';saved.model='gemini-3.8-flash-tts';saved.connectionMode='one';saved.casts={};saved.batchSpeech=true;saved.enableSfx=false;saved.enableAmbience=false;
-      saved.fixed.forEach((actor,i)=>{actor.voice=voices[i].id;delete actor.route;delete actor.accent;delete actor.pronunciation;});
-      h.store.set('chat:chat-a',saved);await h.reload();h.$('key').value='test-key';
-      h.message.content='At dawn. "Hello." The gate closed.';await h.plan();await h.play();
-      const calls=adapter?h.requests.filter(request=>request.action==='gemini'):h.synthesis;assert.equal(calls.length,1);
-      const turns=adapter?calls[0].input.segment.turns:calls[0].parameters.turns;
-      assert.deepEqual(turns.map(turn=>turn.voice),['Charon','Puck','Charon']);
-    }finally{await h.close();}
-  }
+test('Google relay groups prebuilt voices using its existing connection',async()=>{
+  const h=await harness();try{
+    const voices=['Charon','Kore','Puck'].map(id=>({id,name:id}));
+    h.connections[0].provider='google_tts';h.connections[0].model='gemini-3.8-flash-tts';
+    h.state.providers=[{id:'google_tts',capabilities:{parameters:{},staticVoices:voices,multiSpeaker:{maxSpeakers:2,models:['gemini-3.8-flash-tts']}}}];
+    h.state.catalogues={a:{voices}};h.state.planForCatalogue=true;
+    const saved=h.store.get('chat:chat-a');saved.connectionMode='one';saved.casts={};saved.batchSpeech=true;saved.enableSfx=false;saved.enableAmbience=false;
+    saved.fixed.forEach((actor,i)=>{actor.voice=voices[i].id;delete actor.route;delete actor.accent;delete actor.pronunciation;});
+    h.store.set('chat:chat-a',saved);await h.reload();
+    h.message.content='At dawn. "Hello." The gate closed.';await h.plan();await h.play();
+    assert.equal(h.synthesis.length,1);
+    assert.deepEqual(h.synthesis[0].parameters.turns.map(turn=>turn.voice),['Charon','Puck','Charon']);
+  }finally{await h.close();}
 });
 test('heuristic planning and its test stay local without any backend request',async()=>{
   const h=await harness();try{
@@ -1973,17 +1970,6 @@ test('drawer Stop cancels in-flight speech and paused audio without opening the 
   }finally{await h.close();}
 });
 
-test('drawer Stop during automatic NPC voice design preserves Stopped status and rejects late results',async()=>{
-  const h=await harness();try{
-    const saved=h.store.get('chat:chat-a');h.store.set('chat:chat-a',{...saved,mode:'gemini',autoDesignNPCs:true,extraVoices:'n | Narrator\ny | Persona\ng | Guard',casts:{gemini:[]}});
-    await h.reload();h.$('key').value='test-session-key';h.state.holdDesignVoice=true;
-    h.$('latest').click();await until(()=>h.requests.some(r=>r.action==='designVoice'));await tick();
-    h.root.querySelector('[data-et="stop"]').click();await tick();h.releaseHeld();await tick();
-    assert.equal(h.$('status').textContent,'Stopped.');assert.equal(h.$('stop').disabled,true);assert.equal(h.synthesis.length,0);
-    assert.ok(h.requests.some(r=>r.action==='cancel'));assert.equal(h.store.has('activeplan:chat-a'),false);
-  }finally{await h.close();}
-});
-
 test('reload and chat navigation restore plans; recasting and edited text regenerate only affected passages',async()=>{
   const h=await harness();try{
     assert.equal(h.footer.querySelector('button').title,'Play Choir · click again to stop'); // New ctx.ui decorator API.
@@ -2030,15 +2016,14 @@ test('companion speech applies actor pronunciation and accent just like the main
   }finally{await h.close();}
 });
 
-test('companion cache changes with the Gemini model and delivery settings',async()=>{
+test('companion cache changes with the TTS connection and delivery settings',async()=>{
   const h=await harness();try{
-    const saved=h.store.get('chat:chat-a');h.store.set('chat:chat-a',{...saved,mode:'gemini',fixed:[{speaker:'Narrator',voice:'Charon',style:'Calm'}],casts:{gemini:[]}});await h.reload();
-    h.$('key').value='test-key';const text='A companion-only narration.';
-    const calls=()=>h.requests.filter(request=>request.action==='gemini');
-    await globalThis.__CHOIR_API__.playParagraph({text});await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(calls().length,1);
-    h.$('model').value='gemini-3.8-flash-lite-tts';h.$('model').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));
-    await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(calls().length,2);assert.equal(calls()[1].input.model,'gemini-3.8-flash-lite-tts');
-    await toggle(h,'useStyle',false);await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(calls().length,3);assert.equal(calls()[2].input.segment.style,'');
+    const saved=h.store.get('chat:chat-a');h.store.set('chat:chat-a',{...saved,fixed:[{speaker:'Narrator',voice:'n',style:'Calm'}],casts:{}});await h.reload();
+    const text='A companion-only narration.';
+    await globalThis.__CHOIR_API__.playParagraph({text});await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(h.synthesis.length,1);
+    h.$('connection').value='b';h.$('connection').dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('status').textContent==='Provider selected.');
+    await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(h.synthesis.length,2);assert.equal(h.synthesis[1].connectionId,'b');
+    await toggle(h,'useStyle',false);await globalThis.__CHOIR_API__.playParagraph({text});assert.equal(h.synthesis.length,3);assert.equal(h.synthesis[2].parameters.instructions,undefined);
   }finally{await h.close();}
 });
 

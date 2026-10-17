@@ -253,15 +253,8 @@ export async function setup(ctx) {
     <h4 class="et-subhead">Voices</h4>
     <div class="et-grid">
       <label hidden>Voice connections<select data-et="connectionMode"><option value="several">Several TTS · per character</option><option value="one">One TTS · whole cast</option></select></label>
-      <label hidden>Default TTS connection<select data-et="mode"><option value="native">Lumiverse TTS</option><option value="gemini">Gemini 3.8 (style metadata)</option></select></label>
-      <div data-et="native" style="display:contents">
-        <label>Lumiverse connection<select data-et="connection"></select></label>
-        <label>Style handling<select data-et="styleParam"><option value="">Ignore style</option><option value="instructions">instructions (OpenAI)</option><option value="instruct">instruct</option><option value="prompt">prompt</option></select></label>
-      </div>
-      <div data-et="gemini" hidden style="display:contents">
-        <label>Gemini model<select data-et="model"><option>gemini-3.8-flash-tts</option><option>gemini-3.8-flash-lite-tts</option></select></label>
-        <label>Gemini API key<input data-et="key" type="password" autocomplete="off" placeholder="Session key (never saved)"></label>
-      </div>
+      <label>Lumiverse connection<select data-et="connection"></select></label>
+      <label>Style handling<select data-et="styleParam"><option value="">Ignore style</option><option value="instructions">instructions (OpenAI)</option><option value="instruct">instruct</option><option value="prompt">prompt</option></select></label>
       <label data-et="fishVoiceSourceWrap" hidden>Voices the planner picks from<select data-et="fishVoiceSource"><option value="community">Fish community library</option><option value="own">My Fish voices</option><option value="both">Both</option></select></label>
     </div>
     <h4 class="et-subhead">Planner</h4>
@@ -304,10 +297,8 @@ export async function setup(ctx) {
         <label>Prefetch passages<input data-et="prefetch" type="number" min="0" max="4" value="1"></label>
         <label class="et-check"><input data-et="allowLlmFallback" type="checkbox"> Allow LLM fallback after Jev fails (extra cost)</label>
         <label class="et-check"><input data-et="normalizeLoudness" type="checkbox" checked> Match passage loudness</label>
-        <label class="et-check" data-et="allowVoiceFallbackWrap"><input data-et="allowVoiceFallback" type="checkbox"> Allow one Gemini custom voice fallback to Kore/Charon</label>
         <label hidden>Lumiverse API base<input data-et="apiBase" value="/api/v1"></label>
         <label>Freesound API key (Foley)<input data-et="freesoundApiKey" type="password" placeholder="Freesound token"></label>
-        <label data-et="batchGeminiWrap" class="et-check" style="align-self:end"><input data-et="batchGemini" type="checkbox" checked> Batch Gemini turns (2 speakers)</label>
       </div>
       <p id="choir-chunk-hint" style="font-size:.85em;opacity:.75">Smaller chunks start playing sooner.</p>
       <div class="et-row">
@@ -315,16 +306,7 @@ export async function setup(ctx) {
         <label class="et-check"><input data-et="enableMixer" type="checkbox"> Floating audio mixer</label>
         <label class="et-check"><input data-et="showAutoPlanAction" type="checkbox"> Show Auto-plan in chat toolbar</label>
       </div>
-      <label data-et="autoDesignNPCsWrap" class="et-check" style="margin-top:10px"><input data-et="autoDesignNPCs" type="checkbox"> Auto-design custom voices for new NPCs (Gemini / AI Studio)</label>
       <label data-et="extraVoicesWrap" style="margin-top:10px"><span data-et="extraVoicesLabel">Additional voices & community models (ID | description)</span><textarea data-et="extraVoices" rows="2" placeholder="voice_id | description (e.g. Fish Audio community model ID or Gemini voice)"></textarea></label>
-      <div data-et="voiceDesignBox" style="margin-top:10px;padding:8px 10px;border:1px solid rgba(128,128,128,0.25);border-radius:6px;background:rgba(128,128,128,0.03)">
-        <label style="font-weight:600">Design Voice with Prompt (Gemini / AI Studio)</label>
-        <div style="display:flex;gap:6px;margin-top:4px">
-          <input data-et="voicePrompt" placeholder="e.g. Gruff Scottish blacksmith, deep gravelly timbre, weary humor" style="flex:1">
-          <button data-et="designVoice" type="button" class="et-btn-subtle" style="white-space:nowrap">Design voice</button>
-          <button data-et="auditionVoice" type="button" class="et-btn-subtle" style="white-space:nowrap">Audition</button>
-        </div>
-      </div>
     </details>
 
     <details data-et="planDetails" hidden><summary data-et="planSummary">Speech plan</summary>
@@ -433,10 +415,10 @@ export async function setup(ctx) {
   const autoReplyQueue=new Map(),seenAutoGenerations=new Set();let autoReplyTimer=null,autoReplyActive=null;
   let voices=[...GEMINI_VOICES], nativeConnections=[], nativeProviders=[], castRows=[], npcRows=[], voiceIdEditorCount=0;
   const voiceCatalogues=new Map();
-  let controller=null, currentAudio=null, finishAudio=null, objectUrl=null, lastDesignedVoiceId=null;
-  const defaults = () => ({mode:'native',model:'gemini-3.8-flash-tts',planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,batchGemini:false,concurrency:1,plannerTokens:8192,
-    prefetch:1,normalizeLoudness:true,allowLlmFallback:false,allowVoiceFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
-    extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',autoDesignNPCs:false,plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,casts:{},fixed:[
+  let controller=null, currentAudio=null, finishAudio=null, objectUrl=null;
+  const defaults = () => ({planner:'',connection:'',decisionConnection:'',styleParam:'',apiBase:'/api/v1',chunk:1800,batchSpeech:false,concurrency:1,plannerTokens:8192,
+    prefetch:1,normalizeLoudness:true,allowLlmFallback:false,sectionButtons:false,connectionMode:'several',enableMixer:false,singleVoices:{},
+    extraVoices:'',ignoredTags:'',useStyle:true,auto:false,autoPlan:false,showAutoPlanAction:false,muteNarrator:false,enableSfx:true,enableAmbience:true,enableMusic:false,loopMusic:false,freesoundApiKey:'',npcPolicy:{mode:'llm',route:'',voice:'',voices:[]},fishVoiceSource:'community',plannerMode:'llm',useFastClassifier:false,useJev:false,jevApiKey:'',jevEndpoint:'https://api.typesafe.ai/v1',planBatchChars:3600,planBatchUnits:24,retention:'forever',readAlong:'off',followNarration:false,casts:{},fixed:[
       {speaker:'Narrator',voice:'Charon',style:'Clear, measured narration'},
       {speaker:'Persona',voice:'',style:''},
       {speaker:'Character',voice:'',style:''} ]});
@@ -758,13 +740,9 @@ export async function setup(ctx) {
     for(const node of messageStatuses.get(messagePlaybackId) || []){node.textContent=text;node.title=text;}
   }
   const abortError = () => new DOMException('Stopped','AbortError');
-  const scope = c => c.mode === 'gemini' ? 'gemini' : `native:${c.connection}`;
+  const scope = c => `native:${c.connection}`;
   const detectProvider = routeOrConfig => {
-    if (!routeOrConfig) return 'gemini';
-    const route = typeof routeOrConfig === 'string'
-      ? routeOrConfig
-      : (routeOrConfig.mode === 'gemini' ? 'gemini' : `native:${routeOrConfig.connection}`);
-    if (route === 'gemini') return 'gemini';
+    const route = typeof routeOrConfig === 'string' ? routeOrConfig : scope(routeOrConfig);
     const connectionId = route.startsWith('native:') ? route.slice(7) : route;
     const conn = nativeConnections.find(c => c.id === connectionId);
     return speechProviderFamily(conn?.provider,conn?.model) || 'generic';
@@ -794,7 +772,7 @@ export async function setup(ctx) {
     }
   }
   function scopeLegacyExtraVoices() {
-    const routes=['gemini',...nativeConnections.map(connection=>`native:${connection.id}`)];
+    const routes=nativeConnections.map(connection=>`native:${connection.id}`);
     for(const voice of additionalVoices(config.extraVoices)) {
       if(extraVoiceRoutes(voice.id).length)continue;
       // Older versions shared this textarea across all providers. Recover known
@@ -812,10 +790,6 @@ export async function setup(ctx) {
     if(voiceCatalogues.has(route))return voiceCatalogues.get(route);
     scopeLegacyExtraVoices();
     let extra=[...additionalVoices(config.extraVoices).filter(voice=>extraVoiceRoutes(voice.id).includes(route)),...(capturedDefaults?.voiceCatalogue || []).filter(voice=>voice.route===route)];
-    if(route==='gemini'){
-      const catalogue=normalizeVoiceCatalogue([...new Map([...GEMINI_VOICES,...extra].map(voice=>[voice.id,voice])).values()]);
-      voiceCatalogues.set(route,catalogue);return catalogue;
-    }
     const connectionId=route.startsWith('native:')?route.slice(7):'';
     if(!nativeConnections.some(c=>c.id===connectionId))throw new Error('Select an available TTS connection for this speaker.');
     const conn=nativeConnections.find(c=>c.id===connectionId);
@@ -843,11 +817,20 @@ export async function setup(ctx) {
   const settingsKey = id => `chat:${id}`;
   const GLOBAL_SETTINGS_KEY='settings:global';
   const CAPTURED_DEFAULTS_KEY='settings:captured-defaults';
-  const preferenceFields=['mode','model','planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowVoiceFallback','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','autoDesignNPCs','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration'];
+  const preferenceFields=['planner','decisionConnection','connection','connectionMode','enableMixer','styleParam','apiBase','chunk','batchSpeech','plannerTokens','retention','concurrency','prefetch','normalizeLoudness','allowLlmFallback','sectionButtons','extraVoices','extraVoiceRoutes','useStyle','auto','autoPlan','showAutoPlanAction','ignoredTags','fishVoiceSource','plannerMode','useFastClassifier','useJev','jevEndpoint','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','readAlong','followNarration'];
   const defaultVoiceFields=['voice','route','gender','style','accent','excluded'];
   let capturedDefaults=null,defaultOperation=false,defaultsRevision=0;
   let closeDefaultEditor;
   unsubs.push(()=>closeDefaultEditor?.());
+  // Settings saved for the retired direct Gemini route fall back to the default TTS connection.
+  function retireGeminiRoute(saved){
+    const value=structuredClone(saved);
+    for(const name of ['mode','model','allowVoiceFallback','autoDesignNPCs','batchGemini'])delete value[name];
+    delete value.casts?.gemini;delete value.singleVoices?.gemini;
+    for(const actor of [...(value.fixed || []),...(value.leadVoices || []),...Object.values(value.casts || {}).flat(),value.npcPolicy])if(actor?.route==='gemini')actor.route='';
+    for(const id in value.extraVoiceRoutes)value.extraVoiceRoutes[id]=value.extraVoiceRoutes[id].filter(route=>route!=='gemini');
+    return value;
+  }
   const preferenceSnapshot=value=>Object.fromEntries(preferenceFields.filter(name=>value && Object.hasOwn(value,name)).map(name=>[name,structuredClone(value[name])]));
   function refreshDefaultControls(){
     for(const name of ['captureDefaults','captureNpcDefaults'])$(name).disabled=busy || defaultOperation || !chatId || !castRows.length;
@@ -866,7 +849,6 @@ export async function setup(ctx) {
   function defaultConnection(value,name){
     const select=document.createElement('select');option(select,'','Use default TTS connection');
     for(const connection of nativeConnections)option(select,`native:${connection.id}`,`${connection.name} · ${connection.provider}`);
-    option(select,'gemini','Gemini (session key)');
     if(value && ![...select.options].some(item=>item.value===value))option(select,value,`${value} · unavailable`);
     select.value=value || '';select.setAttribute('aria-label',name);return select;
   }
@@ -1478,39 +1460,6 @@ export async function setup(ctx) {
     };
     voiceIdActions.append(applyVoiceId,cancelVoiceId);voiceIdEditor.append(voiceIdInput,voiceDescription,voiceIdHint,voiceIdActions);
 
-    const designRowBtn=document.createElement('button');
-    designRowBtn.type='button';designRowBtn.className='et-btn-subtle';
-    designRowBtn.title='Design bespoke voice for this character (Gemini / AI Studio)';designRowBtn.innerHTML=ICON_SPARKLE;
-    designRowBtn.style.cssText='padding:2px 8px';
-    designRowBtn.onclick=()=>run(async()=>{
-      const speakerName=name.value.trim() || 'Character';
-      const promptText=(typeof window!=='undefined' && typeof window.prompt==='function')
-        ? (window.prompt(`Describe bespoke voice for ${speakerName}:`,`${speakerName} voice, expressive natural delivery`) || `${speakerName} voice, expressive natural delivery`)
-        : `${speakerName} voice, expressive natural delivery`;
-      if(!promptText)return;
-      designRowBtn.disabled=true;designRowBtn.textContent='…';
-      try {
-        const apiKey=$('key').value.trim();
-        if(!apiKey && (route.value || config.mode)==='gemini')throw new Error('Enter a Gemini API key for this session.');
-        const res=await rpc('designVoice',{prompt:promptText,apiKey},null,15000);
-        const voiceId=res.result.id;
-        rememberExtraVoiceRoute(voiceId,route.value || scope(config));
-        const entry=`${voiceId} | ${promptText}`;
-        const existing=String(config.extraVoices || '').trim();
-        if(!existing.includes(voiceId)) {
-          config.extraVoices=existing?`${existing}\n${entry}`:entry;
-          $('extraVoices').value=config.extraVoices;
-        }
-        if(!rowVoices.some(v=>v.id===voiceId)) {
-          rowVoices.push({id:voiceId,name:voiceId,description:promptText});
-        }
-        searchFilter='';voiceSearchInput.value='';filterVoices();
-        voice.value=voiceId;
-        config=capture();if(chatId)await persistConfig(chatId,config);
-        status(`Designed custom voice "${voiceId}" for ${speakerName}.`);
-      } finally {designRowBtn.disabled=false;designRowBtn.innerHTML=ICON_SPARKLE;}
-    });
-
     const auditionRowBtn=document.createElement('button');
     auditionRowBtn.dataset.choirPreview='';
     auditionRowBtn.type='button';auditionRowBtn.className='et-btn-subtle';
@@ -1522,25 +1471,14 @@ export async function setup(ctx) {
       stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);
       status(`Auditioning ${selectedVoice}…`);
       try {
-        let blob;
         const sampleText='Hello! I am your voice for this story.';
         const selectedRoute=route.value || scope(config);
         const previewRequest=synthesisSettings({speaker:name.value || 'Voice',voice:selectedVoice,text:sampleText,style:style.value.trim(),route:selectedRoute},capture());
-        const cardProvider=detectProvider(selectedRoute);
-        if(selectedRoute==='gemini') {
-          const apiKey=$('key').value.trim();
-          if(!apiKey)throw new Error('Enter a Gemini API key for this session.');
-          const result=await rpc('gemini',{segment:previewRequest.segment,model:config.model,apiKey,allowVoiceFallback:$('allowVoiceFallback').checked},ctrl.signal);
-          const audio=audioBytes(result.base64,result.mimeType);
-          blob=new Blob([audio.data],{type:audio.mimeType});
-        } else {
-          const connectionId=selectedRoute.startsWith('native:')?selectedRoute.slice(7):config.connection;
-          const conn=nativeConnections.find(c=>c.id===connectionId) || nativeConnections[0];
-          if(!conn)throw new Error('TTS connection not available for audition.');
-          const isFish=cardProvider==='fish_audio';
-          const textToSend=isFish && conn.provider!=='openrouter_tts' ? `[cheerful] ${sampleText}` : sampleText;
-          blob=await nativeSpeech(conn,{voice:selectedVoice,text:textToSend,parameters:previewRequest.parameters},ctrl.signal,name.value || 'Voice');
-        }
+        const connectionId=selectedRoute.startsWith('native:')?selectedRoute.slice(7):config.connection;
+        const conn=nativeConnections.find(c=>c.id===connectionId) || nativeConnections[0];
+        if(!conn)throw new Error('TTS connection not available for audition.');
+        const textToSend=detectProvider(selectedRoute)==='fish_audio' && conn.provider!=='openrouter_tts' ? `[cheerful] ${sampleText}` : sampleText;
+        const blob=await nativeSpeech(conn,{voice:selectedVoice,text:textToSend,parameters:previewRequest.parameters},ctrl.signal,name.value || 'Voice');
         if(token!==revision || ctrl.signal.aborted)return;
         await playBlob(blob,ctrl.signal,name.value || 'Voice',0,$('normalizeLoudness').checked);
         if(token===revision)status('Audition finished.');
@@ -1563,17 +1501,14 @@ export async function setup(ctx) {
       if(cardProvider==='fish_audio') {
         voiceSearchInput.placeholder='Filter / search Fish library…';
         searchCommBtn.hidden=false;
-        designRowBtn.hidden=true;
         style.placeholder='e.g. cheerful, whispering, sigh (Fish cues)';
       } else if(cardProvider==='gemini') {
         voiceSearchInput.placeholder='Filter Gemini voices…';
         searchCommBtn.hidden=true;
-        designRowBtn.hidden=false;
         style.placeholder='e.g. whispering in fear, sarcastic (Gemini metadata)';
       } else {
         voiceSearchInput.placeholder='Filter voices…';
         searchCommBtn.hidden=true;
-        designRowBtn.hidden=true;
         style.placeholder='Delivery style instruction';
       }
     };
@@ -1590,7 +1525,7 @@ export async function setup(ctx) {
       } finally {if(!disposed && route.value===selected)voice.disabled=busy;}
     });
 
-    voiceSearchRow.append(voiceSearchInput,searchCommBtn,voiceIdBtn,designRowBtn,auditionRowBtn);
+    voiceSearchRow.append(voiceSearchInput,searchCommBtn,voiceIdBtn,auditionRowBtn);
     voiceWrap.append(voiceSearchRow,voice,voiceIdEditor);
 
     for (const [label,node] of [['TTS connection',route],['Voice gender filter',gender],['Voice',voiceWrap],['Base delivery style',style],['Aliases (comma separated)',aliases],['Pronunciation instruction',pronunciation],['Accent preference',accent]]) {
@@ -1624,11 +1559,11 @@ export async function setup(ctx) {
     return reconcileCardCast({...config,showAutoPlanAction:$('showAutoPlanAction').checked,fixed:castRows.filter(v=>$('fixed').contains(v.row)).map(v=>v.read()),
       singleVoices:config.connectionMode==='one'?{...config.singleVoices,[scope(config)]:Object.fromEntries([...castRows,...npcRows].filter(v=>v.row.isConnected || v.row.parentElement).map(v=>v.voiceChoice()))}:config.singleVoices,
       casts:{...config.casts,[scope(config)]:npcRows.filter(v=>$('npcs').contains(v.row)).map(v=>v.read())},
-      mode:$('mode').value,model:$('model').value,planner:$('planner').value,connection:$('connection').value,decisionConnection:$('decisionConnection')?$('decisionConnection').value:(config.decisionConnection||''),
+      planner:$('planner').value,connection:$('connection').value,decisionConnection:$('decisionConnection')?$('decisionConnection').value:(config.decisionConnection||''),
       styleParam:$('styleParam').value,apiBase:$('apiBase').value.trim(),chunk:Number($('chunk').value),
-      plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchGemini:false,batchSpeech:$('batchSpeech').checked,concurrency:Number($('concurrency').value),
-      prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowVoiceFallback:$('allowVoiceFallback').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
-      extraVoices:$('extraVoices').value,ignoredTags:$('ignoredTags').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,loopMusic:$('loopMusic').checked,readAlong:$('readAlong').value,followNarration:$('followNarration').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),autoDesignNPCs:$('autoDesignNPCs').checked,fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')},activeCharacterCard || {});
+      plannerTokens:Number($('plannerTokens').value),retention:$('retention').value,batchSpeech:$('batchSpeech').checked,concurrency:Number($('concurrency').value),
+      prefetch:Number($('prefetch').value),normalizeLoudness:$('normalizeLoudness').checked,allowLlmFallback:$('allowLlmFallback').checked,sectionButtons:$('sectionButtons').checked,enableMixer:Boolean($('enableMixer')?.checked),
+      extraVoices:$('extraVoices').value,ignoredTags:$('ignoredTags').value,useStyle:$('useStyle').checked,auto:$('auto').checked,muteNarrator:Boolean(config.muteNarrator),enableSfx:$('enableSfx')?Boolean($('enableSfx').checked):(config.enableSfx!==false),enableAmbience:$('enableAmbience').checked,enableMusic:$('enableMusic').checked,loopMusic:$('loopMusic').checked,readAlong:$('readAlong').value,followNarration:$('followNarration').checked,freesoundApiKey:$('freesoundApiKey')?$('freesoundApiKey').value.trim():(config.freesoundApiKey||''),fishVoiceSource:$('fishVoiceSource').value,plannerMode:$('plannerMode')?$('plannerMode').value:resolvePlannerMode(config),useFastClassifier:$('plannerMode')?$('plannerMode').value==='heuristic':Boolean(config.useFastClassifier),useJev:$('plannerMode')?$('plannerMode').value==='jev':Boolean(config.useJev),jevApiKey:$('jevKey')?$('jevKey').value.trim():(config.jevApiKey||''),jevEndpoint:$('jevEndpoint')?$('jevEndpoint').value.trim():(config.jevEndpoint||'')},activeCharacterCard || {});
   }
   function casting(c=config) {
     const routeActor=actor=>c.connectionMode==='one'?{...actor,route:scope(c),voice:singleVoice(actor,c)}:actor;
@@ -1655,7 +1590,6 @@ export async function setup(ctx) {
     const selected=c.singleVoices?.[scope(c)];
     if(selected && Object.hasOwn(selected,actor.speaker))return selected[actor.speaker];
     const voice=!actor.route || actor.route===scope(c)?actor.voice:'';
-    if(scope(c)==='gemini')return actor.voice || '';
     return (voiceCatalogues.get(scope(c)) || []).some(v=>v.id===voice)?voice || '':(actor.voice || '');
   }
   function needsVoiceSelection(attribution,cast){
@@ -1698,7 +1632,7 @@ export async function setup(ctx) {
     if(!['session','1','7','30','forever'].includes(c.retention))throw new Error('Choose a valid audio retention period.');
     const cast=casting(c);validateCastConfig({...cast,voices:[...cast.voices,...extraVoices]});
     validateNumericSettings(c);
-    if(c.mode==='native' && !nativeConnections.some(v=>v.id===c.connection))throw new Error('Select an existing Lumiverse TTS connection.');
+    if(!nativeConnections.some(v=>v.id===c.connection))throw new Error('Select an existing Lumiverse TTS connection.');
   }
   function updatePlannerVisibility() {
     const mode=$('plannerMode')?.value || 'llm';
@@ -1714,15 +1648,6 @@ export async function setup(ctx) {
     const activeProvider=detectProvider(config);
     const several=config.connectionMode==='several';
     const anyFish=activeProvider==='fish_audio' || several && [...castRows,...npcRows].some(row=>detectProvider(row.read().route || scope(config))==='fish_audio');
-    const anyGemini=activeProvider==='gemini' || several && [...castRows,...npcRows].some(row=>detectProvider(row.read().route || scope(config))==='gemini');
-
-    $('gemini').hidden=config.mode!=='gemini' && !(several && [...castRows,...npcRows].some(row=>row.read().route==='gemini'));
-    $('native').hidden=config.mode!=='native';
-
-    if($('voiceDesignBox'))$('voiceDesignBox').hidden=!anyGemini;
-    if($('autoDesignNPCsWrap'))$('autoDesignNPCsWrap').hidden=!anyGemini;
-    if($('batchGeminiWrap'))$('batchGeminiWrap').hidden=true;
-    $('allowVoiceFallbackWrap').hidden=!anyGemini;
     $('fishVoiceSourceWrap').hidden=!anyFish;
 
     if($('extraVoicesLabel')) {
@@ -1731,7 +1656,7 @@ export async function setup(ctx) {
         $('extraVoices').placeholder='reference_id | description (e.g. Fish Audio model ID or reference voice)';
       } else if(activeProvider==='gemini') {
         $('extraVoicesLabel').textContent='Additional Gemini voices & custom IDs (ID | description)';
-        $('extraVoices').placeholder='voice_id | description (e.g. custom designed voice_... ID)';
+        $('extraVoices').placeholder='voice_id | description';
       } else {
         $('extraVoicesLabel').textContent='Additional voices & models (ID | description)';
         $('extraVoices').placeholder='voice_id | description';
@@ -1755,7 +1680,7 @@ export async function setup(ctx) {
     }
   }
   function setFields() {
-    for(const name of ['mode','model','planner','connection','decisionConnection','fishVoiceSource','styleParam','apiBase','chunk','plannerTokens','extraVoices','ignoredTags','retention'])if($(name))$(name).value=config[name] || '';
+    for(const name of ['planner','connection','decisionConnection','fishVoiceSource','styleParam','apiBase','chunk','plannerTokens','extraVoices','ignoredTags','retention'])if($(name))$(name).value=config[name] || '';
     $('connectionMode').value=config.connectionMode;
     $('useStyle').checked=config.useStyle;$('auto').checked=config.auto;
     $('showAutoPlanAction').checked=Boolean(config.showAutoPlanAction);
@@ -1763,25 +1688,24 @@ export async function setup(ctx) {
     $('enableAmbience').checked=config.enableAmbience!==false;$('enableMusic').checked=config.enableMusic===true;$('loopMusic').checked=config.loopMusic===true;
     if($('enableMixer'))$('enableMixer').checked=Boolean(config.enableMixer);
     $('readAlong').value=config.readAlong || 'off';$('followNarration').checked=Boolean(config.followNarration);
-    if($('freesoundApiKey'))$('freesoundApiKey').value=config.freesoundApiKey||'';$('batchGemini').checked=config.batchGemini;$('concurrency').value=config.concurrency;$('autoDesignNPCs').checked=Boolean(config.autoDesignNPCs);
+    if($('freesoundApiKey'))$('freesoundApiKey').value=config.freesoundApiKey||'';$('concurrency').value=config.concurrency;
     if($('plannerMode'))$('plannerMode').value=resolvePlannerMode(config);
     if($('useFastClassifier'))$('useFastClassifier').checked=Boolean(config.useFastClassifier);
     if($('jevKey'))$('jevKey').value=config.jevApiKey||'';
     if($('jevEndpoint'))$('jevEndpoint').value=config.jevEndpoint||'';
-    for(const name of ['allowLlmFallback','allowVoiceFallback','normalizeLoudness','sectionButtons'])$(name).checked=Boolean(config[name]);
+    for(const name of ['allowLlmFallback','normalizeLoudness','sectionButtons'])$(name).checked=Boolean(config[name]);
     $('prefetch').value=config.prefetch;
-    // Per-speaker mixing and exclusions need individual passages.
-    $('batchGemini').checked=false;$('batchGeminiWrap').hidden=true;$('batchSpeech').checked=Boolean(config.batchSpeech);
+    $('batchSpeech').checked=Boolean(config.batchSpeech);
     updatePlannerVisibility();
     updateProviderVisibility();
   }
   function setBusy(value) {
     busy=value;
     if(!value){scheduleAutoReplies();clearReadAlong();}
-    for (const name of ['save','latest','load','testPlanner','designVoice','auditionVoice','add','reset','mode','connection','connectionMode','apply'])if($(name))$(name).disabled=value;
-    for (const name of ['model','planner','plannerMode','decisionConnection','fishVoiceSource','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','voicePrompt','useStyle','useFastClassifier','key','planJson','retention','allowLlmFallback','allowVoiceFallback','prefetch','normalizeLoudness','sectionButtons','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','testTts','importCast'])if($(name))$(name).disabled=value;
+    for (const name of ['save','latest','load','testPlanner','add','reset','connection','connectionMode','apply'])if($(name))$(name).disabled=value;
+    for (const name of ['planner','plannerMode','decisionConnection','fishVoiceSource','jevKey','jevEndpoint','styleParam','apiBase','chunk','plannerTokens','extraVoices','useStyle','useFastClassifier','planJson','retention','allowLlmFallback','prefetch','normalizeLoudness','sectionButtons','enableSfx','enableAmbience','enableMusic','loopMusic','freesoundApiKey','testTts','importCast'])if($(name))$(name).disabled=value;
     updateTransport();
-    $('batchSpeech').disabled=value;if($('batchGemini'))$('batchGemini').disabled=value;if($('concurrency'))$('concurrency').disabled=value;if($('autoDesignNPCs'))$('autoDesignNPCs').disabled=value;
+    $('batchSpeech').disabled=value;if($('concurrency'))$('concurrency').disabled=value;
     for(const node of [...$('fixed').querySelectorAll('input,select,button'),...$('npcs').querySelectorAll('input,select,button'),...$('npcPolicyRoot').querySelectorAll('input,select')])node.disabled=value;
     const narrator=castRows[0]?.row.querySelector('input');if(narrator && config.fixed[0]?.speaker==='Narrator')narrator.disabled=true;
     refreshDefaultControls();
@@ -1816,12 +1740,7 @@ export async function setup(ctx) {
     nativeConnections=results[0].status==='fulfilled' ? results[0].value.data || [] : nativeConnections;
     nativeProviders=results[1].status==='fulfilled' ? results[1].value.providers || [] : nativeProviders;
     const decisionConnections=results[3].status==='fulfilled' ? results[3].value.data || [] : [];
-    if(config.mode==='native' && results[0].status==='fulfilled' && !nativeConnections.length) {
-      config.mode='gemini';
-      if($('mode'))$('mode').value='gemini';
-    } else if(config.mode==='native' && !config.connection && nativeConnections.length) {
-      config.connection=nativeConnections[0].id;
-    }
+    if(!config.connection && nativeConnections.length)config.connection=nativeConnections[0].id;
     $('connection').replaceChildren();option($('connection'),'','Choose connection');
     nativeConnections.forEach(c=>option($('connection'),c.id,`${c.name} · ${c.provider}`));
     if(config.connection && !nativeConnections.some(connection=>connection.id===config.connection))option($('connection'),config.connection,'Saved TTS connection · unavailable');
@@ -1842,7 +1761,8 @@ export async function setup(ctx) {
       }
       $('decisionConnection').value=config.decisionConnection || '';
     }
-    if(config.mode==='native' && results[0].status==='rejected'){renderCast();throw new Error(`Could not load TTS connections: ${results[0].reason.message}. Your selected connection is retained; use Reload to retry.`);}
+    if(results[0].status==='rejected'){renderCast();throw new Error(`Could not load TTS connections: ${results[0].reason.message}. Your selected connection is retained; use Reload to retry.`);}
+    if(!nativeConnections.length){renderCast();throw new Error('Choir speaks through Lumiverse TTS connections. Add one in Lumiverse, then use Reload.');}
     await loadVoices(version);
   }
   async function loadVoices(version=loadVersion) {
@@ -1851,7 +1771,6 @@ export async function setup(ctx) {
     const catalogue=await ensureCatalogue(scope(config),version);
     if(disposed || version!==loadVersion)return;
     voices=catalogue;
-    if(!voiceCatalogues.has('gemini'))await ensureCatalogue('gemini',version);
     const selectedRoutes=new Set(config.connectionMode==='one'?[]:[...config.fixed,...(config.casts[scope(config)] || [])].map(actor=>actor.route).filter(Boolean));
     if(config.npcPolicy?.route)selectedRoutes.add(config.npcPolicy.route);
     const catalogues=await Promise.allSettled([...selectedRoutes].map(route=>ensureCatalogue(route)));
@@ -1881,14 +1800,14 @@ export async function setup(ctx) {
     const defaultRevision=defaultsRevision;
     const [globalSaved,saved,preset]=await Promise.all([ctx.settings.get(GLOBAL_SETTINGS_KEY),id?ctx.settings.get(settingsKey(id)):null,ctx.settings.get(CAPTURED_DEFAULTS_KEY)]);
     if(disposed || version!==loadVersion)return;
-    if(defaultRevision===defaultsRevision)capturedDefaults=[1,2].includes(preset?.version)?{version:2,...(Array.isArray(preset.leadVoices)?{leadVoices:preset.leadVoices}:{}),...(Array.isArray(preset.voiceCatalogue)?{voiceCatalogue:preset.voiceCatalogue}:{}),...(preset.npcPolicy || preset.preferences?.npcPolicy?{npcPolicy:preset.npcPolicy || preset.preferences.npcPolicy}:{})}:null;
+    if(defaultRevision===defaultsRevision)capturedDefaults=[1,2].includes(preset?.version)?retireGeminiRoute({version:2,...(Array.isArray(preset.leadVoices)?{leadVoices:preset.leadVoices}:{}),...(Array.isArray(preset.voiceCatalogue)?{voiceCatalogue:preset.voiceCatalogue}:{}),...(preset.npcPolicy || preset.preferences?.npcPolicy?{npcPolicy:preset.npcPolicy || preset.preferences.npcPolicy}:{})}):null;
     const preferences={...preferenceSnapshot(preset?.preferences || await ctx.settings.get('settings:defaults')),...preferenceSnapshot(saved),...preferenceSnapshot(globalSaved)};
     if(disposed || version!==loadVersion)return;
     const legacyCast=!saved && !capturedDefaults && Array.isArray(globalSaved?.fixed)?globalSaved:null;
-    config={...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(legacyCast || {}),...(saved || {}),...preferences};
+    config=retireGeminiRoute({...defaults(),...Object.fromEntries(preferenceFields.filter(name=>preferences && Object.hasOwn(preferences,name)).map(name=>[name,preferences[name]])),...(legacyCast || {}),...(saved || {}),...preferences});
     config.plannerMode=resolvePlannerMode(preferences);
     config.useFastClassifier=config.plannerMode==='heuristic';config.useJev=config.plannerMode==='jev';
-    if(!saved && !legacyCast && config.mode==='native')config.fixed[0].voice='';
+    if(!saved && !legacyCast)config.fixed[0].voice='';
     retentionPolicies.set(id,config.retention);
     if(saved && !saved.connectionMode)config.connectionMode='several';
     if(saved?.jevApiKey){await persistConfig(id,config);if(disposed || version!==loadVersion)return;}
@@ -1966,7 +1885,7 @@ export async function setup(ctx) {
       const isMutedNarrator=normalizeName(segment.speaker)==='narrator' && Boolean(config.muteNarrator);
       if(isMutedNarrator)card.style.opacity='0.55';
       const label=document.createElement('strong');
-      const connectionLabel=segment.route==='gemini'?'Gemini':nativeConnections.find(c=>`native:${c.id}`===segment.route)?.name;
+      const connectionLabel=nativeConnections.find(c=>`native:${c.id}`===segment.route)?.name;
       label.textContent=`${index+1}. ${segment.speaker}${segment.unison?' · in unison':''} · ${segment.unison?segment.unison.map(member=>member.voice).join(' + '):segment.voice}${connectionLabel?` · ${connectionLabel}`:''}${isMutedNarrator?' · Muted':''}`;
       label.title=segment.style || 'Default delivery';
       const text=document.createElement('div');text.className='et-transcript';text.textContent=segment.text;
@@ -2234,13 +2153,12 @@ export async function setup(ctx) {
         if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
         const completedSections=savedProgress && sameSpeech(savedProgress.content,content) && savedProgress.transcript===transcript && Array.isArray(savedProgress.sections)?savedProgress.sections.filter(saved=>saved && typeof saved.text==='string'):[];
         let timeoutSplits=0;
-        streaming = autoPlay && sections.length > 1 && !config.autoDesignNPCs;
+        streaming = autoPlay && sections.length > 1;
         soundsChosen=streaming && soundCuesWanted(config);let sectionMusic;
         if (streaming) {
-          const apiKey = $('key').value.trim();
           const cached=await recordingStore('get',recordingKey(targetChat,messageId)).catch(()=>null);
           if(ctrl.signal.aborted || token!==revision)return;
-          player = createStreamingPlayer(config, { chatId: targetChat, messageId, content, transcript }, cached, apiKey, ctrl, token);
+          player = createStreamingPlayer(config, { chatId: targetChat, messageId, content, transcript }, cached, ctrl, token);
           player.playbackPromise.catch(error=>{if(!ctrl.signal.aborted){status(error.message,true);ctrl.abort();}});
         }
         for (let index = 0; index < sections.length; index++) {
@@ -2315,36 +2233,6 @@ export async function setup(ctx) {
         plan.segments=cued.segments;planSource.soundCues=cued.checked;planSource.soundCueWarning=cued.warning || '';
       }
       rememberPlanCast(validated);
-      if(config.autoDesignNPCs && (!config.npcPolicy || config.npcPolicy.mode==='llm') && detectProvider(config)==='gemini' && $('key').value) {
-        const apiKey=$('key').value.trim();
-        for(const npc of plan.npcs) {
-          if(npc.voicePrompt || !npc.voice?.startsWith('voice_')) {
-            const prompt=npc.voicePrompt || `${npc.gender && npc.gender!=='auto' ? `${npc.gender} ` : ''}voice for ${npc.speaker}, distinctive timbre and natural delivery`;
-            status(`Auto-designing voice for ${npc.speaker}…`);
-            try {
-              const result=await rpc('designVoice',{apiKey,prompt},ctrl.signal,45000);
-              if(token!==revision || ctrl.signal.aborted)return;
-              const bespokeId=result.id;
-              rememberExtraVoiceRoute(bespokeId,scope(config));
-              npc.voice=bespokeId;
-              for(const s of plan.segments) {
-                if(normalizeName(s.speaker)===normalizeName(npc.speaker))s.voice=bespokeId;
-              }
-              const entry=`${bespokeId} | ${result.description || prompt}`;
-              const existing=String(config.extraVoices || '').trim();
-              config.extraVoices=existing?`${existing}\n${entry}`:entry;
-              $('extraVoices').value=config.extraVoices;
-              config.casts[scope(config)]=plan.npcs;
-              loadVersion++;
-              await loadVoices();
-              status(`Auto-designed voice for ${npc.speaker}: ${bespokeId}`);
-            } catch(error) {
-              if(ctrl.signal.aborted || token!==revision)throw error;
-              status(`Could not auto-design voice for ${npc.speaker}: ${error.message}. Keeping prebuilt voice.`);
-            }
-          }
-        }
-      }
       renderCast();renderPreview();setBusy(true);
       await persistConfig(targetChat,config);
       if(token!==revision || disposed)return;
@@ -2353,7 +2241,7 @@ export async function setup(ctx) {
       if(streaming) {
         const {blobs,segments:playedBatches,warnings}=await player.playbackPromise;
         const key=recordingKey(targetChat,messageId);
-        const signature=JSON.stringify([snapshot.mode,snapshot.model,snapshot.connection,snapshot.styleParam,playedBatches,
+        const signature=JSON.stringify([snapshot.connection,snapshot.styleParam,playedBatches,
           playedBatches.map(segment=>nativeConnections.find(c=>`native:${c.id}`===(segment.route || scope(snapshot)))?.model)]);
         let storageError='';
         try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content,transcript,signature,segments:playedBatches,blobs,sfxPlacement:SFX_PLACEMENT_VERSION,retention:config.retention});}
@@ -2533,7 +2421,7 @@ export async function setup(ctx) {
     }
     const instructions=[snapshot.useStyle?segment.style:'',actor?.pronunciation,actor?.accent && !supported.accent?`Accent: ${actor.accent}`:''].filter(Boolean).join('. ');
     if(styleParam && instructions)parameters[styleParam]=instructions;
-    return {segment:{...segment,route,style:route==='gemini' || openRouterStyle?instructions:family==='fish_audio' && snapshot.useStyle?segment.style:''},connection,parameters};
+    return {segment:{...segment,route,style:openRouterStyle?instructions:family==='fish_audio' && snapshot.useStyle?segment.style:''},connection,parameters};
   }
   function unisonLevels(segment){return speechMembers(segment).map(member=>[member.speaker,mixerVolume(1,member.speaker,mixerState.channels),speakerExcluded(member.speaker)]);}
   function cacheKey(segment,snapshot){
@@ -2557,9 +2445,9 @@ export async function setup(ctx) {
     }
     const request=synthesisSettings(segment,snapshot),connection=request.connection;
     const provider=nativeProviders.find(item=>item.id===connection?.provider);
-    const family=detectProvider(route),limits=speechRequestLimits(route==='gemini'?'gemini':connection?.provider,connection?.model || snapshot.model);
+    const family=detectProvider(route),limits=speechRequestLimits(connection?.provider,connection?.model);
     const prebuilt=GEMINI_VOICES.some(voice=>voice.id===segment.voice);
-    const maxSpeakers=route==='gemini'?prebuilt?2:0:family==='fish_audio' || family==='gemini' && prebuilt || provider?.capabilities.staticVoices?.some(voice=>voice.id===segment.voice)?nativeSpeakerLimit(connection):0;
+    const maxSpeakers=family==='fish_audio' || family==='gemini' && prebuilt || provider?.capabilities.staticVoices?.some(voice=>voice.id===segment.voice)?nativeSpeakerLimit(connection):0;
     const parameters={...request.parameters};
     if(maxSpeakers && (family==='gemini' || connection?.provider==='openrouter_tts')){delete parameters.speech_style;delete parameters.instructions;}
     const level=mixerVolume(1,segment.speaker,mixerState.channels);
@@ -2579,8 +2467,8 @@ export async function setup(ctx) {
     if(plan)$('planSummary').textContent=`Speech plan · ${plan.segments.length} spoken blocks`;
     node.hidden=true;if(!config?.batchSpeech)return;
     const route=scope(config),connection=nativeConnections.find(item=>`native:${item.id}`===route);
-    const maxSpeakers=route==='gemini'?2:nativeSpeakerLimit(connection);
-    const name=route==='gemini'?'Gemini':connection?.name || 'This connection';
+    const maxSpeakers=nativeSpeakerLimit(connection);
+    const name=connection?.name || 'This connection';
     node.title=maxSpeakers?`${name} can combine up to ${maxSpeakers} ${detectProvider(route)==='gemini'?'preset ':''}voices per call.`:`${name}'s Lumiverse relay advertises one voice per call; different assigned voices need separate calls.`;
     if(plan?.segments?.length){
       try{const batches=playbackBatches(plan.segments.map((segment,passageIndex)=>({...segment,passageIndex})),config);
@@ -2591,17 +2479,17 @@ export async function setup(ctx) {
       }catch{}
     }
   }
-  function ttsBatches(segments,snapshot,batchGemini=false,startup=true){
+  function ttsBatches(segments,snapshot,startup=true){
     if(snapshot.batchSpeech)return groupedSpeechBatches(segments,snapshot.chunk,scope(snapshot),(segment,route)=>groupedLimits(segment,route,snapshot),{sfx:snapshot.enableSfx!==false,startup})
       .map(batch=>batch.dialogue?{...batch,groupLevel:mixerVolume(1,batch.turns[0].speaker,mixerState.channels)}:batch);
-    return speechBatches(segments,snapshot.chunk,scope(snapshot),batchGemini,(segment,route)=>{
+    return speechBatches(segments,snapshot.chunk,scope(snapshot),(segment,route)=>{
       if(segment.unison)return groupedLimits(segment,route,snapshot);
       if(segment.kind)return {maxChars:MAX_SPEECH_CHARS};
       const connection=nativeConnections.find(item=>`native:${item.id}`===route);
-      const limits=speechRequestLimits(route==='gemini'?'gemini':connection?.provider,connection?.model || snapshot.model);
+      const limits=speechRequestLimits(connection?.provider,connection?.model);
       if(limits.maxBytes){
         const request=synthesisSettings(segment,snapshot);
-        const delivery=route==='gemini'?request.segment.style:[segment.style,...Object.values(request.parameters)].filter(value=>typeof value==='string').join('\n');
+        const delivery=[segment.style,...Object.values(request.parameters)].filter(value=>typeof value==='string').join('\n');
         limits.maxBytes-=new TextEncoder().encode(delivery || '').length;
         if(limits.maxBytes<80)throw new Error('Shorten the Gemini delivery instructions to leave room for speech text.');
       }
@@ -2611,7 +2499,7 @@ export async function setup(ctx) {
   }
   const SFX_PLACEMENT_VERSION=1;
   const outdatedSfxRecording=recording=>config.enableSfx!==false && recording.sfxPlacement!==SFX_PLACEMENT_VERSION && recording.segments?.some(segment=>segment.kind==='sfx');
-  function playbackBatches(segments,snapshot,{filterMuted=true,batchGemini=false,startup=true}={}){
+  function playbackBatches(segments,snapshot,{filterMuted=true,startup=true}={}){
     const sound=(kind,speaker,text,cue)=>({kind,speaker,voice:'',text,route:kind,[kind]:cue});
     const expanded=segments.flatMap(segment=>{
       const {sfx,ambience,music,...speech}=segment;
@@ -2639,7 +2527,7 @@ export async function setup(ctx) {
       const unison=segment.unison.filter(member=>!speakerExcluded(member.speaker));
       return unison.length>1?[{...segment,unison,mixLevels:unison.map(member=>[member.speaker,mixerVolume(1,member.speaker,mixerState.channels),false]),mixNormalize:snapshot.normalizeLoudness}]:unison.length?[{...segment,...unison[0],unison:undefined}]:[];
     }).filter(segment=>!(filterMuted && (snapshot.batchSpeech?speakerExcluded(segment.speaker):snapshot.muteNarrator && normalizeName(segment.speaker)==='narrator')));
-    const batches=ttsBatches(expanded,snapshot,batchGemini,startup),chunks=new Map();
+    const batches=ttsBatches(expanded,snapshot,startup),chunks=new Map();
     return batches.map(batch=>{const passage=batch.passageIndex,chunkIndex=chunks.get(passage) || 0;chunks.set(passage,chunkIndex+1);return {...batch,chunkIndex};});
   }
   const foleyKey=sound=>JSON.stringify(sound?.feels?[sound.feels,sound.genres,sound.keywords]:[sound?.query || 'thump',sound?.filter || 'duration:[0.2 TO 4]']);
@@ -2672,14 +2560,9 @@ export async function setup(ctx) {
     if(disposed)return;
     $('sfxStatus').hidden=!message;$('sfxStatus').textContent=message;$('sfxStatus').classList.toggle('et-error',Boolean(message) && error);
   }
-  async function synthesizeSpeechBlob(segment,snapshot,apiKey,signal){
+  async function synthesizeSpeechBlob(segment,snapshot,signal){
     if(signal.aborted)throw abortError();
     const request=synthesisSettings(segment,snapshot),route=segment.route || scope(snapshot);
-    if(route==='gemini'){
-      if(!apiKey)throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');
-      const result=await rpc('gemini',{segment:request.segment,model:snapshot.model,apiKey,allowVoiceFallback:snapshot.allowVoiceFallback},signal);
-      const audio=audioBytes(result.base64,result.mimeType);return new Blob([audio.data],{type:audio.mimeType});
-    }
     const connection=request.connection;
     if(!connection)throw new Error(`TTS connection for ${segment.speaker} is no longer available. Choose another connection and plan again.`);
     const text=detectProvider(route)==='fish_audio' && connection.provider!=='openrouter_tts' && snapshot.useStyle && segment.style && !segment.text.startsWith('[')
@@ -2700,7 +2583,7 @@ export async function setup(ctx) {
     }
     return new Blob([mixUnisonAudio(tracks,audioContext.sampleRate,{normalize:snapshot.normalizeLoudness})],{type:'audio/wav'});
   }
-  function createStreamingPlayer(snapshot,source,cached,apiKey,ctrl,token) {
+  function createStreamingPlayer(snapshot,source,cached,ctrl,token) {
     const segments=[];
     const warnings=new Set();
     const warnFoley=error=>{warnings.add(error.message);if(token===revision)showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
@@ -2785,11 +2668,11 @@ export async function setup(ctx) {
               blob=await synthesizeUnisonBlob(seg,snapshot,ctrl.signal,async member=>{
                 const memberKey=cacheKey(member,snapshot);
                 let audio=passages[memberKey];
-                if(!audio){audio=await synthesizeSpeechBlob(member,snapshot,apiKey,ctrl.signal);passages[memberKey]=audio;await persist();}
+                if(!audio){audio=await synthesizeSpeechBlob(member,snapshot,ctrl.signal);passages[memberKey]=audio;await persist();}
                 return audio;
               });
             } else {
-              blob=await synthesizeSpeechBlob(seg,snapshot,apiKey,ctrl.signal);
+              blob=await synthesizeSpeechBlob(seg,snapshot,ctrl.signal);
             }
             if(token!==revision || ctrl.signal.aborted)throw abortError();
             resolveFlight?.(blob);
@@ -2910,18 +2793,16 @@ export async function setup(ctx) {
     if(!segments.some(segment=>!speakerExcluded(segment.speaker))){controller=null;status('All characters have No voice enabled. Text and saved audio remain available.');updateTransport();return;}
     validateSettings(snapshot);
     const source={...planSource,resume:validResume}, key=recordingKey(source.chatId,source.messageId);
-    const signature=JSON.stringify([snapshot.mode,snapshot.model,snapshot.connection,snapshot.styleParam,segments,
+    const signature=JSON.stringify([snapshot.connection,snapshot.styleParam,segments,
       segments.map(segment=>nativeConnections.find(c=>`native:${c.id}`===(segment.route || scope(snapshot)))?.model)]);
     let cached,storageError='';
     status('Checking saved audio…');
     try{cached=await recordingStore('get',key);}catch(error){storageError=error.message;}
     if(token!==revision || ctrl.signal.aborted)throw abortError();
     if(source.resume && cached?.signature!==signature && (snapshot.batchSpeech || cached?.segments?.some(segment=>segment.turns?.length>1) || outdatedSfxRecording(cached || {})))source.resume=null;
-    const apiKey=$('key').value.trim();
-    if(segments.some(segment=>!speakerExcluded(segment.speaker) && (segment.route || scope(snapshot))==='gemini' && !cached?.passages?.[cacheKey(segment,snapshot)]) && !apiKey){controller=null;throw new Error('Enter your Gemini API key for missing passages using the Gemini adapter. It is held only in this page session.');}
     setBusy(true);
     try {
-      const player=createStreamingPlayer(snapshot,source,cached,apiKey,ctrl,token);
+      const player=createStreamingPlayer(snapshot,source,cached,ctrl,token);
       player.push(segments,segments.length);
       player.finish();
       const {blobs,warnings}=await player.playbackPromise;
@@ -3194,83 +3075,6 @@ export async function setup(ctx) {
   $('latest').onclick=()=>run(planLatest);
   $('add').onclick=()=>{castRows.push(makeRow({speaker:`Character ${castRows.length}`,voice:'',style:''},$('fixed'),false,true));scheduleSettingsSave();renderMixer();};
   $('reset').onclick=()=>{config=capture();config.casts[scope(config)]=[];renderCast();clearPlan();scheduleSettingsSave();status('NPC cast cleared.');};
-  $('designVoice').onclick=()=>run(async()=>{
-    const prompt=$('voicePrompt').value.trim();
-    if(!prompt)throw new Error('Describe the voice to design (e.g. age, timbre, accent, persona).');
-    const apiKey=$('key').value.trim();
-    if(!apiKey)throw new Error('Enter a Gemini API key to use Voice Design.');
-    stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);
-    status('Designing voice with Gemini…');
-    try {
-      const result=await rpc('designVoice',{apiKey,prompt},ctrl.signal,45000);
-      if(token!==revision)return;
-      lastDesignedVoiceId=result.id;
-      const entry=`${result.id} | ${result.description}`;
-      const existing=$('extraVoices').value.trim();
-      $('extraVoices').value=existing?`${existing}\n${entry}`:entry;
-      config=capture();if(chatId)await persistConfig(chatId,config);
-      loadVersion++;await loadVoices();
-      $('voicePrompt').value='';status(`Voice designed and added to catalogue: ${result.id}`);
-    } finally {if(token===revision){controller=null;setBusy(false);}}
-  });
-  $('auditionVoice').onclick=()=>run(async()=>{
-    const rawInput=$('voicePrompt').value.trim();
-    const apiKey=$('key').value.trim();
-    let voiceId='';
-    if(rawInput) {
-      if(rawInput.startsWith('voice_') || voices.some(v=>v.id===rawInput) || !rawInput.includes(' ')) {
-        voiceId=rawInput;
-      } else if(config.mode==='gemini') {
-        if(!apiKey)throw new Error('Enter a Gemini API key to design and audition voices.');
-        stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);
-        status('Designing voice with Gemini for audition…');
-        try {
-          const result=await rpc('designVoice',{apiKey,prompt:rawInput},ctrl.signal,45000);
-          if(token!==revision || ctrl.signal.aborted)return;
-          voiceId=result.id;lastDesignedVoiceId=result.id;
-          const entry=`${result.id} | ${result.description}`;
-          const existing=$('extraVoices').value.trim();
-          $('extraVoices').value=existing?`${existing}\n${entry}`:entry;
-          config=capture();if(chatId)await persistConfig(chatId,config);
-          loadVersion++;await loadVoices();
-        } finally {if(token===revision){controller=null;setBusy(false);}}
-      }
-    }
-    if(!voiceId) {
-      if(lastDesignedVoiceId) voiceId=lastDesignedVoiceId;
-      else if($('extraVoices').value.trim()) {
-        const firstLine=$('extraVoices').value.trim().split('\n')[0].trim();
-        voiceId=firstLine.split('|')[0].trim();
-      } else {
-        voiceId=config.fixed?.[0]?.voice || (voices[0]?.id || 'Charon');
-      }
-    }
-    if(!voiceId)throw new Error('No voice selected or designed to audition.');
-    stop(false);const token=revision,ctrl=new AbortController();controller=ctrl;setBusy(true);
-    const sampleText='Hello! I am your new voice for this story.';
-    status(`Auditioning voice (${voiceId})…`);
-    try {
-      let blob;
-      if(config.mode==='gemini') {
-        if(!apiKey)throw new Error('Enter your Gemini API key for speakers using the Gemini adapter. It is held only in this page session.');
-        const seg={speaker:'Audition',voice:voiceId,text:sampleText,style:''};
-        const result=await rpc('gemini',{segment:seg,model:config.model,apiKey},ctrl.signal);
-        if(token!==revision || ctrl.signal.aborted)return;
-        const audio=audioBytes(result.base64,result.mimeType);
-        blob=new Blob([audio.data],{type:audio.mimeType});
-      } else {
-        const connection=nativeConnections.find(c=>`native:${c.id}`===config.connection) || nativeConnections.find(c=>c.id===config.connection) || nativeConnections[0];
-        if(!connection)throw new Error('TTS connection is not available for audition.');
-        const isFish=detectProvider(config)==='fish_audio';
-        const textToSend=isFish && connection.provider!=='openrouter_tts' ? `[cheerful] ${sampleText}` : sampleText;
-        blob=await nativeSpeech(connection,{voice:voiceId,text:textToSend,parameters:isFish && connection.provider==='openrouter_tts'?{instructions:'cheerful'}:{}},ctrl.signal,'Audition');
-      }
-      if(token!==revision || ctrl.signal.aborted)return;
-      status(`Auditioning voice: ${voiceId}`);
-      await playBlob(blob,ctrl.signal);
-      if(token===revision)status('Audition finished.');
-    } finally {if(token===revision){controller=null;setBusy(false);}}
-  });
         const doSearchVoices = () => {
     const query = $('voiceSearchQuery')?.value?.trim() || '';
     openVoiceLibraryModal({
@@ -3308,17 +3112,17 @@ export async function setup(ctx) {
   $('exportCast').onclick=()=>{$('castJson').value=JSON.stringify(castExport(capture()),null,2);status('Cast exported below. Copy this JSON to transfer it. Credentials are excluded.');};
   $('importCast').onclick=()=>run(async()=>{
     if(!chatId)throw new Error('Open a chat first.');
-    const imported=castImport(JSON.parse($('castJson').value)),candidate={...capture(),...imported};
+    const imported=castImport(retireGeminiRoute(JSON.parse($('castJson').value))),candidate={...capture(),...imported};
     const routes=new Set([scope(candidate),...candidate.fixed.map(actor=>actor.route || scope(candidate)),...Object.keys(candidate.casts),...Object.keys(candidate.singleVoices || {}),...Object.values(candidate.casts).flat().map(actor=>actor.route).filter(Boolean)]);
     for(const route of routes)await ensureCatalogue(route);
     for(const [route,choices] of Object.entries(candidate.singleVoices || {}))for(const voice of Object.values(choices))if(voice && !voiceCatalogues.get(route)?.some(v=>v.id===voice))throw new Error(`Imported voice ${voice} is unavailable on ${route}.`);
     validateSettings(candidate);
-    for(const route of Object.keys(candidate.casts)){const scoped=route==='gemini'?{...candidate,mode:'gemini'}:{...candidate,mode:'native',connection:route.slice(7)};validateCastConfig(casting(scoped));}
+    for(const route of Object.keys(candidate.casts))validateCastConfig(casting({...candidate,connection:route.slice(7)}));
     stop(false);config=candidate;await persistConfig(chatId,config);setFields();renderCast();
     if(planSource)await restoreSavedPlan(planSource.messageId);
     status('Cast imported and validated. Saved attribution reused.');
   });
-  for(const name of ['mode','connection'])$(name).onchange=()=>run(async()=>{
+  $('connection').onchange=()=>run(async()=>{
     await flushSettings();
     const messageId=planSource?.messageId,targetChat=chatId;stop(false);config=capture();const version=++loadVersion;
     await persistConfig(targetChat,config,true);if(disposed || chatId!==targetChat || version!==loadVersion)return;saveState('Settings saved');
@@ -3484,10 +3288,10 @@ export async function setup(ctx) {
     return track;
   }
 
-  async function synthesizeSegment(seg,snapshot,apiKey,signal) {
+  async function synthesizeSegment(seg,snapshot,signal) {
     if(seg.kind)return fetchFoleyAudio(seg,snapshot,signal);
-    if(seg.unison)return synthesizeUnisonBlob(seg,snapshot,signal,member=>getCachedOrSynthesize(member,snapshot,apiKey,signal));
-    return synthesizeSpeechBlob(seg,snapshot,apiKey,signal);
+    if(seg.unison)return synthesizeUnisonBlob(seg,snapshot,signal,member=>getCachedOrSynthesize(member,snapshot,signal));
+    return synthesizeSpeechBlob(seg,snapshot,signal);
   }
 
 
@@ -3496,12 +3300,12 @@ const paragraphAudioCache = new Map();
   function segmentCacheKey(seg, snap) {
     return cacheKey(seg,snap);
   }
-  function getCachedOrSynthesize(seg, snap, apiKey, sig) {
+  function getCachedOrSynthesize(seg, snap, sig) {
     const k = segmentCacheKey(seg, snap);
     const cached=paragraphAudioCache.get(k);
     if(cached && !cached.signal?.aborted)return cached.promise;
     const entry={signal:sig};
-    const prom = synthesizeSegment(seg, snap, apiKey, sig).then(blob=>{
+    const prom = synthesizeSegment(seg, snap, sig).then(blob=>{
       sig?.throwIfAborted();entry.signal=null;return blob;
     }).catch(err => {
       if(paragraphAudioCache.get(k)===entry)paragraphAudioCache.delete(k);
@@ -3567,7 +3371,7 @@ const paragraphAudioCache = new Map();
   }
 
   function planAndBatchParagraph(rawText, snap, filterMuted = false, preferredSpeaker = '') {
-    return playbackBatches(paragraphSegments(rawText, snap, preferredSpeaker).segments, snap, {filterMuted, batchGemini: snap.batchGemini});
+    return playbackBatches(paragraphSegments(rawText, snap, preferredSpeaker).segments, snap, {filterMuted});
   }
 
   // Paragraphs outside the current message plan get their effects chosen once per text.
@@ -3633,11 +3437,10 @@ const paragraphAudioCache = new Map();
           return { played: 0 };
         }
 
-        const apiKey = $('key')?.value?.trim() || '';
-        let played=0;const warnings=new Set(cueWarning?[cueWarning]:[]);showFoleyStatus(cueWarning?`SFX skipped: ${cueWarning}. Speech continues.`:missingFoleyKey(snapshot),Boolean(cueWarning));
+            let played=0;const warnings=new Set(cueWarning?[cueWarning]:[]);showFoleyStatus(cueWarning?`SFX skipped: ${cueWarning}. Speech continues.`:missingFoleyKey(snapshot),Boolean(cueWarning));
         const warnFoley=error=>{warnings.add(error.message);showFoleyStatus(`SFX skipped: ${[...warnings].join('; ')}. Speech continues.`);};
         // followBed later picks these loads up from paragraphAudioCache.
-        const prefetchBeds=list=>{for(const batch of list)if(isBed(batch) && !batch[batch.kind].stop && !playbackExcluded(batch))getCachedOrSynthesize(batch,snapshot,apiKey,bedPrefetch.signal).catch(()=>{});};
+        const prefetchBeds=list=>{for(const batch of list)if(isBed(batch) && !batch[batch.kind].stop && !playbackExcluded(batch))getCachedOrSynthesize(batch,snapshot,bedPrefetch.signal).catch(()=>{});};
         prefetchBeds(batches);
 
         // Prefetch upcoming paragraph in background for 0ms transition latency
@@ -3648,7 +3451,7 @@ const paragraphAudioCache = new Map();
             const next = planAndBatchParagraph(nextText, snapshot, true), first = next.find(batch => !isBed(batch));
             if (token === revision) prefetchBeds(next);
             if (!ctrl.signal.aborted && first && !playbackExcluded(first)) {
-              getCachedOrSynthesize(first, snapshot, apiKey, ctrl.signal).catch(() => {});
+              getCachedOrSynthesize(first, snapshot, ctrl.signal).catch(() => {});
             }
           }).catch(() => {});
         }
@@ -3658,16 +3461,16 @@ const paragraphAudioCache = new Map();
           const batch = batches[i];
           if(playbackExcluded(batch))continue;
           // The bed keeps running after this paragraph until another bed, a stop entry, stop() or cancellation.
-          if(isBed(batch)){followBed(batch[batch.kind],bedSignal=>getCachedOrSynthesize(batch,snapshot,apiKey,bedSignal).catch(error=>{if(!bedSignal.aborted)warnFoley(error);throw error;}),batch.kind);continue;}
+          if(isBed(batch)){followBed(batch[batch.kind],bedSignal=>getCachedOrSynthesize(batch,snapshot,bedSignal).catch(error=>{if(!bedSignal.aborted)warnFoley(error);throw error;}),batch.kind);continue;}
 
           // Pipeline next batch synthesis concurrently with current batch playback
           if (snapshot.prefetch>0 && i + 1 < batches.length && !playbackExcluded(batches[i+1]) && !isBed(batches[i+1])) {
-            getCachedOrSynthesize(batches[i + 1], snapshot, apiKey, ctrl.signal).catch(() => {});
+            getCachedOrSynthesize(batches[i + 1], snapshot, ctrl.signal).catch(() => {});
           }
 
           onStatus?.({ kind: 'loading', speaker: batch.speaker });
           try{
-            const blob = await getCachedOrSynthesize(batch, snapshot, apiKey, ctrl.signal);
+            const blob = await getCachedOrSynthesize(batch, snapshot, ctrl.signal);
             if (ctrl.signal.aborted || signal?.aborted) throw abortError();
             if(playbackExcluded(batch))continue;
             onStatus?.({ kind: 'playing', speaker: batch.speaker });
@@ -3710,7 +3513,7 @@ const paragraphAudioCache = new Map();
 
 
   const cleanup=()=>{
-    if(disposed)return;disposed=true;loadVersion++;cancelAutoReplies();saveOnLeave();stop(false);$('key').value='';
+    if(disposed)return;disposed=true;loadVersion++;cancelAutoReplies();saveOnLeave();stop(false);
     for(const done of [...pending.values()])done(abortError());
     unsubs.splice(0).forEach(fn=>fn());removeStyle();cleanupPlacements();
     audioDatabase?.then(db=>db.close()).catch(()=>{});
