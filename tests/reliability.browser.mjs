@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {JSDOM} from 'jsdom';
 import {IDBFactory} from 'fake-indexeddb';
 import {setup} from '../dist/frontend.js';
-import {validatePlan,speechSourceUnits,planningSections,transcriptFromMessage} from '../src/core.js';
+import {validatePlan,speechSourceUnits,transcriptFromMessage} from '../src/core.js';
 import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 
@@ -1201,17 +1201,6 @@ test('continuous music honors stop cues and cancels a loading replacement when m
  }finally{h.state.releaseMusic?.();await h.close();}
 });
 
-test('continuous music carries through streamed planning sections without a new music marker',async()=>{
- const h=await harness();try{
-  await toggle(h,'enableMusic',true);await toggle(h,'loopMusic',true);const bridge=globalThis.__CHOIR_API__;
-  await bridge.playParagraph({text:'Night fell over the road.'});await until(()=>beds(h).length===1 && !beds(h)[0].paused);const music=beds(h)[0];
-  h.message.content='The hall was quiet '.repeat(70)+'. "Hello." '+'The road was dark '.repeat(80)+'.';
-  await h.play();assert.ok(h.requests.filter(request=>request.action==='plan').length>1);
-  assert.ok(h.requests.filter(request=>request.action==='sfx').slice(1).every(request=>request.input.currentMusic.title==='Crypto'));
-  assert.equal(beds(h).length,1);assert.equal(music.paused,false);
- }finally{await h.close();}
-});
-
 test('Cue carries the playing music into later paragraphs, announces it and one bridge toggle turns all Choir sound off',async()=>{
  const h=await harness();try{
   const events=[],target=new EventTarget();target.addEventListener('choir-music-v1',event=>events.push(event.detail));globalThis.dispatchEvent=event=>target.dispatchEvent(event);
@@ -1768,7 +1757,7 @@ test('grouped message controls show one multi-speaker clip and replay every turn
   await until(()=>[...h.$('preview').querySelectorAll('[data-cache-index]')].every(node=>node.textContent==='Shared clip 1 · Cached'));
   await h.reload();await until(()=>clips().length===1);clips()[0].click();await tick();await until(()=>h.$('status').textContent.includes('Playback finished'));
   assert.equal(h.synthesis.length,1,'Playing the displayed grouped clip must reuse its complete recording.');
-  await toggle(h,'batchSpeech',false);await until(()=>h.footer.querySelectorAll('[data-choir-section]').length===1);
+  await toggle(h,'batchSpeech',false);await until(()=>h.footer.querySelectorAll('[data-choir-section]').length===3);
   assert.equal(clips().length,0);assert.equal(h.footer.querySelector('summary').textContent,'Sections');
  }finally{await h.close();}
 });
@@ -2177,31 +2166,28 @@ test('message play reuses the current validated plan even when saving it fails, 
   }finally{await h.close();}
 });
 
-test('section playback is an optional persisted toggle and synthesizes only the selected planner section',async()=>{
+test('section playback is an optional persisted toggle and synthesizes only the selected section',async()=>{
   const h=await harness();try{
     h.message.content='The hall was quiet '.repeat(70)+'. "Welcome." '+'The road was dark '.repeat(80)+'.';
-    await h.plan();const planned=h.requests.filter(r=>r.action==='plan').length;assert.ok(planned>=3);
+    await h.plan();assert.equal(h.requests.filter(r=>r.action==='plan').length,1);
     assert.equal(h.footer.querySelector('details').hidden,true);
     h.$('sectionButtons').checked=true;h.$('sectionButtons').dispatchEvent(new h.dom.window.Event('change'));await tick();
-    const sections=h.footer.querySelector('details');assert.equal(sections.hidden,false);assert.equal(sections.querySelectorAll('[data-choir-section]').length,planned);
+    const sections=h.footer.querySelector('details');assert.equal(sections.hidden,false);assert.equal(sections.querySelectorAll('[data-choir-section]').length,3);
     sections.querySelector('[data-choir-section="1"]').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
-    assert.equal(h.synthesis.length,1);assert.equal(h.synthesis[0].voice,'m');assert.match(h.synthesis[0].text,/Welcome/);assert.equal(h.requests.filter(r=>r.action==='plan').length,planned);
-    await h.reload();assert.equal(h.$('sectionButtons').checked,true);await until(()=>h.footer.querySelectorAll('[data-choir-section]').length===planned);
+    assert.equal(h.synthesis.length,1);assert.equal(h.synthesis[0].voice,'m');assert.match(h.synthesis[0].text,/Welcome/);assert.equal(h.requests.filter(r=>r.action==='plan').length,1);
+    await h.reload();assert.equal(h.$('sectionButtons').checked,true);await until(()=>h.footer.querySelectorAll('[data-choir-section]').length===3);
     h.$('sectionButtons').checked=false;h.$('sectionButtons').dispatchEvent(new h.dom.window.Event('change'));await tick();assert.equal(h.footer.querySelector('details').hidden,true);
     assert.equal(h.$('preview').querySelectorAll('[data-choir-section]').length,0);
   }finally{await h.close();}
 });
 
-test('retrying message play after a planner failure and reload reuses completed attribution sections',async()=>{
+test('retrying message play after a planner failure plans the whole reply again in one request',async()=>{
   const h=await harness();try{
-    h.message.content='The hall was quiet '.repeat(70)+'. "Welcome." '+'The road was dark '.repeat(80)+'.';
-    const count=planningSections(h.message.content).length;h.state.failPlanAt=2;
+    h.message.content='The hall was quiet '.repeat(70)+'. "Welcome." '+'The road was dark '.repeat(80)+'.';h.state.failPlanAt=1;
     h.$('latest').click();await until(()=>h.$('status').textContent.includes('Planner quota exhausted'));
     const first=h.requests.find(r=>r.action==='plan').input.transcript;
     h.state.failPlanAt=null;await h.reload();h.footer.querySelector('button').click();await until(()=>h.$('status').textContent.includes('Playback finished'));
-    assert.equal(h.requests.filter(r=>r.action==='plan' && r.input.transcript===first).length,1);
-    assert.equal(h.requests.filter(r=>r.action==='plan').length,count+1);
-    h.message.content='A changed reply. "Hello."';h.events.get('MESSAGE_EDITED')({messageId:h.message.id});await h.plan();assert.equal(h.requests.filter(r=>r.action==='plan').length,count+2);
+    assert.deepEqual(h.requests.filter(r=>r.action==='plan').map(r=>r.input.transcript),[first,first]);
   }finally{await h.close();}
 });
 
@@ -2596,11 +2582,11 @@ test('a chosen voice remains visible after a save failure and Retry save persist
  }finally{await h.close();}
 });
 
-test('retrying partial planning asks the LLM for unassigned voices instead of restoring catalogue defaults',async()=>{
+test('retrying failed planning asks the LLM for unassigned voices instead of restoring catalogue defaults',async()=>{
  const h=await harness();try{
   const voice=h.$('fixed').querySelectorAll('[data-choir-voice]')[2];voice.value='';voice.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));await until(()=>h.$('saveState').textContent==='Saved automatically');
-  h.message.content=h.message.content.repeat(6);h.state.failPlanAt=2;h.$('latest').click();await until(()=>h.$('status').textContent.includes('Planner quota exhausted') && !h.$('latest').disabled);
-  assert.ok([...h.store.keys()].some(key=>key.startsWith('progress:')));assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'');
+  h.state.failPlanAt=1;h.$('latest').click();await until(()=>h.$('status').textContent.includes('Planner quota exhausted') && !h.$('latest').disabled);
+  assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'');
   const before=h.requests.filter(v=>v.action==='plan');await h.plan();const after=h.requests.filter(v=>v.action==='plan');
   assert.equal(after[before.length].input.transcript,before[0].input.transcript);assert.equal(after[before.length].input.config.fixed[2].voice,'');
   assert.equal(h.$('fixed').querySelectorAll('[data-choir-voice]')[2].value,'m');assert.equal(h.store.get('chat:chat-a').fixed[2].voice,'m');

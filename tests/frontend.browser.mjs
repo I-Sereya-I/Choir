@@ -42,7 +42,6 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
   const placementListeners=new Map();
   const messageActions=dom.window.document.createElement('div');
   const minimalFooter=dom.window.document.createElement('div');
-  let timeoutLongOnce=true;
   const ctx={
     registerDomDecorator:options=>{
       assert.equal(options.mount,'message_footer');
@@ -66,10 +65,6 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     sendToBackend:message=>{
       requests.push(message);if(message.action==='cancel')return;
       setTimeout(()=>{
-        if(message.action==='plan' && message.input.transcript.trim().startsWith('Long narration') && timeoutLongOnce) {
-          timeoutLongOnce=false;
-          onBackend?.({namespace:'choir',id:message.id,error:'Planner timed out while waiting for response.'});return;
-        }
         let result;
         if(message.action==='ping')result={version:'1.0.18',ready:true};
         else if(message.action==='testPlanner')result={model:'gpt-text-test',provider:'openai',response:'READY'};
@@ -207,12 +202,8 @@ test('frontend plans, persists NPCs, plays sequentially, stops, switches chat an
     const beforeLong=requests.filter(request=>request.action==='plan').length;
     $('latest').click();await until(()=>$('status').textContent.startsWith('Ready: 200 turns'));
     const longRequests=requests.filter(request=>request.action==='plan').slice(beforeLong);
-    assert.equal(longRequests.length,33);
-    assert.ok(longRequests.every(request=>speechSourceUnits(request.input.transcript).length<=8));
-    assert.ok(speechSourceUnits(longRequests[1].input.transcript).length===1);
-    assert.equal(longRequests.slice(1).map(request=>request.input.transcript).join(''),message.content);
-    assert.ok(longRequests.every(request=>request.input.timeoutMs===90000));
-    assert.equal(longRequests[3].input.config.npcs.find(actor=>actor.speaker==='Traveler').voice,'echo');
+    assert.equal(longRequests.length,1);
+    assert.equal(longRequests[0].input.transcript,message.content);assert.equal(longRequests[0].input.timeoutMs,240000);
     assert.equal(store.get('chat:chat-a').casts['native:native-a'].find(actor=>actor.speaker==='Traveler').voice,'echo');
     active='chat-b';listeners.get('chat.active')();await tick();await tick();
     assert.match($('npcs').textContent,/No NPCs/);
@@ -234,7 +225,7 @@ test('older hosts show a visible settings diagnostic rather than disappearing',a
 });
 
 
-test('pipelined playback begins playing section 1 while subsequent sections are still being planned', async () => {
+test('a long reply is planned in one request and then played in order', async () => {
   const dom = new JSDOM('<body><main></main></body>', {url: 'https://lumiverse.test'});
   const old = {document: globalThis.document, Audio: globalThis.Audio, fetch: globalThis.fetch, indexedDB: globalThis.indexedDB};
   globalThis.indexedDB = new (require('fake-indexeddb').IDBFactory)();
@@ -306,11 +297,9 @@ test('pipelined playback begins playing section 1 while subsequent sections are 
     const $ = name => (root.querySelector(`[data-et="${name}"]`) || root.ownerDocument.querySelector(`[data-choir-action="${["play","pause","resumePosition"].includes(name)?"playback":name}"]`));
     messageActions.querySelector('button').click();
     await until(() => audios.length > 0);
-    const planRequestsWhilePlaying = requests.filter(r => r.action === 'plan').length;
-    assert.ok(planRequestsWhilePlaying >= 1 && planRequestsWhilePlaying <= 3);
     await until(() => $('status').textContent.includes('Playback finished'));
-    const totalPlanRequests = requests.filter(r => r.action === 'plan').length;
-    assert.equal(totalPlanRequests, 3);
+    const planRequests = requests.filter(r => r.action === 'plan');
+    assert.equal(planRequests.length, 1);assert.equal(planRequests[0].input.transcript, message.content.trim());
     assert.ok(audios.length >= 8);
     cleanup();
   } finally {

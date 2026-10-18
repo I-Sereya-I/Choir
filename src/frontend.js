@@ -1,5 +1,5 @@
 import { characterCardRoleDiscovery } from './core.js';
-import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, planningSections, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
+import { randomUuid, sha256Hex, GEMINI_VOICES, OPENAI_VOICES, additionalVoices, apiErrorMessage, MAX_SPEECH_CHARS, MAX_CHANNEL_VOLUME, speechProviderFamily, speechRequestLimits, normalizeName, normalizeVoiceCatalogue, characterCardRoles, validateCardRoles, reconcileCardCast, unisonSpeakers, speechSourceUnits, mixUnisonAudio, transcriptFromMessage, readableText, readAlongIndex, locatePassages, spokenLength, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, speechBatches, groupedSpeechBatches, audioBytes, fastClassifyPlan, resolvePlannerMode, attributionPlan, restoreAttribution, passageKey, mixerVolume, loudnessGain, castExport, castImport, applySoundCues, cueOffset, sfxCueOffset, transcriptLines, withoutLines } from './core.js';
 
 const CHOIR_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12a4.16 4.16 0 0 1-5.62 3.89 3.78 3.78 0 0 1-2.38-3.39 3.42 3.42 0 0 1 2.34-3.38l3.79-1.42a2.89 2.89 0 0 0 1.87-2.7 2 2 0 1 0-4 0v14a2 2 0 1 1-4 0"/><path d="M20 2v4"/><path d="M22 4h-4"/></svg>`;
 const ICON_PLAY = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-2px"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
@@ -1539,7 +1539,7 @@ export async function setup(ctx) {
     if(!reserved){const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>{row.remove();scheduleSettingsSave();renderMixer();};editor.append(remove);}
     container.append(row);
     updateCardProviderControls();
-    return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter(Boolean),pronunciation:pronunciation.value.trim(),accent:accent.value.trim(),excluded:excluded.checked})};
+    return {row,voiceChoice:()=>[name.value.trim(),voice.value],setExcluded:value=>{excluded.checked=value;},read:()=>({speaker:name.value.trim(),voice:single?actor.voice || '':voice.value,route:single?actor.route || '':route.value,gender:gender.value,style:style.value.trim(),aliases:aliases.value.split(',').map(a=>a.trim()).filter((a,i,list)=>a && normalizeName(a)!==normalizeName(name.value) && list.findIndex(b=>normalizeName(b)===normalizeName(a))===i),pronunciation:pronunciation.value.trim(),accent:accent.value.trim(),excluded:excluded.checked})};
   }
   function renderCast() {
     $('fixed').replaceChildren();$('npcs').replaceChildren();
@@ -2096,8 +2096,6 @@ export async function setup(ctx) {
     const ctrl=new AbortController();controller=ctrl;
     planningSource={messageId,chatId:targetChat,content,token};messagePlaybackId=messageId;
     setBusy(true);status('Checking Choir backend…');
-    let streaming=false, player=null, soundsChosen=false;
-    const soundCueWarnings=new Set();
     try {
       const cardAnalyzed=Boolean(await discoverCardCast(ctrl.signal));snapshot=structuredClone(casting(config));
       if(!forceReplan && await restoreSavedPlan(messageId)){
@@ -2164,120 +2162,49 @@ export async function setup(ctx) {
         }
       }
 
-      const combined = [],playbackSections=[];
-      let previous = '';
-
-      if (fastPlan) {
-        snapshot.npcs = fastPlan.npcs;
-        for (const actor of snapshot.fixed) {
-          if (!actor.voice) actor.voice = fastPlan.segments.flatMap(speechMembers).find(s => normalizeName(s.speaker) === normalizeName(actor.speaker))?.voice || '';
+      if (!fastPlan) {
+        status('Planning speakers and voices…');
+        let result;
+        try {
+          result = await rpc('plan', {
+            transcript,
+            config: snapshot,
+            timeoutMs: 240000,
+            context,
+            connectionId: config.planner,
+            maxTokens: config.plannerTokens,
+            decisionConnection: config.decisionConnection,
+            jevApiKey: config.jevApiKey,
+            jevEndpoint: config.jevEndpoint
+          }, ctrl.signal, 245000,
+          progress => status(`Planning speakers and voices: ${progress.stage}${progress.model ? ` · ${progress.model}` : ''}`));
+        } catch(error) {
+          if (ctrl.signal.aborted || token !== revision) throw error;
+          throw new Error(jevFailure?`${jevFailure}\nLLM fallback failed: ${error.message}`:error.message);
         }
-        combined.push(...stripBase(fastPlan.segments));
-        playbackSections.push(...fastPlan.segments.map((_,index)=>[index]));
-      } else {
-        const sections = planningSections(transcript);
-        const progressKey=`progress:${(await planKey(targetChat,messageId)).slice(5)}`;
-        const savedProgress=forceReplan?null:await ctx.settings.get(progressKey).catch(()=>null);
-        if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
-        const completedSections=savedProgress && sameSpeech(savedProgress.content,content) && savedProgress.transcript===transcript && Array.isArray(savedProgress.sections)?savedProgress.sections.filter(saved=>saved && typeof saved.text==='string'):[];
-        let timeoutSplits=0;
-        streaming = autoPlay && sections.length > 1;
-        soundsChosen=streaming && soundCuesWanted(config);let sectionMusic;
-        if (streaming) {
-          const cached=await recordingStore('get',recordingKey(targetChat,messageId)).catch(()=>null);
-          if(ctrl.signal.aborted || token!==revision)return;
-          player = createStreamingPlayer(config, { chatId: targetChat, messageId, content, transcript }, cached, ctrl, token);
-          player.playbackPromise.catch(error=>{if(!ctrl.signal.aborted){status(error.message,true);ctrl.abort();}});
-        }
-        for (let index = 0; index < sections.length; index++) {
-          const section = sections[index];
-          status(`Planning section ${index+1}/${sections.length}: speakers and voices…`);
-          let result;
-          try {
-            const cachedSection=completedSections.find(saved=>saved.index===index && saved.text===section);
-            if(cachedSection && !needsVoiceSelection(cachedSection.attribution,snapshot)){
-              try{result=restoreAttribution(cachedSection.attribution,section,snapshot);status(`Saved section ${index+1}/${sections.length} reused.`);}catch{result=null;}
-            }
-            if(!result)result = await rpc('plan', {
-              transcript: section,
-              config: snapshot,
-              timeoutMs: 90000,
-              context: [context, previous ? `Previous section of this same reply:\n${previous.slice(-2000)}` : ''].filter(Boolean).join('\n').slice(-4000),
-              connectionId: config.planner,
-              maxTokens: config.plannerTokens,
-              decisionConnection: config.decisionConnection,
-              jevApiKey: config.jevApiKey,
-              jevEndpoint: config.jevEndpoint
-            }, ctrl.signal, 95000,
-            progress => status(`Planning section ${index+1}/${sections.length}: ${progress.stage}${progress.model ? ` · ${progress.model}` : ''}`));
-          } catch(error) {
-            if (ctrl.signal.aborted || token !== revision) throw error;
-            if (/timed out|timeout/i.test(error.message)) {
-              const smaller = planningSections(section, Math.max(1, Math.floor(section.length/2)), 1);
-              if (smaller.length > 1 && timeoutSplits++<2) {
-                sections.splice(index, 1, ...smaller); index--;
-                status(`Splitting the slow section into ${smaller.length} smaller parts…`); continue;
-              }
-              throw new Error(`${jevFailure?`${jevFailure}\nLLM fallback failed: `:''}Planning timed out after limited retries. Completed audio passages were retained. Try a faster Planner LLM connection. ${error.message}`);
-            }
-            throw new Error(jevFailure?`${jevFailure}\nLLM fallback failed: ${error.message}`:error.message);
-          }
-          if (token !== revision || targetChat !== chatId || disposed) return;
-          adoptCommunityVoices(result,snapshot);
-          const checked = validatePlan({ segments: stripBase(result.segments) }, section, snapshot);
-          const savedSection={index,text:section,attribution:attributionPlan(checked,snapshot)};
-          const existing=completedSections.findIndex(saved=>saved.index===index && saved.text===section);
-          if(existing<0)completedSections.push(savedSection);else completedSections[existing]=savedSection;
-          try{await ctx.settings.set(progressKey,{content,transcript,sections:completedSections});}
-          catch(error){status(`Section ready, but planning progress could not be saved: ${error.message}`,true);}
-          if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
-          snapshot.npcs = checked.npcs;
-          for (const actor of snapshot.fixed) {
-            if (!actor.voice) actor.voice = checked.segments.flatMap(speechMembers).find(s => normalizeName(s.speaker) === normalizeName(actor.speaker))?.voice || '';
-          }
-          let sectionSegments=checked.segments;
-          if (streaming) {
-            const cued=await cuePlannedSegments(sectionSegments,ctrl,token,sectionMusic);
-            if(ctrl.signal.aborted || token!==revision || targetChat!==chatId)return;
-            sectionSegments=cued.segments;sectionMusic=lastMusic(sectionSegments.flatMap(segment=>segment.music || [])) || sectionMusic;soundsChosen&&=cued.checked;if(cued.warning)soundCueWarnings.add(cued.warning);
-          }
-          playbackSections.push(sectionSegments.map((_,index)=>combined.length+index));
-          combined.push(...stripBase(sectionSegments)); previous = section;
-          if (streaming) {
-            const offset=combined.length-sectionSegments.length;
-            const indexed=sectionSegments.map((segment,index)=>({...segment,passageIndex:offset+index}));
-            const sectionBatches=config.batchSpeech?playbackBatches(indexed,config,{startup:offset===0}):indexed.flatMap(segment=>playbackBatches([segment],config));
-            player.push(sectionBatches);
-          }
-        }
-        if (streaming) player.finish();
+        if (token !== revision || targetChat !== chatId || disposed) return;
+        adoptCommunityVoices(result,snapshot);
+        fastPlan = validatePlan({ segments: stripBase(result.segments) }, transcript, snapshot);
       }
+      snapshot.npcs = fastPlan.npcs;
+      for (const actor of snapshot.fixed) {
+        if (!actor.voice) actor.voice = fastPlan.segments.flatMap(speechMembers).find(s => normalizeName(s.speaker) === normalizeName(actor.speaker))?.voice || '';
+      }
+      const combined = stripBase(fastPlan.segments);
       // Validate the complete original reply before audio or cast persistence.
       const validated=validatePlan({segments:combined},transcript,snapshot);
-      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat,sections:playbackSections,soundCues:soundsChosen,soundCueWarning:[...soundCueWarnings].join('; ')};
-      if(!streaming){
-        const cued=await cuePlannedSegments(plan.segments,ctrl,token);
-        if(token!==revision || ctrl.signal.aborted)return;
-        plan.segments=cued.segments;planSource.soundCues=cued.checked;planSource.soundCueWarning=cued.warning || '';
-      }
+      plan={...validated,warning:jevFailure};planSource={messageId,content,transcript,chatId:targetChat,soundCues:false,soundCueWarning:''};
+      const cued=await cuePlannedSegments(plan.segments,ctrl,token);
+      if(token!==revision || ctrl.signal.aborted)return;
+      plan.segments=cued.segments;planSource.soundCues=cued.checked;planSource.soundCueWarning=cued.warning || '';
       rememberPlanCast(validated);
       renderCast();renderPreview();setBusy(true);
       await persistConfig(targetChat,config);
       if(token!==revision || disposed)return;
       await persistPlan();
-      if(!streaming)status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.flatMap(speechMembers).map(s=>s.speaker)).size} speakers.${plannerMode==='heuristic' || plannerMode==='jev' && !jevFailure?` ${plannerMode==='heuristic'?'Local heuristic':'Jev'} attribution; ${cardAnalyzed?`LLM used for card analysis${planSource.soundCues?' and sound effects':''}`:planSource.soundCues?'one LLM request for sound effects':'no LLM request'}.`:''}${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''}`);
-      if(streaming) {
-        const {blobs,segments:playedBatches,warnings}=await player.playbackPromise;
-        const key=recordingKey(targetChat,messageId);
-        const signature=JSON.stringify([snapshot.connection,snapshot.styleParam,playedBatches,
-          playedBatches.map(segment=>nativeConnections.find(c=>`native:${c.id}`===(segment.route || scope(snapshot)))?.model)]);
-        let storageError='';
-        try{const partial=await recordingStore('get',key);await recordingStore('put',key,{...partial,content,transcript,signature,segments:playedBatches,blobs,sfxPlacement:SFX_PLACEMENT_VERSION,retention:config.retention});}
-        catch(error){storageError=error.message;}
-        if(token===revision){renderMessages();status((storageError?`Playback finished. Audio could not be saved: ${storageError}`:config.retention==='session'?'Playback finished. Audio kept for this session; Replay is available beside the message.':'Playback finished. Audio saved on this device; Replay is available beside the message.')+foleyWarning(warnings));}
-      }
+      status(`Ready: ${plan.segments.length} turns, ${new Set(plan.segments.flatMap(speechMembers).map(s=>s.speaker)).size} speakers.${plannerMode==='heuristic' || plannerMode==='jev' && !jevFailure?` ${plannerMode==='heuristic'?'Local heuristic':'Jev'} attribution; ${cardAnalyzed?`LLM used for card analysis${planSource.soundCues?' and sound effects':''}`:planSource.soundCues?'one LLM request for sound effects':'no LLM request'}.`:''}${jevFailure?` Jev failed: ${jevFailure}. LLM fallback used.`:''}`);
     } finally {ctrl.abort();if(planningSource?.token===token)planningSource=null;if(token===revision){controller=null;advancePlayback=null;generationPolicyChanged=null;updateNextControls();setBusy(false);}}
-    if(autoPlay && !streaming && token===revision)await play();
+    if(autoPlay && token===revision)await play();
   }
   // Read-along draws with the CSS Custom Highlight API, so Lumiverse's React-owned message DOM is never changed.
   function clearReadAlong(){readAlongStop?.();readAlongStop=null;followContainer=null;followPaused=false;followGroup=null;followRange=null;followResume.hidden=true;globalThis.CSS?.highlights?.delete('choir-speaking');}
@@ -2507,8 +2434,8 @@ export async function setup(ctx) {
       }catch{}
     }
   }
-  function ttsBatches(segments,snapshot,startup=true){
-    if(snapshot.batchSpeech)return groupedSpeechBatches(segments,snapshot.chunk,scope(snapshot),(segment,route)=>groupedLimits(segment,route,snapshot),{sfx:snapshot.enableSfx!==false,startup})
+  function ttsBatches(segments,snapshot){
+    if(snapshot.batchSpeech)return groupedSpeechBatches(segments,snapshot.chunk,scope(snapshot),(segment,route)=>groupedLimits(segment,route,snapshot),{sfx:snapshot.enableSfx!==false})
       .map(batch=>batch.dialogue?{...batch,groupLevel:mixerVolume(1,batch.turns[0].speaker,mixerState.channels)}:batch);
     return speechBatches(segments,snapshot.chunk,scope(snapshot),(segment,route)=>{
       if(segment.unison)return groupedLimits(segment,route,snapshot);
@@ -2527,7 +2454,7 @@ export async function setup(ctx) {
   }
   const SFX_PLACEMENT_VERSION=1;
   const outdatedSfxRecording=recording=>config.enableSfx!==false && recording.sfxPlacement!==SFX_PLACEMENT_VERSION && recording.segments?.some(segment=>segment.kind==='sfx');
-  function playbackBatches(segments,snapshot,{filterMuted=true,startup=true}={}){
+  function playbackBatches(segments,snapshot,{filterMuted=true}={}){
     const sound=(kind,speaker,text,cue)=>({kind,speaker,voice:'',text,route:kind,[kind]:cue});
     const expanded=segments.flatMap(segment=>{
       const {sfx,ambience,music,...speech}=segment;
@@ -2555,7 +2482,7 @@ export async function setup(ctx) {
       const unison=segment.unison.filter(member=>!speakerExcluded(member.speaker));
       return unison.length>1?[{...segment,unison,mixLevels:unison.map(member=>[member.speaker,mixerVolume(1,member.speaker,mixerState.channels),false]),mixNormalize:snapshot.normalizeLoudness}]:unison.length?[{...segment,...unison[0],unison:undefined}]:[];
     }).filter(segment=>!(filterMuted && (snapshot.batchSpeech?speakerExcluded(segment.speaker):snapshot.muteNarrator && normalizeName(segment.speaker)==='narrator')));
-    const batches=ttsBatches(expanded,snapshot,startup),chunks=new Map();
+    const batches=ttsBatches(expanded,snapshot),chunks=new Map();
     return batches.map(batch=>{const passage=batch.passageIndex,chunkIndex=chunks.get(passage) || 0;chunks.set(passage,chunkIndex+1);return {...batch,chunkIndex};});
   }
   const foleyKey=sound=>JSON.stringify(sound?.feels?[sound.feels,sound.genres,sound.keywords]:[sound?.query || 'thump',sound?.filter || 'duration:[0.2 TO 4]']);
@@ -2573,9 +2500,9 @@ export async function setup(ctx) {
   // Sound effects are optional: a failed choice never blocks speech.
   // The music playing at the end of earlier text, so the next sound request keeps it unless the scene changes.
   const lastMusic=entries=>{const entry=(entries || []).filter(entry=>!entry.stop).at(-1);return entry && {title:'',feels:entry.feels};};
-  async function cuePlannedSegments(segments,ctrl,token,currentMusic){
+  async function cuePlannedSegments(segments,ctrl,token){
     if(!soundCuesWanted(config))return {segments,checked:false};
-    currentMusic ||= continuousMusic() && beds.music && {title:beds.music.title || '',feels:beds.music.feels};
+    const currentMusic=continuousMusic() && beds.music && {title:beds.music.title || '',feels:beds.music.feels};
     try{return {segments:applySoundCues(segments,await chooseSoundCues(segments,ctrl.signal,status,currentMusic)),checked:true};}
     catch(error){
       if(ctrl.signal.aborted || token!==revision)throw error;

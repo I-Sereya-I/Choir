@@ -5,7 +5,7 @@ import {speechPanel} from './fixtures/speech-panel.mjs';
 import {phoneWidget} from './fixtures/phone-widget.mjs';
 import {sfxCueOffset} from '../src/core.js';
 import {randomUuid,sha256Hex,ignoredTagNames,characterCardRoles,reconcileCardCast} from '../src/core.js';
-import {validatePlan, validateCastConfig, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, planningSections, plannerPrompt, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, transcriptLines, skipCheckPrompt, parseSkipRows, skippedLines, withoutLines, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
+import {validatePlan, validateCastConfig, splitSegment, speechBatches, speechRequestLimits, audioBytes, transcriptFromMessage, parsePlanJson, normalizeVoiceCatalogue, speechSourceUnits, resolvePlanReferences, castingPrompt, parseCastRows, castReply, stripAudioTags, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, applySoundCues, rankMusic, cueOffset, transcriptLines, skipCheckPrompt, parseSkipRows, skippedLines, withoutLines, readableText, readAlongIndex, locatePassages, spokenLength, attributionPlan, restoreAttribution, apiErrorMessage} from '../src/core.js';
 
 test('ignored tags skip nested, attributed, mixed-case and unfinished blocks without dropping ordinary story markup',()=>{
   assert.deepEqual(ignoredTagNames('Summary, <private-note>\nsummary; invalid.*'),['summary','private-note']);
@@ -337,29 +337,6 @@ test('new NPCs use the default connection and saved NPC overrides remain stable'
   assert.equal(validatePlan({segments:[{speaker:'Guard',voice:'Kore',route:'native:google',text:'Hello.'}]},'Hello.',c).segments[0].route,'native:other');
 });
 
-test('long replies split into planning sections without splitting quoted speech or losing whitespace',()=>{
-  const text=Array.from({length:120},(_,i)=>'She waved. "Line '+i+'."\n\n').join('');
-  const sections=planningSections(text,600,10);
-  assert.ok(sections.length>1);assert.equal(sections.join(''),text);
-  for(const section of sections){assert.equal((section.match(/"/g) || []).length%2,0);assert.ok(speechSourceUnits(section).length<=10);}
-  const quote='"'+ 'word '.repeat(1500)+'"';
-  assert.equal(planningSections(quote).length,1);
-});
-
-test('very long individual units use compact identification previews while audio keeps the original',()=>{
-  const transcript='"'+ 'Hello there. '.repeat(3000)+'"';
-  const data=JSON.parse(plannerPrompt(transcript,config(),'')[1].content);
-  assert.ok(data.sourceUnits[0].excerpted);assert.ok(data.sourceUnits[0].text.length<2600);
-  const plan=validatePlan(resolvePlanReferences({segments:[{speaker:'Alice',voice:'Kore',unit_ids:[0]}]},transcript,config()),transcript,config());
-  assert.equal(plan.segments[0].text,transcript);
-});
-
-test('default planning sections keep ordinary requests small and preserve every character',()=>{
-  const text=Array.from({length:40},()=> 'She nodded. "Hello."\n').join('');
-  const sections=planningSections(text);
-  assert.equal(sections.length,10);assert.equal(sections.join(''),text);
-  assert.ok(sections.every(section=>speechSourceUnits(section).length<=8 && section.length<=1200));
-});
 
 test('stripAudioTags and validatePlan allowing inline tags like <sigh> or [whispers] in segment text without failing transcript equality',()=>{
   assert.equal(stripAudioTags('Hello <sigh> world! [whispers]').trim().replace(/\s+/g, ' '), 'Hello world!');
@@ -684,17 +661,96 @@ test('rankMusic scores feels, genre, keywords and full-length tracks',()=>{
   assert.equal(rankMusic(pieces,{}).at(-1).title,'Sting');
 });
 
-test('Fish community routes ask the planner to describe new voices and hide that route\'s own catalogue; My Fish voices keep the old prompt',()=>{
+test('community routes hide their own catalogue from the casting prompt and ask for a voice description and the story language',()=>{
   const cast={voices:[{id:'own',route:'native:fish'},{id:'kept',route:'native:both'},{id:'Kore',route:'native:google'}],fixed:[{speaker:'Narrator',voice:'Kore',style:'',route:'native:google'}],npcs:[],defaultRoute:'native:fish'};
-  const own=plannerPrompt('Hello.',cast,'');
-  assert.doesNotMatch(own[0].content,/voiceSearch/);
-  assert.deepEqual(Object.keys(JSON.parse(own[1].content)),['fixedCast','existingNPCs','characterProfiles','availableVoices','defaultRoute','context','sourceUnits']);
-  const community=plannerPrompt('Hello.',{...cast,communityRoutes:{'native:fish':'community','native:both':'both'}},'');
-  assert.match(community[0].content,/"voiceSearch":\{"gender":"female\|male\|neutral","age":"young\|middle-aged\|old"/);
-  assert.match(community[0].content,/top-level "language" with the ISO 639-1 code/);
-  const data=JSON.parse(community[1].content);
-  assert.deepEqual(data.availableVoices.map(voice=>voice.id),['kept','Kore']);
-  assert.deepEqual(data.communityRoutes,{'native:fish':'community','native:both':'both'});
+  const units=speechSourceUnits('"Hello."');
+  const own=castingPrompt(units,cast,'');
+  assert.doesNotMatch(own[0].content,/LANG/);assert.match(own[1].content,/Available voices for new NPCs: own \(, \)\n/);
+  const community=castingPrompt(units,{...cast,communityRoutes:{'native:fish':'community','native:both':'both'}},'');
+  assert.match(community[0].content,/young, middle-aged or old and 1 to 4 tone words from: deep, low/);assert.match(community[0].content,/LANG\|ISO 639-1/);
+  assert.match(community[1].content,/Available voices for new NPCs: \n/);
+  assert.match(castingPrompt(units,{...cast,defaultRoute:'native:both',communityRoutes:{'native:both':'both'}},'')[1].content,/Available voices for new NPCs: kept \(, \)\n/);
+});
+
+const castingCast=()=>({voices:[{id:'n',gender:'male',description:'Deep'},{id:'m',gender:'female',description:'Bright'},{id:'f1',gender:'female',description:'Soft'},{id:'f2',gender:'female',description:'Warm'},{id:'x1',gender:'male',description:'Gravelly'}],
+  fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Jay',voice:'x1',style:'',aliases:['I']},{speaker:'Mira Vale',voice:'m',style:'',aliases:['Mira']}],npcs:[{speaker:'Guard',voice:'f2',style:''}],
+  characterProfiles:[{speaker:'Jay',role:'persona',description:'A tall\n\nquiet man. '+'x'.repeat(300)},{speaker:'Mira Vale',role:'character',description:''}]});
+const scripted=answers=>{const calls=[];const llm=async messages=>{calls.push(messages);const answer=answers[calls.length-1];return typeof answer==='function'?answer(messages):answer ?? '';};return {calls,llm};};
+
+test('the casting prompt lists the cast, unused voices, recent context and the reply with marked dialogue',()=>{
+  const transcript='Mira looked up. "Hi." "Bye," I said.';
+  const [system,user]=castingPrompt(speechSourceUnits(transcript),castingCast(),'earlier');
+  assert.match(system.content,/^You are an audiobook casting director\./);assert.match(system.content,/NPC\|name\|female\/male\/neutral\|voice id from the available voices \(match gender and character\)\.$/);
+  assert.equal(user.content,`Cast:\n- Jay (aliases: I) [persona]: A tall quiet man. ${'x'.repeat(202)}\n- Mira Vale (aliases: Mira) [character]\n- Guard [npc]\n\nAvailable voices for new NPCs: f1 (female, Soft)\n\nEarlier chat (context only):\nearlier\n\nReply to cast (indented lines are narration):\n   Mira looked up.\nD1: "Hi."\nD2: "Bye,"\n   I said.`);
+  const unvoiced=castingCast();unvoiced.fixed[2].voice='';
+  assert.match(castingPrompt([],unvoiced,'')[0].content,/no voice yet; add an NPC line for each of them too: Mira Vale\.$/);
+});
+
+test('casting rows tolerate list markers and markdown and ignore other text',()=>{
+  const rows=parseCastRows('Here you go:\n- **D1|Mira|soft**\n* `2` | Jay | \nD3|Narrator\r\nNPC|The Gate Guard|Male|x1\nNPC|bad\nLANG|pt\nD4');
+  assert.deepEqual([...rows.speakers],[[1,'Mira'],[2,'Jay'],[3,'Narrator']]);
+  assert.deepEqual([...rows.styles],[[1,'soft'],[2,''],[3,'']]);
+  assert.deepEqual([...rows.npcs],[['gate guard',{name:'The Gate Guard',gender:'male',voice:'x1'}]]);
+  assert.equal(rows.language,'pt');
+});
+
+test('castReply canonicalises aliases, reads NOT_SPOKEN as narration and casts new NPCs with a suitable unused voice',async()=>{
+  const transcript='"Hi," Mira said. "Hey." The sign read "Closed". "Halt!" "Move." "Hm."';
+  const {calls,llm}=scripted(['D0|mira|cheerful\nD2|I|\nD4|NOT_SPOKEN|\nD6|the gate guard|stern\nD7|Old woman|tired\nD8|Gate Guard|\nNPC|Gate guard|female|n\nNPC|Old woman|female|f1']);
+  const raw=await castReply(transcript,castingCast(),'x'.repeat(5000)+'recent',llm);
+  assert.equal(calls.length,1);assert.ok(calls[0][1].content.includes(`${'x'.repeat(2994)}recent\n`));
+  const plan=validatePlan(resolvePlanReferences(raw,transcript,castingCast()),transcript,castingCast());
+  const turn=text=>plan.segments.find(segment=>segment.text===text);
+  assert.deepEqual([turn('"Hi,"').speaker,turn('"Hey."').speaker,turn('"Closed"').speaker,turn('"Halt!"').speaker,turn('"Move."').speaker,turn('"Hm."').speaker],['Mira Vale','Jay','Narrator','the gate guard','Old woman','the gate guard']);
+  assert.equal(turn('"Hi,"').style,'cheerful');assert.equal(turn('"Hey."').style,'natural, matching the scene');
+  // The guard's suggested voice is male, so it gets the first unused female voice; the old woman keeps her valid choice.
+  assert.deepEqual(plan.npcs.map(npc=>[npc.speaker,npc.voice,npc.gender]),[['Guard','f2',undefined],['the gate guard','f1','female'],['Old woman','f1','female']]);
+});
+
+test('castReply asks once for missing lines only, then gives a still-missing line the previous speaker',async()=>{
+  const transcript='"One." "Two." "Three." "Four."';
+  const {calls,llm}=scripted(['D0|Jay|\nD2|Mira|','D1|Mira|calm']);
+  const raw=await castReply(transcript,castingCast(),'',llm);
+  assert.equal(calls.length,2);assert.equal(calls[1].at(-1).content,'You missed these ids: D1, D3. Return only their lines (and NPC lines for any new speaker) in the same format.');
+  assert.equal(calls[1].at(-2).content,'D0|Jay|\nD2|Mira|');
+  assert.deepEqual(raw.segments.map(segment=>segment.speaker),['Jay','Mira Vale','Mira Vale','Mira Vale']);
+  assert.equal(await castReply(transcript,castingCast(),'',scripted(['I cannot help with that.','Sorry.']).llm),null);
+  assert.equal((await castReply('Only narration.',castingCast(),'',async()=>{throw Error('No request expected');})).segments[0].speaker,'Narrator');
+});
+
+test('a blocked reply is cast in parallel ~1200-character parts with the previous part as context, and fails only if every part is blocked',async()=>{
+  const transcript=Array.from({length:6},(_,i)=>`${'Narration goes on. '.repeat(25)}"Line ${i}."`).join(' ');
+  const parts=[];let open=0,peak=0;
+  const llm=async messages=>{
+    const user=messages[1].content;
+    if(user.includes('Earlier chat (context only):\nCHAT'))return '';
+    parts.push(user);open++;peak=Math.max(peak,open);await new Promise(resolve=>setTimeout(resolve,5));open--;
+    return [...user.matchAll(/^D(\d+):/gm)].map(match=>`D${match[1]}|Jay|`).join('\n');
+  };
+  const raw=await castReply(transcript,castingCast(),'CHAT',llm);
+  assert.ok(parts.length>2);assert.ok(peak>1);
+  assert.ok(parts.every(user=>!user.includes('CHAT')));assert.match(parts[0],/Earlier chat \(context only\):\n\n/);
+  assert.match(parts[1],/Earlier chat \(context only\):\nEarlier in this reply: .{600}\n\nReply to cast/);
+  assert.ok(raw.segments.filter(segment=>/^"/.test(speechSourceUnits(transcript)[segment.unit_ids[0]].text)).every(segment=>segment.speaker==='Jay'));
+  let calls=0;assert.equal(await castReply(transcript,castingCast(),'CHAT',async()=>{calls++;return '';}),null);assert.equal(calls,parts.length+1);
+});
+
+test('castReply fills unassigned lead voices and expands explicit unison to every named member',async()=>{
+  const cast={voices:[{id:'n'},{id:'low',gender:'male'},{id:'bright',gender:'male'}],fixed:[{speaker:'Narrator',voice:'n',style:''},{speaker:'Levi',voice:'',gender:'male',style:''},{speaker:'Cole',voice:'',gender:'male',style:''}],npcs:[],useStyle:false};
+  const transcript='Levi and Cole said in unison, "Hello." Levi and Cole nodded. "Bye," they said together.';
+  const raw=await castReply(transcript,cast,'',async()=>'D1|Cole|\nD3|Levi|\nNPC|Levi|male|bright');
+  const plan=validatePlan(resolvePlanReferences(raw,transcript,cast),transcript,cast);
+  assert.deepEqual(plan.segments.find(segment=>segment.text==='"Hello."').unison.map(member=>[member.speaker,member.voice]),[['Levi','bright'],['Cole','low']]);
+  assert.equal(plan.segments.find(segment=>segment.text==='"Bye,"').speaker,'Levi & Cole');
+  const vague='"Hi," they said together.';
+  assert.equal(validatePlan(resolvePlanReferences(await castReply(vague,cast,'',async()=>'D0|Cole|'),vague,cast),vague,cast).segments[0].speaker,'Cole');
+});
+
+test('an alias repeating its own speaker name or alias is ignored instead of conflicting',()=>{
+  const cast={...castingCast(),fixed:[...castingCast().fixed,{speaker:'Juniper',voice:'f1',style:'',aliases:['juniper ','June','june']}]};
+  assert.equal(validateCastConfig(cast),cast);
+  assert.equal(validatePlan({segments:[{speaker:'June',text:'"Hi."'}]},'"Hi."',cast).segments[0].speaker,'Juniper');
+  assert.throws(()=>validateCastConfig({...cast,fixed:[...cast.fixed.slice(0,3),{...cast.fixed[3],aliases:['Mira']}]}),/Conflicting character alias: Mira/);
 });
 
 test('read-along maps transcript passages onto rendered text nodes across markup, quote styles, repeats and scripts',()=>{

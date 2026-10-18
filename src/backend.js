@@ -1,4 +1,4 @@
-import { validateCardRoles, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, plannerPrompt, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines } from './core.js';
+import { validateCardRoles, validateCastConfig, validatePlan, npcCastActor, parsePlanJson, resolvePlanReferences, castReply, speechSourceUnits, normalizeName, unisonSpeakers, fastClassifyPlan, resolvePlannerMode, soundCuePrompt, parseSoundCues, rankMusic, MUSIC_GENRES, skipCheckPrompt, parseSkipRows, skippedLines } from './core.js';
 
 async function jevPost(url, headers, payload, signal) {
   signal?.throwIfAborted();
@@ -468,7 +468,7 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
   (async () => {
     const input = message.input || {};
     if (message.action === 'ping') {
-      send({result:{version:'1.1.6-staging.28',ready:true}});return;
+      send({result:{version:'1.1.6-staging.29',ready:true}});return;
     }
     if(message.action==='cardCast'){
       const card=input.card;
@@ -605,64 +605,37 @@ spindle.onFrontendMessage((message, userId, frontendSessionId) => {
         }
       }
       progress({stage:'Resolving saved LLM connection'});
-      const context = typeof input.context === 'string' ? input.context.slice(-4000) : '';
-      const messages = plannerPrompt(input.transcript,input.config,context);
       const connection=input.connectionId
         ? await spindle.connections.get(input.connectionId,userId)
         : (await spindle.connections.list(userId)).find(profile=>profile.is_default);
       if(controller.signal.aborted)return;
       if(!connection?.model)throw new Error('Select a Planner LLM connection with a configured text-generation model.');
-      let maxTokens=input.maxTokens ?? 8192;
+      const maxTokens=input.maxTokens ?? 8192;
       if(!Number.isInteger(maxTokens) || maxTokens<1024 || maxTokens>32768)throw new Error('Planner output budget must be 1024–32768 tokens.');
-      let failure;const communityVoices=new Map();
-      for (let attempt=0;attempt<2;attempt++) {
-        progress({stage:`Waiting for planner response (attempt ${attempt+1}/2)`,provider:connection.provider,model:connection.model});
+      // A thrown provider error counts as a blocked answer, like an empty one; the last error explains a failed plan.
+      let requests=0,failure;
+      const raw=await castReply(input.transcript,input.config,typeof input.context==='string'?input.context:'',async messages=>{
+        progress({stage:`Waiting for planner response${++requests>1?` (request ${requests})`:''}`,provider:connection.provider,model:connection.model});
         // Raw calls use the saved connection credentials without inheriting a chat preset's
         // short output limit, stop strings, response format or reasoning budget.
-        const request = {type:'raw',userId,model:connection.model,
-          connection_id:connection.id,messages,...textGenerationOptions(connection,{max_tokens:maxTokens,...jsonResponseParameters(connection)}),signal:controller.signal};
-        let result;
-        if(typeof spindle.generate.rawStream==='function') {
-          let content='',lastUpdate=0,received=0,completed=false;
-          for await(const chunk of spindle.generate.rawStream(request)) {
-            if(controller.signal.aborted)return;
-            if(chunk.type==='done') {result={content:chunk.content,finish_reason:chunk.finish_reason};completed=true;break;}
-            if(chunk.type==='token')content+=chunk.token || '';
-            if(chunk.type==='token' || chunk.type==='reasoning') {
-              received++;
-              if(received===1 || Date.now()-lastUpdate>=1000) {
-                lastUpdate=Date.now();
-                progress({stage:content.length?`Receiving planner output (${content.length} characters; attempt ${attempt+1}/2)`:`Planner is processing (attempt ${attempt+1}/2)`,provider:connection.provider,model:connection.model});
-              }
-            }
-          }
-          if(!completed)throw new Error('Planner stream ended before completion. Check the LLM connection or retry.');
-        } else result=await spindle.generate.raw(request);
-        if (controller.signal.aborted) return;
-        progress({stage:'Validating planner response',provider:connection.provider,model:connection.model});
-        let raw;
-        try {raw=parsePlanJson(result.content);} catch (error) {raw=error;}
-        // Search failures stop planning; asking the LLM again would not fix them.
-        const config=raw instanceof Error?input.config:await castCommunityVoices(raw,input.config,communityVoices,async wanted=>{
-          progress({stage:`Searching Fish community voices for ${wanted.speaker}`});
-          return chooseCommunityVoice({...wanted,input,userId,signal:controller.signal});
-        });
-        if (controller.signal.aborted) return;
         try {
-          if (raw instanceof Error) throw raw;
-          const plan = validatePlan(resolvePlanReferences(raw,input.transcript,config),input.transcript,config);
-          send({result:{...plan,...(communityVoices.size?{communityVoices:[...communityVoices.values()]}:{}),...(jevFailure?{warning:jevFailure.message}:{})}}); return;
-        } catch (error) {
-          const reason=String(result.finish_reason || ''),truncated=/length|max_tokens|max_output_tokens/i.test(reason);
-          // A provider stop such as SAFETY or OTHER explains an unfinished plan better than the JSON error.
-          failure = truncated ? new Error('The planner response was cut off by its output limit. Increase the planner output budget or plan a shorter reply.')
-            : reason && !/^(?:stop|end_turn|stop_sequence)$/i.test(reason) ? new Error(`The planner stopped early (${reason}). ${error.message}`) : error;
-          maxTokens=Math.min(32768,maxTokens*2);
-          messages.push({role:'assistant',content:String(result.content || '').slice(0,50000)},
-            {role:'user',content:`Your plan failed validation: ${failure.message}. Return a corrected complete JSON plan using unit_ids. Include every source unit ID exactly once in order. Do not copy or rewrite transcript text.`});
+          return (await spindle.generate.raw({type:'raw',userId,model:connection.model,connection_id:connection.id,messages,
+            ...textGenerationOptions(connection,{max_tokens:maxTokens,temperature:0}),signal:controller.signal})).content;
+        } catch(error) {
+          if(controller.signal.aborted)throw error;
+          failure=error;return '';
         }
-      }
-      throw new Error(`Planner failed twice: ${failure.message}`);
+      });
+      if(controller.signal.aborted)return;
+      if(!raw)throw new Error(failure?`Planner failed: ${failure.message}`:'The planner returned no speakers for this reply. The provider may be refusing its content; try another Planner LLM connection.');
+      const communityVoices=new Map();
+      const config=await castCommunityVoices(raw,input.config,communityVoices,async wanted=>{
+        progress({stage:`Searching Fish community voices for ${wanted.speaker}`});
+        return chooseCommunityVoice({...wanted,input,userId,signal:controller.signal});
+      });
+      if(controller.signal.aborted)return;
+      const plan=validatePlan(resolvePlanReferences(raw,input.transcript,config),input.transcript,config);
+      send({result:{...plan,...(communityVoices.size?{communityVoices:[...communityVoices.values()]}:{}),...(jevFailure?{warning:jevFailure.message}:{})}});return;
     }
     if (message.action === 'skipCheck') {
       const lines=Array.isArray(input.lines)?input.lines.map(String):[];

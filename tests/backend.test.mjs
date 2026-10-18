@@ -149,21 +149,20 @@ test('ambiguous heuristic planning stops without falling back to a paid connecti
 });
 
 test('explicit LLM mode ignores stale Jev and heuristic flags',async()=>{
-  let calls=0;const h=await harness(async()=>{calls++;return {content:'{"segments":[{"speaker":"Narrator","unit_ids":[0]}]}'};});
-  h.send('plan',{transcript:'The room fell quiet.',config:{...config,plannerMode:'llm',useJev:true,useFastClassifier:true}});
-  assert.ok((await h.result()).message.result);assert.equal(calls,1);
+  let calls=0;const h=await harness(async()=>{calls++;return {content:'D0|Mira|warm'};});
+  h.send('plan',{transcript:'"Hello," Mira said.',config:{...castConfig,plannerMode:'llm',useJev:true,useFastClassifier:true}});
+  assert.equal((await h.result()).message.result.segments[0].speaker,'Mira');assert.equal(calls,1);
 });
 
-test('LLM voice selection receives character profiles and catalogue descriptions as data',async()=>{
-  const profiles=[{speaker:'Narrator',description:'An older storyteller with a deep, calm voice.',personality:'Warm and patient.'}];
-  const voices=[{id:'Charon',description:'Deep, mature, and calm.'},{id:'Kore',description:'Bright and youthful.'}];
-  const h=await harness(async input=>{
-    const data=JSON.parse(input.messages.find(message=>message.role==='user').content);
-    assert.deepEqual(data.characterProfiles,profiles);assert.deepEqual(data.availableVoices,voices);assert.equal(data.fixedCast[0].voice,'');
-    return {content:'{"segments":[{"speaker":"Narrator","voice":"Charon","unit_ids":[0]}]}'};
-  });
-  h.send('plan',{transcript:'Once upon a time.',config:{...config,voices,fixed:[{speaker:'Narrator',voice:'',style:''}],characterProfiles:profiles}});
-  assert.equal((await h.result()).message.result.segments[0].voice,'Charon');
+test('LLM casting receives character profiles and unused catalogue voices and casts an unassigned lead',async()=>{
+  const profiles=[{speaker:'Mira',role:'character',description:'A young singer with a bright voice.'}];
+  const voices=[{id:'Charon',gender:'male',description:'Deep'},{id:'Kore',gender:'female',description:'Firm'},{id:'Leda',gender:'female',description:'Youthful'}];
+  let request;const h=await harness(async input=>{request=input;return {content:'D0|Mira|bright\nNPC|Mira|female|Leda'};});
+  h.send('plan',{transcript:'"Hello."',config:{...config,voices,fixed:[...config.fixed,{speaker:'Mira',voice:'',style:''}],characterProfiles:profiles}});
+  const result=(await h.result()).message.result;
+  assert.match(request.messages[1].content,/- Mira \[character\]: A young singer with a bright voice\.\n\nAvailable voices for new NPCs: Kore \(female, Firm\); Leda \(female, Youthful\)\n/);
+  assert.match(request.messages[0].content,/no voice yet; add an NPC line for each of them too: Mira\./);
+  assert.equal(result.segments[0].voice,'Leda');assert.equal(result.segments[0].style,'bright');
 });
 
 test('an opted-in failed LLM fallback retains both provider errors',async()=>{
@@ -181,26 +180,15 @@ test('unknown or missing Jev classifications fail rather than attributing to the
   }
 });
 
-test('streaming planner reports activity, keeps reasoning private and uses completed JSON',async()=>{
-  let limit,request;
-  const content='{"segments":[{"speaker":"Narrator","unit_ids":[0]}]}';
-  const h=await harness(()=>{throw new Error('Expected streaming');},null,'custom',(_,ms)=>limit=ms,async function*(input){
-    request=input;
-    yield {type:'reasoning',token:'private processing text'};
-    yield {type:'token',token:content.slice(0,20)};
-    yield {type:'done',content,finish_reason:'stop'};
-  });
-  h.send('plan',{transcript:'Hello.',config,context:'x'.repeat(16000)});
-  const result=await h.result();
-  assert.equal(result.message.result.segments[0].text,'Hello.');assert.equal(limit,600000);
-  assert.ok(h.sent.some(item=>/Planner is processing/.test(item.message.progress?.stage || '')));
-  assert.ok(!JSON.stringify(h.sent).includes('private processing text'));
-  assert.ok(!JSON.stringify(request.messages).includes('x'.repeat(4001)));
-});
-test('an incomplete stream is never accepted as a finished speech plan',async()=>{
-  const h=await harness(null,null,'custom',null,async function*(){yield {type:'token',token:'{"segments":[]}'};});
-  h.send('plan',{transcript:'Hello.',config});
-  assert.match((await h.result()).message.error,/stream ended before completion/);
+test('casting asks every provider for plain-text rows at temperature 0 with the last 3000 characters of context',async()=>{
+  for(const provider of ['google','openai','custom']) {
+    let request;const h=await harness(async input=>{request=input;return {content:'D0|Mira|'};},null,provider);
+    h.send('plan',{transcript:'"Hello."',config:castConfig,context:'x'.repeat(16000)});
+    assert.ok((await h.result()).message.result);
+    assert.deepEqual({...request.parameters},{max_tokens:8192,temperature:0});
+    assert.ok(request.messages[1].content.includes(`(context only):\n${'x'.repeat(3000)}\n\n`));assert.ok(!request.messages[1].content.includes('x'.repeat(3001)));
+    assert.ok(h.sent.some(item=>item.message.progress?.stage==='Waiting for planner response'));
+  }
 });
 async function harness(generate, cors, provider, deadline, stream, decisions,connectionOverrides={}) {
   let handler;const sent=[];let wake;
@@ -212,8 +200,8 @@ async function harness(generate, cors, provider, deadline, stream, decisions,con
 }
 test('planner uses user identity and routes replies only to the originating browser session',async()=>{
   let request;
-  const h=await harness(async input=>{request=input;return {content:JSON.stringify({segments:[{speaker:'Narrator',unit_ids:[0]}]})};});
-  h.send('plan',{transcript:'Hello.',config,context:'data'});
+  const h=await harness(async input=>{request=input;return {content:'D0|Narrator|'};});
+  h.send('plan',{transcript:'"Hello."',config,context:'data'});
   const result=await h.result();
   assert.equal(request.userId,'user-a');assert.equal(result.user,'user-a');assert.equal(result.options.frontendSessionId,'session-a');
   assert.equal(request.type,'raw');assert.equal(request.parameters.max_tokens,8192);assert.equal(request.reasoning.source,'off');assert.equal(request.connection_id,'llm-a');
@@ -227,34 +215,39 @@ test('generic card analysis reads freeform profiles and requires source evidence
  h.send('cardCast',{card,connectionId:'llm-a'});const result=(await h.result()).message;assert.equal(result.error,undefined);assert.deepEqual([...result.result.roles.map(role=>role.name)],['Adrian','Ethan']);assert.equal(calls,1);assert.match(request.messages[0].content,/regardless of formatting or title/);assert.match(request.messages[0].content,/untrusted data/);assert.equal(JSON.parse(request.messages[1].content).description,card.description);assert.equal(request.userId,'user-a');
  const bad=await harness(async()=>({content:JSON.stringify({roles:[{name:'Invented',description:'A stranger.',evidence:'Not present in the card.'}]})}));bad.send('cardCast',{card});assert.match((await bad.result()).message.error,/source evidence/);
 });
-test('retries a malformed plan once and surfaces failure instead of speaking altered text',async()=>{
-  let calls=0;const h=await harness(async()=>{calls++;return {content:'{"segments":[{"speaker":"Narrator","text":"Wrong."}]}'};});
-  h.send('plan',{transcript:'Hello.',config});
-  const result=await h.result();assert.equal(calls,2);assert.match(result.message.error,/Planner failed twice/);
+test('missing lines get one follow-up request, and a reply without casting rows fails with guidance',async()=>{
+  const requests=[];const h=await harness(async input=>{requests.push(input);return {content:requests.length===1?'D0|Mira|':'D2|Narrator|'};});
+  h.send('plan',{transcript:'"Hi." "Hey." "Bye."',config:castConfig});
+  const result=(await h.result()).message.result;
+  assert.equal(requests.length,2);assert.match(requests[1].messages.at(-1).content,/^You missed these ids: D1, D2\./);
+  assert.deepEqual([...result.segments.map(segment=>segment.speaker)],['Mira','Narrator']);
+  let calls=0;const prose=await harness(async()=>{calls++;return {content:'I cannot process this request.'};});
+  prose.send('plan',{transcript:'"Hello."',config:castConfig});
+  assert.match((await prose.result()).message.error,/no speakers for this reply/);assert.equal(calls,2);
 });
 test('cancellation aborts planner and suppresses stale replies',async()=>{
   let resolve;let signal;
   const h=await harness(input=>{signal=input.signal;return new Promise(r=>resolve=r);});
-  h.send('plan',{transcript:'Hello.',config});await new Promise(r=>setTimeout(r,0));h.send('cancel',{});
-  assert.ok(signal.aborted);resolve({content:'{"segments":[{"speaker":"Narrator","unit_ids":[0]}]}'});
+  h.send('plan',{transcript:'"Hello."',config});await new Promise(r=>setTimeout(r,0));h.send('cancel',{});
+  assert.ok(signal.aborted);resolve({content:'D0|Narrator|'});
   await new Promise(r=>setTimeout(r,10));assert.equal(h.sent.filter(item=>item.message.result || item.message.error).length,0);
 });
 
-test('truncated JSON retries with a larger output budget and accepts only a complete plan',async()=>{
-  const budgets=[];
-  const h=await harness(async input=>{
-    budgets.push(input.parameters.max_tokens);
-    return budgets.length===1 ? {content:'{"segments":[',finish_reason:'length'}
-      : {content:'{"segments":[{"speaker":"Narrator","unit_ids":[0]}]}',finish_reason:'stop'};
-  });
-  h.send('plan',{transcript:'Hello.',config});
-  const result=await h.result();assert.deepEqual(budgets,[8192,16384]);assert.equal(result.message.result.segments[0].text,'Hello.');
-});
 
-test('empty planner responses produce an actionable error',async()=>{
-  const h=await harness(async()=>({content:'',finish_reason:'stop'}));
-  h.send('plan',{transcript:'Hello.',config});const result=await h.result();
-  assert.match(result.message.error,/Planner returned no text/);
+test('a blocked reply is cast in parts, and a reply blocked in every part names the provider error',async()=>{
+  const transcript=`${'The hall was quiet. '.repeat(70)}"Hello." ${'The road was dark. '.repeat(70)}"Bye."`;
+  const requests=[];
+  const h=await harness(async input=>{requests.push(input);if(requests.length===1)throw Error('PROHIBITED_CONTENT');return {content:[...input.messages[1].content.matchAll(/^D(\d+):/gm)].map(match=>`D${match[1]}|Mira|`).join('\n')};});
+  h.send('plan',{transcript,config:castConfig,context:'earlier chat'});
+  const result=(await h.result()).message.result;
+  assert.ok(requests.length>2);assert.ok(requests.slice(1).every(request=>!request.messages[1].content.includes('earlier chat')));
+  assert.deepEqual([...result.segments.filter(segment=>segment.speaker!=='Narrator').map(segment=>segment.text)],['"Hello."','"Bye."']);
+  const blocked=await harness(async()=>{throw Error('PROHIBITED_CONTENT');});
+  blocked.send('plan',{transcript,config:castConfig});
+  assert.match((await blocked.result()).message.error,/Planner failed: PROHIBITED_CONTENT/);
+  const empty=await harness(async()=>({content:'',finish_reason:'stop'}));
+  empty.send('plan',{transcript,config:castConfig});
+  assert.match((await empty.result()).message.error,/no speakers for this reply/);
 });
 
 test('backend readiness check replies without making an LLM or TTS request',async()=>{
@@ -263,23 +256,7 @@ test('backend readiness check replies without making an LLM or TTS request',asyn
   const result=await h.result();assert.equal(result.message.result.ready,true);assert.equal(result.message.result.version,manifest.version);
 });
 
-test('prose-only planner responses expose a useful diagnostic after retry',async()=>{
-  const h=await harness(async()=>({content:'I cannot process this request.'}));
-  h.send('plan',{transcript:'Hello.',config});
-  assert.match((await h.result()).message.error,/Response begins: I cannot process/);
-});
 
-test('known planners request provider JSON mode; other providers retain portable prompting',async()=>{
-  for(const provider of ['google','openai','anthropic']) {
-    let parameters;
-    const h=await harness(async input=>{parameters=input.parameters;return {content:'{"segments":[{"speaker":"Narrator","unit_ids":[0]}]}'};},null,provider);
-    h.send('plan',{transcript:'Hello.',config});
-    assert.ok((await h.result()).message.result);
-    if(provider==='google')assert.equal(parameters.responseMimeType,'application/json');
-    if(provider==='openai')assert.equal(parameters.response_format.type,'json_object');
-    if(provider==='anthropic')assert.deepEqual(Object.keys(parameters),['max_tokens']);
-  }
-});
 
 test('planner test sends a small independent request and reports the exact model',async()=>{
   let request;
@@ -604,7 +581,7 @@ test('action plan uses explicitly enabled LLM fallback and retains the Jev diagn
   let llmCalled = false;
   const generate = async () => {
     llmCalled = true;
-    return { content: JSON.stringify({ segments: [{ speaker: 'Narrator', unit_ids: [0, 1] }] }) };
+    return { content: 'D0|a voice|whispering\nNPC|a voice|neutral|Charon' };
   };
   const corsHandler = async () => {
     return { status: 500, body: JSON.stringify({ error: { message: 'Jev service unavailable' } }) };
@@ -732,8 +709,8 @@ test('Jev offers the persona and a scenario card by who they are, with profiles 
 test('LLM and Jev card-title aliases resolve to the assigned lead voice instead of NPC policy',async()=>{
   const title='Kellin Beckett || Toxic Fans',cast={...config,useStyle:false,fixed:[{speaker:'Narrator',voice:'Charon',style:''},{speaker:'Laiyah',voice:'Kore',style:''},{speaker:'Kellin Beckett',voice:'Charon',style:'',aliases:[title]}],npcPolicy:{mode:'single',voice:'Kore',route:''},characterProfiles:[{speaker:'Kellin Beckett',name:title,role:'character',description:'Kellin is the singer.'}]};
   const llm=await harness(async input=>{
-    const data=JSON.parse(input.messages[1].content);assert.ok(data.fixedCast[2].aliases.includes(title));assert.match(input.messages[0].content,/aliases.*same person/);
-    return {content:JSON.stringify({segments:[{speaker:title,voice:'Kore',unit_ids:[0]}]})};
+    assert.ok(input.messages[1].content.includes(`- Kellin Beckett (aliases: ${title}) [character]: Kellin is the singer.`));
+    return {content:`D0|${title}|calm`};
   });
   llm.send('plan',{transcript:'"Hello."',config:cast});const reply=(await llm.result()).message;assert.equal(reply.error,undefined);const standard=reply.result;assert.equal(standard.segments[0].speaker,'Kellin Beckett');assert.equal(standard.segments[0].voice,'Charon');assert.equal(standard.npcs.length,0);
   let choices;const decisions={evaluate:async input=>{choices=input.questions.speaker_0.criteria;return {answers:{speaker_0:{choice:title}}};}};
@@ -789,7 +766,7 @@ test('speaker name candidates come from names the story uses, not from cast name
 test('dialogue from someone not in the cast goes to the enabled LLM fallback, otherwise to a separate NPC', async () => {
   const answer = async () => ({ status: 200, body: JSON.stringify({ answers: { q0: { choice: 'Someone not listed' } } }) });
   let llmCalls = 0;
-  const fallback = await harness(async () => { llmCalls++; return { content: JSON.stringify({ segments: [{ speaker: 'Narrator', unit_ids: [0] }, { speaker: 'Clerk', voice: 'Charon', unit_ids: [1] }] }) }; }, answer);
+  const fallback = await harness(async () => { llmCalls++; return { content: 'D1|Clerk|bored\nNPC|Clerk|male|Charon' }; }, answer);
   fallback.send('plan', { transcript: 'The clerk droned. "Seven hundred change."', config: { ...castConfig, useStyle: false, useJev: true, jevApiKey: 'jev-key', allowLlmFallback: true } });
   const planned = (await fallback.result()).message.result;
   assert.equal(llmCalls, 1);
@@ -924,7 +901,7 @@ test('music keeps the top-ranked track when the choice fails or is slow, and a f
 const fishItem=(id,title,tags=['female','young'])=>({_id:id,title,tags,description:`${title} voice`,languages:['en'],samples:[]});
 const communityCast={voices:[{id:'own-1',route:'native:fish'},{id:'used-1',route:'native:fish'}],defaultRoute:'native:fish',useStyle:false,communityRoutes:{'native:fish':'community'},
   fixed:[{speaker:'Narrator',voice:'own-1',style:'',route:'native:fish'},{speaker:'Mira',voice:'',style:'',route:'native:fish'}],npcs:[{speaker:'Guard',voice:'used-1',style:'',route:'native:fish'}]};
-const describedPlan=JSON.stringify({language:'pt-BR',segments:[{speaker:'Narrator',unit_ids:[0]},{speaker:'Mira',voiceSearch:{gender:'female',age:'young',tags:['soft','bright']},unit_ids:[1]}]});
+const describedPlan='D1|Mira|soft\nNPC|Mira|female|young; soft, bright\nLANG|pt-BR';
 const fishSearch=(urls,pages)=>async url=>{urls.push(new URL(url));const items=pages[urls.length-1];return items?{status:200,body:JSON.stringify({total:items.length,items})}:{status:500,body:'Down'};};
 
 test('a described voice is searched in the Fish community library with relaxed tags, without duplicates or voices already cast, and picked by the Decision model',async()=>{
@@ -941,12 +918,11 @@ test('a described voice is searched in the Fish community library with relaxed t
   assert.equal(urls[0].origin+urls[0].pathname,'https://api.fish.audio/model');
   assert.equal(evaluated.connection_id,'decision-a');assert.deepEqual(evaluated.state,{character:'Mira',voice:'female, young, soft, bright'});
   assert.deepEqual(evaluated.questions.q0.criteria,{s0:'Ana — female, young; Ana voice (en)',s1:'Bea — female, young, soft; Bea voice (en)'});
-  const data=JSON.parse(prompt[1].content);
-  assert.deepEqual([...data.availableVoices],[]);assert.deepEqual({...data.communityRoutes},{'native:fish':'community'});
+  assert.match(prompt[1].content,/Available voices for new NPCs: \n/);assert.match(prompt[0].content,/LANG\|ISO 639-1/);
 });
 
 test('a community voice keeps the top result when the choice fails or is slow, defaults to English and stops planning when search fails',async()=>{
-  const english=JSON.stringify({segments:[{speaker:'Narrator',unit_ids:[0]},{speaker:'Mira',voiceSearch:{gender:'robot',tags:['soft','Not a tag!']},unit_ids:[1]}]});
+  const english='D1|Mira|\nNPC|Mira|robot|soft, Not a tag!';
   for(const [decisions,deadline] of [[{evaluate:async()=>{throw Error('No Decision connection');}}],[{evaluate:()=>new Promise(()=>{})},(fn,ms)=>{if(ms===5000)fn();}],[undefined]]){
     const urls=[];
     const h=await harness(async()=>({content:english}),fishSearch(urls,[[fishItem('ana-1','Ana'),fishItem('bea-1','Bea')]]),null,deadline,null,decisions);
@@ -977,7 +953,7 @@ test('Jev describes a speaker with the Decision model before the community searc
 test('community search drops tag-stuffed voices that also carry the opposite gender, except for neutral requests',async()=>{
   const stuffed=[fishItem('stuffed-1','Dramatic Character Male',['male','old','female','young']),fishItem('girl-1','Aiko'),fishItem('boy-1','Kenji',['male','young'])];
   for(const [gender,expected] of [['female','girl-1'],['male','boy-1'],['neutral','stuffed-1']]){
-    const plan=JSON.stringify({segments:[{speaker:'Narrator',unit_ids:[0]},{speaker:'Mira',voiceSearch:{gender},unit_ids:[1]}]});
+    const plan=`D1|Mira|\nNPC|Mira|${gender}|`;
     const h=await harness(async()=>({content:plan}),fishSearch([],[stuffed]));
     h.send('plan',{transcript:'Mira smiled. "Hello."',config:communityCast});
     assert.equal((await h.result()).message.result.segments.find(segment=>segment.speaker==='Mira').voice,expected);
@@ -998,11 +974,6 @@ test('Jev keeps Decision speakers when emotion answers are rejected and splits l
   assert.equal(result.error,undefined);
   assert.ok(result.result.segments.every(segment=>segment.speaker==='Alice' && !segment.style));
   assert.deepEqual(calls.map(ids=>[ids[0],ids.length]),[['speaker_0',256],['speaker_256',44],['emotion_0',256]]);
-});
-test('a planner stopped by its provider names the stop reason instead of only the JSON error',async()=>{
-  const h=await harness(null,null,'google_vertex',null,async function*(){yield {type:'token',token:'{"segments":[{"speaker":"Narrator"'};yield {type:'done',content:'{"segments":[{"speaker":"Narrator"',finish_reason:'SAFETY'};});
-  h.send('plan',{transcript:'Hello.',config});
-  assert.match((await h.result()).message.error,/Planner failed twice: The planner stopped early \(SAFETY\)\. Planner returned no complete JSON speech plan/);
 });
 
 test('non-story check labels lines through the Planner connection, retries a refusal with 60-character lines and then skips only markup',async()=>{
